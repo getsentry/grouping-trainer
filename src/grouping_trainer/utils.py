@@ -29,18 +29,7 @@ _CUSTOM_ID_DELIMETER = "|"
 "Custom ID used for Anthropic batch API"
 
 
-def _check_cwd_is_grouping_data() -> None:
-    cwd = Path.cwd().resolve()
-    expected_suffix = ("data-analysis", "grouping", "data")
-    if cwd.parts[-len(expected_suffix) :] != expected_suffix:
-        raise RuntimeError(
-            "Expected to run from 'data-analysis/grouping/data', but current working "
-            f"directory is '{cwd}'. From the repo root, run: `cd grouping/data`."
-        )
-
-
 def as_dataset_dir(org_id: int, project_id: int, root: str = "dataset") -> Path:
-    _check_cwd_is_grouping_data()
     return Path(root) / f"org_{org_id}" / f"project_{project_id}"
 
 
@@ -229,7 +218,6 @@ def read(org_id: int, project_id: int, clean: bool = True) -> pl.DataFrame:
 
 
 def all_project_paths(root: str = "dataset"):
-    _check_cwd_is_grouping_data()
     return (project_path for org_path in Path(root).glob("org_*") for project_path in org_path.glob("project_*"))
 
 
@@ -414,7 +402,6 @@ def generate_labeled_dfs():
 
 
 def read_synthetic(org_id: int, project_id: int, root: str = "dataset_augmented") -> pl.DataFrame:
-    _check_cwd_is_grouping_data()
     synthetic_dir = as_dataset_dir(org_id, project_id, root=root) / "synthetic"
     return _read_csvs_from_dir(synthetic_dir)
 
