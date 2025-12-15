@@ -1,0 +1,13 @@
+{
+    "editor.rulers": [
+        120
+    ],
+    "autoDocstring.docstringFormat": "numpy",
+    "autoDocstring.startOnNewLine": true,
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "rewrap.autoWrap.enabled": true,
+    "notebook.formatOnSave.enabled": true,
+    "notebook.defaultFormatter": "charliermarsh.ruff",
+    "python.defaultInterpreterPath": ".venv/bin/python"
+}
