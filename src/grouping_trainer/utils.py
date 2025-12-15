@@ -19,6 +19,7 @@ from IPython.display import display
 import polars as pl
 from polars._typing import ConcatMethod
 from pydantic import BaseModel
+from sentence_transformers import SentenceTransformer as SentenceTransformerOriginal
 from tqdm.auto import tqdm
 
 
@@ -416,3 +417,18 @@ def read_all_synthetic(root: str = "dataset_augmented"):
 
 def generate_dfs_synthetic(root: str = "dataset_augmented"):
     yield from _generate_dfs(read_all_synthetic(root))
+
+
+class SentenceTransformer(SentenceTransformerOriginal):
+    """
+    `SentenceTransformer` which deduplicates texts during inference.
+    """
+
+    def encode(self, texts: list[str] | str, **kwargs):
+        if isinstance(texts, str):
+            return super().encode(texts, **kwargs)
+
+        unique = list(dict.fromkeys(texts))  # preserve order
+        text_to_idx = {text: idx for idx, text in enumerate(unique)}
+        embeddings = super().encode(unique, **kwargs)
+        return embeddings[[text_to_idx[text] for text in texts]]  # assume numpy or torch
