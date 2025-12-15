@@ -1,6 +1,8 @@
 # grouping-trainer
 
-Labeling, training, and evaluation code for Sentry's AI grouping model.
+Training code for Sentry's AI grouping model.
+
+(Sampling and labeling is still in [data-analysis](https://github.com/getsentry/data-analysis/tree/main/grouping/data). Will migrate that over here.)
 
 
 ## Install
@@ -18,7 +20,7 @@ os.environ["GITHUB_TOKEN"] = userdata["GITHUB_TOKEN"]
 
 ## Usage
 
-Coming soon.
+See [`./train.ipynb`](./train.ipynb)
 
 
 ## Set up locally
