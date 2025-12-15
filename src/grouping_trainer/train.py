@@ -25,24 +25,47 @@ from transformers.utils.import_utils import (
 )
 
 
-def create_project_dataset_dict(df: pl.DataFrame):
+def df_to_dataset(df: pl.DataFrame) -> Dataset:
+    return Dataset.from_list(
+        [
+            {
+                "query_stacktrace_string": record["query_stacktrace_string"],
+                "candidate_stacktrace_string": record["candidate_stacktrace_string"],
+                "label": int(record["label"] == "GROUP"),
+            }
+            for record in df.sort("query_stacktrace_string").rows(named=True)
+            # Sort for cache hits in the forward pass w/in each batch.
+        ]
+    )
+
+
+def create_project_dataset_dict(
+    df: pl.DataFrame,
+    min_dataset_size: int | None = None,
+) -> DatasetDict:
+    """
+    Create a DatasetDict with one dataset per project. Projects below `min_dataset_size` are packed into a single
+    dataset to avoid tiny batches.
+
+    Each dataset is sorted by query_stacktrace_string for cache hits in the forward pass.
+    """
     project_id_to_dataset: dict[str, Dataset] = {}
-    for project_id, df_project in tqdm(df.group_by("project_id"), total=len(df["project_id"].unique())):
-        project_id = str(project_id[0])
-        # DatasetDict implements __getitem__ by accepting a mix of int and str. int is for array-like indexing so that
-        # it can be used by torch dataloading, while the string is for whatever we want.
-        project_id_to_dataset[project_id] = Dataset.from_list(
-            [
-                {
-                    # "project_id": project_id,  # SentenceTransformerDataCollator tokenizes this lol
-                    "query_stacktrace_string": record["query_stacktrace_string"],
-                    "candidate_stacktrace_string": record["candidate_stacktrace_string"],
-                    "label": int(record["label"] == "GROUP"),
-                }
-                # Sort so that we get more cache hits in the forwards pass for each batch.
-                for record in df_project.sort("query_stacktrace_string").rows(named=True)
-            ]
-        )
+    small_project_dfs: list[pl.DataFrame] = []
+
+    for (project_id,), df_project in tqdm(df.group_by("project_id"), total=len(df["project_id"].unique())):
+        project_id = str(project_id)
+        # DatasetDict implements __getitem__ by accepting a mix of int and str. int is for array-like indexing so
+        # that it can be used by torch dataloading, while the string is for whatever we want.
+
+        if (min_dataset_size is not None) and (df_project.height < min_dataset_size):
+            small_project_dfs.append(df_project)
+        else:
+            project_id_to_dataset[project_id] = df_to_dataset(df_project)
+
+    if small_project_dfs:
+        df_packed = pl.concat(small_project_dfs)
+        project_id_to_dataset["__packed__"] = df_to_dataset(df_packed)
+
     return DatasetDict(project_id_to_dataset)
 
 
