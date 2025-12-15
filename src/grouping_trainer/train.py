@@ -27,26 +27,20 @@ from transformers.utils.import_utils import (
 
 def create_project_dataset_dict(df: pl.DataFrame):
     project_id_to_dataset: dict[str, Dataset] = {}
-    for project_id, df_project in tqdm(
-        df.group_by("project_id"), total=len(df["project_id"].unique())
-    ):
+    for project_id, df_project in tqdm(df.group_by("project_id"), total=len(df["project_id"].unique())):
         project_id = str(project_id[0])
-        # DatasetDict implements __getitem__ by accepting a mix of int and str. int is for indexing like a list
-        # so that it can be used by torch dataloading, while the string is for whatever we want.
+        # DatasetDict implements __getitem__ by accepting a mix of int and str. int is for array-like indexing so that
+        # it can be used by torch dataloading, while the string is for whatever we want.
         project_id_to_dataset[project_id] = Dataset.from_list(
             [
                 {
                     # "project_id": project_id,  # SentenceTransformerDataCollator tokenizes this lol
                     "query_stacktrace_string": record["query_stacktrace_string"],
-                    "candidate_stacktrace_string": record[
-                        "candidate_stacktrace_string"
-                    ],
+                    "candidate_stacktrace_string": record["candidate_stacktrace_string"],
                     "label": int(record["label"] == "GROUP"),
                 }
                 # Sort so that we get more cache hits in the forwards pass for each batch.
-                for record in df_project.sort("query_stacktrace_string").rows(
-                    named=True
-                )
+                for record in df_project.sort("query_stacktrace_string").rows(named=True)
             ]
         )
     return DatasetDict(project_id_to_dataset)
@@ -119,9 +113,7 @@ def batch_pairs_by_token_budget(
     for i in range(len(queries)):
         num_tokens_query = count_tokens(queries[i])
         num_tokens_candidate = count_tokens(candidates[i])
-        new_max_num_tokens = max(
-            curr_max_num_tokens, num_tokens_query, num_tokens_candidate
-        )
+        new_max_num_tokens = max(curr_max_num_tokens, num_tokens_query, num_tokens_candidate)
         new_pairs = curr_pairs + 1
         est_cost = (2 * new_pairs) * new_max_num_tokens
         # Approximate padded token work as: (num_texts_in_microbatch * max_tokens_in_microbatch).
@@ -230,9 +222,7 @@ class Trainer(SentenceTransformerTrainer):
             sync_ctx = self.accelerator.no_sync(model) if no_sync else nullcontext()
             with sync_ctx:
                 with self.compute_loss_context_manager():
-                    loss: torch.Tensor = self.compute_loss(
-                        model, sub_inputs, num_items_in_batch=num_items_in_batch
-                    )
+                    loss: torch.Tensor = self.compute_loss(model, sub_inputs, num_items_in_batch=num_items_in_batch)
 
                 if (
                     self.args.torch_empty_cache_steps is not None
@@ -269,13 +259,10 @@ class Trainer(SentenceTransformerTrainer):
         # Whether we should suppress gradient synchronization for intermediate microbatches.
         # If we're not syncing gradients anyway (e.g. during outer gradient accumulation), no_sync is unnecessary.
         should_no_sync = (
-            self.accelerator.distributed_type == DistributedType.MULTI_GPU
-            and self.accelerator.sync_gradients
+            self.accelerator.distributed_type == DistributedType.MULTI_GPU and self.accelerator.sync_gradients
         )
 
-        sub_batches = batch_pairs_by_token_budget(
-            inputs, token_budget=self.per_device_token_budget
-        )
+        sub_batches = batch_pairs_by_token_budget(inputs, token_budget=self.per_device_token_budget)
         sub_iter = iter(sub_batches)
         prev_sub_batch = next(sub_iter)
         losses = []
@@ -336,26 +323,18 @@ class SigmoidPairwiseLoss(torch.nn.Module):
             if matryoshka_weights is None:
                 matryoshka_weights = [1] * len(matryoshka_dims)
             if len(matryoshka_weights) != len(matryoshka_dims):
-                raise ValueError(
-                    "matryoshka_weights must have the same length as matryoshka_dims"
-                )
+                raise ValueError("matryoshka_weights must have the same length as matryoshka_dims")
 
             self.matryoshka_dims = matryoshka_dims
             self.matryoshka_weights = matryoshka_weights
 
-    def forward_deduplicated(
-        self, queries: list[str], candidates: list[str]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward_deduplicated(self, queries: list[str], candidates: list[str]) -> tuple[torch.Tensor, torch.Tensor]:
         # Map texts to idxs
-        texts_unique, inverse_indices = np.unique(
-            queries + candidates, return_inverse=True
-        )
+        texts_unique, inverse_indices = np.unique(queries + candidates, return_inverse=True)
         inverse_indices = torch.as_tensor(inverse_indices, device=self.device)
 
         # Call model
-        encodings = self.model.tokenize(
-            texts_unique.tolist(), return_tensors="pt", padding=True
-        )
+        encodings = self.model.tokenize(texts_unique.tolist(), return_tensors="pt", padding=True)
         # No truncation needed b/c we sampled from already-encoded stacktraces in the grouping DB.
         encodings = {k: v.to(self.device) for k, v in encodings.items()}
         embeddings_unique: torch.Tensor = self.model(encodings)["sentence_embedding"]
@@ -387,21 +366,17 @@ class SigmoidPairwiseLoss(torch.nn.Module):
         labels: torch.Tensor,
     ) -> torch.Tensor:
         if self.matryoshka_dims is None:
-            return self.compute_loss_from_embeddings(
-                query_embeddings, candidate_embeddings, labels
-            )
+            return self.compute_loss_from_embeddings(query_embeddings, candidate_embeddings, labels)
 
         embedding_dim = query_embeddings.shape[-1]
         if any(d > embedding_dim for d in self.matryoshka_dims):
-            raise ValueError(
-                f"matryoshka_dims cannot exceed embedding dim {embedding_dim}: {self.matryoshka_dims}"
-            )
+            raise ValueError(f"matryoshka_dims cannot exceed embedding dim {embedding_dim}: {self.matryoshka_dims}")
 
         dim_indices = list(range(len(self.matryoshka_dims)))
         if self.n_dims_per_step > 0 and self.n_dims_per_step < len(dim_indices):
-            dim_indices = torch.randperm(
-                len(self.matryoshka_dims), device=query_embeddings.device
-            )[: self.n_dims_per_step].tolist()
+            dim_indices = torch.randperm(len(self.matryoshka_dims), device=query_embeddings.device)[
+                : self.n_dims_per_step
+            ].tolist()
 
         # Prolly fine to append to computation graph as in SentenceTransformer's MatryoshkaLoss.
         # Our batch size and matryoshka_dims are small enough that it's not a big deal.
@@ -420,6 +395,4 @@ class SigmoidPairwiseLoss(torch.nn.Module):
             batch["query_stacktrace_string"],
             batch["candidate_stacktrace_string"],
         )
-        return self.compute_loss_mrl(
-            query_embeddings, candidate_embeddings, labels.float()
-        )
+        return self.compute_loss_mrl(query_embeddings, candidate_embeddings, labels.float())
