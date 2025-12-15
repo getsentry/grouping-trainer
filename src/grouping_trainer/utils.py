@@ -11,6 +11,8 @@ gcloud storage cp -r "gs://grouping-data/dataset/org_{org_id}/project_{project_i
 and are inside `grouping/data`.
 """
 
+from functools import wraps
+import gc
 from itertools import zip_longest
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -20,6 +22,7 @@ import polars as pl
 from polars._typing import ConcatMethod
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer as SentenceTransformerOriginal
+import torch
 from tqdm.auto import tqdm
 
 
@@ -419,12 +422,35 @@ def generate_dfs_synthetic(root: str = "dataset_augmented"):
     yield from _generate_dfs(read_all_synthetic(root))
 
 
+def _cuda_empty_cache() -> None:
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def _retry_cuda_errors_once(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+            if isinstance(e, RuntimeError) and "CUDA" not in str(e):
+                raise
+            _cuda_empty_cache()
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
 class SentenceTransformer(SentenceTransformerOriginal):
     """
-    `SentenceTransformer` which deduplicates texts during inference.
+    `SentenceTransformer` which deduplicates texts during inference and retries OOMs once.
+
+    Mainly just for the evaluator run, which can only OOM if the CUDA cache is too large (assuming the batch size is
+    appropriate / can work).
     """
 
-    def encode(self, texts: list[str] | str, **kwargs):
+    @_retry_cuda_errors_once
+    def encode(self, texts: str | list[str], **kwargs):
         if isinstance(texts, str):
             return super().encode(texts, **kwargs)
 
