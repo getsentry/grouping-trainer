@@ -17,10 +17,6 @@ export GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=github-toke
 git clone https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git
 ```
 
-```bash
-cd grouping-trainer
-```
-
 Open [`./train.ipynb`](./train.ipynb) and run the cells.
 
 
