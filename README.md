@@ -7,17 +7,21 @@ Training code for Sentry's AI grouping model.
 
 ## Usage
 
-In a Workbench GPU instance (at least L4):
+In a Workbench GPU instance (at least an L4, A100 recommended), open the terminal and:
 
-```
-!git clone https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git
-```
-
-```
-%cd grouping-trainer
+```bash
+export GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=github-token-grouping-trainer-temp --project=996102297610)
 ```
 
-Open [`./train.ipynb`](./train.ipynb).
+```bash
+git clone https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git
+```
+
+```bash
+cd grouping-trainer
+```
+
+Open [`./train.ipynb`](./train.ipynb) and run the cells.
 
 
 ## Set up locally
