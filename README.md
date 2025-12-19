@@ -17,6 +17,8 @@ os.environ["GITHUB_TOKEN"] = userdata["GITHUB_TOKEN"]
 !pip install git+https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git
 ```
 
+These days I'm using Workbench to get an A100.
+
 
 ## Usage
 
