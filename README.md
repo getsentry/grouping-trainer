@@ -7,7 +7,17 @@ Training code for Sentry's AI grouping model.
 
 ## Usage
 
-See [`./train.ipynb`](./train.ipynb)
+In a Workbench GPU instance (at least L4):
+
+```
+!git clone https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git
+```
+
+```
+%cd grouping-trainer
+```
+
+Open [`./train.ipynb`](./train.ipynb).
 
 
 ## Set up locally

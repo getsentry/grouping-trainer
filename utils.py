@@ -49,9 +49,24 @@ def load_train_df(
 
 
 def load_train_dataset_dict(
-    sample_size: int | None = None, min_dataset_size: int | None = None
+    sample_size: int | None = None,
+    min_dataset_size: int | None = None,
+    stress_test_min_pair_len: int | None = None,
 ) -> tuple[DatasetDict, float]:
-    df = load_train_df(sample_size=sample_size)
+    """
+    Args:
+        stress_test_min_pair_len: If set, bypasses sample_size and instead keeps only pairs
+            where (query + candidate character length) > this threshold. Useful for OOM stress testing.
+    """
+    if stress_test_min_pair_len is not None:
+        df = load_train_df(sample_size=None)  # bypass sampling
+        df = df.filter(
+            (pl.col("query_stacktrace_string").str.len_chars() + pl.col("candidate_stacktrace_string").str.len_chars())
+            > stress_test_min_pair_len
+        )
+    else:
+        df = load_train_df(sample_size=sample_size)
+
     dataset_dict_train = gt.train.create_project_dataset_dict(df, min_dataset_size=min_dataset_size)
     frac_positive = (df["label"] == "GROUP").mean()
     return dataset_dict_train, frac_positive
