@@ -1,3 +1,4 @@
+import random
 from dataclasses import dataclass
 from collections.abc import Iterator
 from contextlib import nullcontext
@@ -25,7 +26,20 @@ from transformers.utils.import_utils import (
 )
 
 
-def df_to_dataset(df: pl.DataFrame) -> Dataset:
+def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | None = None) -> Dataset:
+    """
+    Convert a DataFrame to a Dataset, grouping records by query_stacktrace_string.
+
+    Records with the same query_stacktrace_string are kept together for cache hits in the forward pass. By default, the
+    order of groups is randomized to avoid alphabetical ordering bias during training.
+    """
+    query_group_dfs = [group_df for _, group_df in df.group_by("query_stacktrace_string")]
+    if shuffle_groups:
+        rng = random.Random(seed)
+        rng.shuffle(query_group_dfs)
+    else:
+        query_group_dfs.sort(key=lambda query_group_df: query_group_df["query_stacktrace_string"][0])
+
     return Dataset.from_list(
         [
             {
@@ -33,8 +47,8 @@ def df_to_dataset(df: pl.DataFrame) -> Dataset:
                 "candidate_stacktrace_string": record["candidate_stacktrace_string"],
                 "label": int(record["label"] == "GROUP"),
             }
-            for record in df.sort("query_stacktrace_string").rows(named=True)
-            # Sort for cache hits in the forward pass w/in each batch.
+            for query_group_df in query_group_dfs
+            for record in query_group_df.rows(named=True)
         ]
     )
 
@@ -46,8 +60,6 @@ def create_project_dataset_dict(
     """
     Create a DatasetDict with one dataset per project. Projects below `min_dataset_size` are packed into a single
     dataset to avoid tiny batches.
-
-    Each dataset is sorted by query_stacktrace_string for cache hits in the forward pass.
     """
     project_id_to_dataset: dict[str, Dataset] = {}
     small_project_dfs: list[pl.DataFrame] = []
