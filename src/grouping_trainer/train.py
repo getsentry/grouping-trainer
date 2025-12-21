@@ -28,9 +28,9 @@ from transformers.utils.import_utils import (
 
 def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | None = None) -> Dataset:
     """
-    Convert a DataFrame to a Dataset, grouping records by query_stacktrace_string.
+    Convert a DataFrame to a Dataset, grouping records by `query_stacktrace_string`.
 
-    Records with the same query_stacktrace_string are kept together for cache hits in the forward pass. By default, the
+    Records with the same `query_stacktrace_string` are kept together for cache hits in the forward pass. By default, the
     order of groups is randomized to avoid alphabetical ordering bias during training.
     """
     query_group_dfs = [group_df for _, group_df in df.group_by("query_stacktrace_string")]
@@ -58,8 +58,8 @@ def create_project_dataset_dict(
     min_dataset_size: int | None = None,
 ) -> DatasetDict:
     """
-    Create a DatasetDict with one dataset per project. Projects below `min_dataset_size` are packed into a single
-    dataset to avoid tiny batches.
+    Create a `DatasetDict` with one dataset per project. Projects below `min_dataset_size` are packed into a single
+    dataset to avoid tiny batches. `min_dataset_size` can simply be set to the global/effective training batch size.
     """
     project_id_to_dataset: dict[str, Dataset] = {}
     small_project_dfs: list[pl.DataFrame] = []
@@ -189,7 +189,7 @@ class Trainer(SentenceTransformerTrainer):
         self,
         *args,
         shuffle_within_dataset: bool = False,
-        per_device_token_budget: int = 8192 * 4,
+        per_device_token_budget: int = 8192 * 4,  # works for A100 80GB w/o sdpa (like jina-ai)
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -327,6 +327,8 @@ class SigmoidPairwiseLoss(torch.nn.Module):
 
     `log_of_scale_init`/temperature is on a log scale so that the learning rate is more reasonable. (Trick copied from
     SigLIP.) 10 is reasonable for our dataset. Anything higher could risk training just not working.
+
+    These parameters are not registered on the model, but that's fine. We're monotonically transforming similarity.
     """
 
     def __init__(
@@ -389,9 +391,9 @@ class SigmoidPairwiseLoss(torch.nn.Module):
         candidate_embeddings: torch.Tensor,
         labels: torch.Tensor,
     ):
-        exp_scale = torch.exp(self.log_scale)
+        scale = torch.exp(self.log_scale)
         similarities = pairwise_cos_sim(query_embeddings, candidate_embeddings)
-        logits = (similarities * exp_scale) + self.bias
+        logits = (similarities * scale) + self.bias
         return self.bce_with_logits_loss(logits, labels)
 
     def compute_loss_mrl(
