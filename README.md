@@ -17,7 +17,11 @@ export GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=github-toke
 git clone https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git
 ```
 
-Open [`./train.ipynb`](./train.ipynb) and run the cells.
+Then open [`./train.ipynb`](./train.ipynb) and run the cells.
+
+To enable DDP training, simply spin up a cluster of ≥2 GPUs in Workbench and run the cells as usual. Finetuning
+[gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) w/ sdpa takes ~5 hours w/ 1 A100 80 GB,
+~3.5 hours on 2.
 
 
 ## Set up locally
