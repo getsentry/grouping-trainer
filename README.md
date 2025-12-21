@@ -21,7 +21,7 @@ Then open [`./train.ipynb`](./train.ipynb) and run the cells.
 
 To enable DDP training, simply spin up a cluster of ≥2 GPUs in Workbench and run the cells as usual. Finetuning
 [gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) w/ sdpa takes ~5 hours w/ 1 A100 80 GB,
-~3.5 hours on 2.
+~3.5 hours on 2. Our quota in us-central1 is 4.
 
 
 ## Set up locally
