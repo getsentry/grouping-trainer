@@ -5,3 +5,4 @@ __pycache__/
 .venv/
 final_csvs/
 output/
+gte-finetuned/

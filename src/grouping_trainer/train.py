@@ -95,7 +95,7 @@ class Batch(TypedDict):
 
 
 @dataclass
-class DefaulDataCollator(SentenceTransformerDataCollator):
+class DefaultDataCollator(SentenceTransformerDataCollator):
     """
     We'll let the forward pass do the tokenization + device transfers b/c we'll have custom deduplication logic in the
     forward pass to save compute. It's easier to deduplicate via strings than via tensors.
