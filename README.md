@@ -11,7 +11,6 @@ In a Workbench GPU instance (at least an L4, A100 recommended), open the termina
 
 ```bash
 export GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=github-token-grouping-trainer-temp --project=996102297610)
-export WANDB_API_KEY=$(gcloud secrets versions access latest --secret=wandb-api-key --project=996102297610)
 ```
 
 ```bash
@@ -22,7 +21,7 @@ Then open [`./train.ipynb`](./train.ipynb) and run the cells.
 
 To enable DDP training, simply spin up a cluster of ≥2 GPUs in Workbench and run the cells as usual. Finetuning
 [gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) w/ sdpa takes ~5 hours w/ 1 A100 80 GB,
-~3.5 hours on 2. Our quota in us-central1 is 4.
+~3.5 hours on 2. Our quota in [us-central1](https://console.cloud.google.com/iam-admin/quotas?project=ml-ai-420606&pageState=(%22allQuotasTable%22:(%22f%22:%22%255B%257B_22k_22_3A_22Name_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22NVIDIA%2520A100%252080GB%2520GPUs_5C_22_22_2C_22s_22_3Atrue_2C_22i_22_3A_22displayName_22%257D_2C%257B_22k_22_3A_22Dimensions%2520%2528e.g.%2520location%2529_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22region_3Aus-central1_5C_22_22_2C_22i_22_3A_22displayDimensions_22%257D%255D%22,%22p%22:0,%22r%22:200))) and [europe-west4](https://console.cloud.google.com/iam-admin/quotas?project=ml-ai-420606&pageState=(%22allQuotasTable%22:(%22f%22:%22%255B%257B_22k_22_3A_22Dimensions%2520%2528e.g.%2520location%2529_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22region_3Aeurope-west4_5C_22_22_2C_22s_22_3Atrue_2C_22i_22_3A_22displayDimensions_22%257D_2C%257B_22k_22_3A_22Name_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22NVIDIA%2520A100%252080GB%2520GPUs_5C_22_22_2C_22s_22_3Atrue_2C_22i_22_3A_22displayName_22%257D%255D%22,%22p%22:0,%22r%22:200))) is 4.
 
 
 ## Set up locally

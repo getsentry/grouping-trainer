@@ -64,7 +64,11 @@ def create_project_dataset_dict(
     project_id_to_dataset: dict[str, Dataset] = {}
     small_project_dfs: list[pl.DataFrame] = []
 
-    for (project_id,), df_project in tqdm(df.group_by("project_id"), total=len(df["project_id"].unique())):
+    for (project_id,), df_project in tqdm(
+        df.group_by("project_id"),
+        total=len(df["project_id"].unique()),
+        desc="Creating project datasets",
+    ):
         project_id = str(project_id)
         # DatasetDict implements __getitem__ by accepting a mix of int and str. int is for array-like indexing so
         # that it can be used by torch dataloading, while the string is for whatever we want.
