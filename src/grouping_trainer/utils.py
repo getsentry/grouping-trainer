@@ -94,7 +94,7 @@ def deduplicate_pairs(
             _pair_first=pl.min_horizontal(column1, column2),
             _pair_second=pl.max_horizontal(column1, column2),
         )
-        .unique(subset=["_pair_first", "_pair_second"], keep="first")
+        .unique(subset=["_pair_first", "_pair_second"], keep="first", maintain_order=True)
         .drop(["_pair_first", "_pair_second"])
         .select(df.columns)
     )
