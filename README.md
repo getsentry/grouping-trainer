@@ -11,6 +11,7 @@ In a Workbench GPU instance (at least an L4, A100 recommended), open the termina
 
 ```bash
 export GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=github-token-grouping-trainer-temp --project=996102297610)
+export WANDB_API_KEY=$(gcloud secrets versions access latest --secret=wandb-api-key --project=996102297610)
 ```
 
 ```bash

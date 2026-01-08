@@ -5,7 +5,46 @@ import polars as pl
 import grouping_trainer as gt
 
 
+COLUMNS_REQUIRED = (
+    "query_seer_event_sent",
+    "candidate_seer_event_sent",
+    "distance",
+    # - Cosine distance according to the current grouping model, not the new one
+    "query_group_id",
+    "candidate_group_id",
+    "query_hash",
+    "candidate_hash",
+    "query_grouphash_id",
+    "candidate_grouphash_id",
+    "query_grouphashmetadata_id",
+    "candidate_grouphashmetadata_id",
+    "query_seer_gr_id",
+    "candidate_seer_gr_id",
+    "query_error_type",
+    "candidate_error_type",
+    "project_id",
+    "platform",
+    "source",
+    # - One of 'matched', 'unmatched', 'synthetic-negative-semi-easy'. See query_bq.ipynb in data-analysis for 'matched'
+    #   and 'unmatched'. See synthetic.py for 'synthetic-negative-semi-easy'. I have a colab notebook for actually
+    #   uploading and generating these. TODO(kddubey): put that in this repo
+    "path",
+    # - Path to the CSV file containing the pairs in the grouping-data bucket, e.g., Seer pairs which were not grouped
+    #   by the current grouping model: 'dataset/org_1/project_6178942/2025-08-13-18-22-03/unmatched.csv'
+    "query_stacktrace_string",
+    "candidate_stacktrace_string",
+    "label",
+    "thinking_output",
+    "response_output",
+    "confidence_score",
+    "prompt",
+    # - Sorry, this is mostly null after I started using the batch inference API and didn't care to populate this :-]
+    "org_id",
+)
+
+
 def _test_df(df: pl.DataFrame):
+    assert set(COLUMNS_REQUIRED).issubset(df.columns)
     assert df["label"].is_in(["GROUP", "SEPARATE"]).mean() == 1
     assert df["project_id"].is_null().sum() == 0
     assert (
@@ -52,6 +91,7 @@ def load_train_dataset_dict(
     sample_size: int | None = None,
     min_dataset_size: int | None = None,
     stress_test_min_pair_len: int | None = None,
+    paths: tuple[str, ...] = ("final_csvs/train.csv", "final_csvs/synthetic-semi-easy-negatives.csv"),
 ) -> tuple[DatasetDict, float]:
     """
     Args:
@@ -59,13 +99,13 @@ def load_train_dataset_dict(
             where (query + candidate character length) > this threshold. Useful for OOM stress testing.
     """
     if stress_test_min_pair_len is not None:
-        df = load_train_df(sample_size=None)  # bypass sampling
+        df = load_train_df(paths=paths, sample_size=None)  # bypass sampling
         df = df.filter(
             (pl.col("query_stacktrace_string").str.len_chars() + pl.col("candidate_stacktrace_string").str.len_chars())
             > stress_test_min_pair_len
         )
     else:
-        df = load_train_df(sample_size=sample_size)
+        df = load_train_df(paths=paths, sample_size=sample_size)
 
     dataset_dict_train = gt.train.create_project_dataset_dict(df, min_dataset_size=min_dataset_size)
     frac_positive = (df["label"] == "GROUP").mean()
