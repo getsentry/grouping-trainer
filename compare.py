@@ -1,14 +1,39 @@
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import gspread
 import matplotlib.pyplot as plt
 import polars as pl
+import seaborn as sns
 from google.auth import default as google_auth_default
 from tqdm.auto import tqdm
 
+sns.set_theme(style="darkgrid")
+
+
+@dataclass
+class CompareResult:
+    """Result from compare_models."""
+
+    df: pl.DataFrame
+    """DataFrame with pred_{model_name} columns added."""
+
+    model_names: list[str]
+    """List of model names in order."""
+
+    project_metrics: pl.DataFrame
+    """Per-project metrics with columns: org_id, project_id, {model}_{metric}."""
+
+    high_delta_projects: list[dict]
+    """Projects with |delta| >= min_delta, sorted by absolute delta descending."""
+
+
 pl.Config.set_tbl_hide_dataframe_shape(True)
 pl.Config.set_tbl_hide_column_data_types(True)
+
+# Consistent colors: model1 (prod) = blue, model2 (gte-finetuned) = orange
+MODEL_COLORS = ["#1f77b4", "#ff7f0e"]  # matplotlib default blue and orange
 
 
 def _upload_df_to_sheet(spreadsheet: gspread.Spreadsheet, sheet_name: str, df: pl.DataFrame) -> None:
@@ -32,7 +57,7 @@ def _upload_df_to_sheet(spreadsheet: gspread.Spreadsheet, sheet_name: str, df: p
     # Find column indices for styling
     columns = list(df.columns)
     visible_cols = {"platform", "query_stacktrace_string", "candidate_stacktrace_string"}
-    wide_cols = {"query_stacktrace_string", "candidate_stacktrace_string"}
+    wide_cols = {"query_stacktrace_string", "candidate_stacktrace_string", "thinking_output", "response_output"}
 
     # Build batch update requests for column widths and hiding
     requests = []
@@ -149,7 +174,7 @@ def plot_metrics_by_platform(df: pl.DataFrame, model_names: list[str]) -> plt.Fi
     for ax, metric in zip(axes, metrics_to_plot):
         pivot_df = metrics_pd.pivot(index="platform", columns="model", values=metric)
         pivot_df = pivot_df[model_names]  # ensure consistent column order
-        pivot_df.plot(kind="bar", ax=ax, rot=45, legend=False)
+        pivot_df.plot(kind="bar", ax=ax, rot=45, legend=False, color=MODEL_COLORS)
         ax.set_title(metric)
         ax.set_xlabel("")
         ax.set_ylim(0, 1)
@@ -161,13 +186,70 @@ def plot_metrics_by_platform(df: pl.DataFrame, model_names: list[str]) -> plt.Fi
     return fig
 
 
+def plot_dumbbell_by_project(
+    project_metrics_df: pl.DataFrame, model_names: list[str], metrics: list[str] | None = None
+) -> plt.Figure:
+    """
+    Create dumbbell plots comparing 2 models across all projects.
+
+    Args:
+        project_metrics_df: DataFrame with columns like {model}_{metric} for each project.
+        model_names: List of model names (expects exactly 2).
+        metrics: List of metrics to plot. If None, plots all available metrics.
+
+    Returns:
+        Figure with one dumbbell subplot per metric.
+    """
+    model1, model2 = model_names
+
+    # Get available metrics
+    if metrics is None:
+        metrics = [c.replace(f"{model1}_", "") for c in project_metrics_df.columns if c.startswith(f"{model1}_")]
+
+    n_metrics = len(metrics)
+    fig, axes = plt.subplots(1, n_metrics, figsize=(5 * n_metrics, max(8, len(project_metrics_df) * 0.15)))
+    if n_metrics == 1:
+        axes = [axes]
+    axes: list[plt.Axes] = list(axes)
+
+    for ax, metric in zip(axes, metrics):
+        col1 = f"{model1}_{metric}"
+        col2 = f"{model2}_{metric}"
+
+        # Sort by delta
+        plot_df = project_metrics_df.with_columns((pl.col(col2) - pl.col(col1)).alias("_delta")).sort("_delta")
+
+        y_labels = [f"{row['org_id']}|{row['project_id']}" for row in plot_df.iter_rows(named=True)]
+        x1 = plot_df[col1].to_numpy()
+        x2 = plot_df[col2].to_numpy()
+        y = range(len(plot_df))
+
+        # Draw lines colored by direction
+        for i, (v1, v2) in enumerate(zip(x1, x2)):
+            color = "green" if v2 >= v1 else "red"
+            ax.hlines(y=i, xmin=min(v1, v2), xmax=max(v1, v2), color=color, alpha=0.6)
+
+        # Draw dots
+        ax.scatter(x1, y, color=MODEL_COLORS[0], label=model1, zorder=3, s=20)
+        ax.scatter(x2, y, color=MODEL_COLORS[1], label=model2, zorder=3, s=20)
+
+        ax.set_yticks(list(y))
+        ax.set_yticklabels(y_labels, fontsize=7)
+        ax.set_xlabel(metric)
+        ax.set_title(metric)
+        ax.set_xlim(0, 1)
+        ax.legend(loc="lower right", fontsize=8)
+
+    plt.tight_layout()
+    return fig
+
+
 def compare_models(
     csv_path: Path,
     thresholds: dict[str, float],
     min_delta: float | None = 0.3,
     write_csvs: bool = True,
-    spreadsheet_id: str | None = None,
-) -> tuple[pl.DataFrame, list[str]]:
+) -> CompareResult:
     """
     Compare two models' grouping decisions and split data by (org_id, project_id).
 
@@ -177,10 +259,6 @@ def compare_models(
             First key = model1 (baseline), second key = model2 (new model).
         min_delta: Print projects where absolute delta in pred_GROUP_rate >= this value. None to skip.
         write_csvs: If True, write new.csv and merged.csv files for each project.
-        spreadsheet_id: If provided, upload merged/new data for high-delta projects to this Google Sheet.
-
-    Returns:
-        Tuple of (df with pred_{model_name} columns added, list of model names).
 
     Outputs are written to csv_path.parent / org_{org_id} / project_{project_id} /
     """
@@ -262,8 +340,9 @@ def compare_models(
         model2_group_rate = model2_metrics["pred_GROUP_rate"]
         delta = model2_group_rate - model1_group_rate
 
-        # Store for project-averaged metrics
-        all_project_metrics.append({f"{model1}_{k}": v for k, v in model1_metrics.items()})
+        # Store for project-averaged metrics and dumbbell plots
+        all_project_metrics.append({"org_id": org_id, "project_id": project_id})
+        all_project_metrics[-1].update({f"{model1}_{k}": v for k, v in model1_metrics.items()})
         all_project_metrics[-1].update({f"{model2}_{k}": v for k, v in model2_metrics.items()})
 
         # Compute merged/new dataframes
@@ -321,24 +400,26 @@ def compare_models(
 
     # Print high delta projects
     if high_delta_projects:
+        # Sort by absolute delta descending
+        high_delta_projects.sort(key=lambda p: abs(p["delta"]), reverse=True)
+
         # Exclude internal dataframe columns for display
         display_cols = [k for k in high_delta_projects[0] if not k.startswith("_")]
-        high_delta_df = (
-            pl.DataFrame([{k: v for k, v in p.items() if k in display_cols} for p in high_delta_projects])
-            .sort("delta", descending=True)
-            .with_columns(pl.col(pl.Float64).round(2))
-        )
+        high_delta_df = pl.DataFrame(
+            [{k: v for k, v in p.items() if k in display_cols} for p in high_delta_projects]
+        ).with_columns(pl.col(pl.Float64).round(2))
         print(
             f"\n=== Projects with |delta| >= {min_delta:.0%} ({len(high_delta_projects)}/{total_projects} projects) ==="
         )
         with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
             print(high_delta_df)
 
-        # Upload to Google Sheets if requested
-        if spreadsheet_id:
-            _upload_high_delta_projects_to_sheets(spreadsheet_id, high_delta_projects)
-
-    return df, model_names
+    return CompareResult(
+        df=df,
+        model_names=model_names,
+        project_metrics=project_metrics_df,
+        high_delta_projects=high_delta_projects,
+    )
 
 
 if __name__ == "__main__":
@@ -357,14 +438,21 @@ if __name__ == "__main__":
     }
     spreadsheet_id = "1-aHK2-ZO8WwmuHyP4gRRCtiPWQtYyZr4qcWkVa4Ptjw"
 
-    df, model_names = compare_models(
+    result = compare_models(
         csv_path=csv_path,
         thresholds=thresholds,
         min_delta=0.3,
         write_csvs=True,
-        spreadsheet_id=spreadsheet_id,
     )
 
-    fig = plot_metrics_by_platform(df, model_names)
+    fig = plot_metrics_by_platform(result.df, result.model_names)
     fig.savefig(csv_path.parent / "metrics_by_platform.png", dpi=150, bbox_inches="tight")
     print(f"Saved plot to {csv_path.parent / 'metrics_by_platform.png'}")
+
+    fig = plot_dumbbell_by_project(result.project_metrics, result.model_names)
+    fig.savefig(csv_path.parent / "dumbbell_by_project.png", dpi=150, bbox_inches="tight")
+    print(f"Saved plot to {csv_path.parent / 'dumbbell_by_project.png'}")
+
+    # Upload to Google Sheets (slowest step, do last)
+    # if spreadsheet_id and result.high_delta_projects:
+    #     _upload_high_delta_projects_to_sheets(spreadsheet_id, result.high_delta_projects)
