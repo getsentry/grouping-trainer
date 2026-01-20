@@ -442,6 +442,17 @@ def compare_models(
         df = df.rename(df_rename_map)
     display_model_names = [display_names.get(n, n) for n in model_names]
 
+    # Helper to rename columns for display
+    def _apply_display_names(df: pl.DataFrame) -> pl.DataFrame:
+        if not display_names:
+            return df
+        rename_map = {}
+        for col in df.columns:
+            for old, new in display_names.items():
+                if old in col:
+                    rename_map[col] = col.replace(old, new)
+        return df.rename(rename_map)
+
     # Print high delta projects
     if high_delta_projects:
         # Sort by absolute delta descending
@@ -449,9 +460,11 @@ def compare_models(
 
         # Exclude internal dataframe columns for display
         display_cols = [k for k in high_delta_projects[0] if not k.startswith("_")]
-        high_delta_df = pl.DataFrame(
-            [{k: v for k, v in p.items() if k in display_cols} for p in high_delta_projects]
-        ).with_columns(pl.col(pl.Float64).round(2))
+        high_delta_df = _apply_display_names(
+            pl.DataFrame([{k: v for k, v in p.items() if k in display_cols} for p in high_delta_projects]).with_columns(
+                pl.col(pl.Float64).round(2)
+            )
+        )
         print(
             f"\n=== Projects with |delta| >= {min_delta:.0%} ({len(high_delta_projects)}/{total_projects} projects) ==="
         )
@@ -463,7 +476,7 @@ def compare_models(
         more_issues_projects.sort(key=lambda p: p["group_rate_decrease"], reverse=True)
 
         display_cols = [k for k in more_issues_projects[0] if not k.startswith("_")]
-        more_issues_df = (
+        more_issues_df = _apply_display_names(
             pl.DataFrame([{k: v for k, v in p.items() if k in display_cols} for p in more_issues_projects])
             .with_columns(pl.col(pl.Float64).round(2))
             .rename({"group_rate_decrease": "decrease"})
