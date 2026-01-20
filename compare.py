@@ -143,8 +143,7 @@ def _compute_metrics(df: pl.DataFrame, model_names: list[str]) -> pl.DataFrame:
     metrics_rows = []
     for model_name in model_names:
         metrics = _compute_metrics_for_model(df, model_name)
-        metrics["model"] = model_name
-        metrics_rows.append(metrics)
+        metrics_rows.append({"model": model_name, **metrics})
     return pl.DataFrame(metrics_rows).with_columns(pl.col(pl.Float64).round(2))
 
 
@@ -419,8 +418,7 @@ def compare_models(
     for model_name in model_names:
         model_cols = [c for c in project_metrics_df.columns if c.startswith(f"{model_name}_")]
         avg = {c.replace(f"{model_name}_", ""): project_metrics_df[c].drop_nans().mean() for c in model_cols}
-        avg["model"] = model_name
-        avg_metrics.append(avg)
+        avg_metrics.append({"model": model_name, **avg})
     print(pl.DataFrame(avg_metrics).with_columns(pl.col(pl.Float64).round(2)))
 
     # Apply display names for charts
