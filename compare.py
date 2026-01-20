@@ -30,7 +30,7 @@ class CompareResult:
     """Per-project metrics with columns: org_id, project_id, {model}_{metric}."""
 
     high_delta_projects: list[dict]
-    """Projects with |delta| >= min_delta, sorted by absolute delta descending."""
+    """Projects with group_rate_increase >= threshold, sorted descending."""
 
     more_issues_projects: list[dict]
     """Projects where model2 creates more issues (groups less) by >= min_group_rate_decrease."""
@@ -261,7 +261,7 @@ def plot_dumbbell_by_project(
 def compare_models(
     csv_path: Path,
     thresholds: dict[str, float],
-    min_delta: float | None = 0.3,
+    min_group_rate_increase: float | None = 0.3,
     min_group_rate_decrease: float | None = None,
     write_csvs: bool = True,
     display_names: dict[str, str] | None = None,
@@ -273,7 +273,7 @@ def compare_models(
         csv_path: Path to CSV with cos_sim_{model-name} columns.
         thresholds: Dict mapping model-name to cos_sim_threshold.
             First key = model1 (baseline), second key = model2 (new model).
-        min_delta: Print projects where absolute delta in pred_GROUP_rate >= this value. None to skip.
+        min_group_rate_increase: Track projects where model2 GROUP rate is >= this value higher than model1. None to skip.
         min_group_rate_decrease: Track projects where model2 GROUP rate is >= this value lower than model1 (absolute).
             E.g., 0.10 means model2 has at least 10pp lower GROUP rate. None to skip.
         write_csvs: If True, write new.csv and merged.csv files for each project.
@@ -386,8 +386,8 @@ def compare_models(
             "_merged_df": merged_df.select(output_cols) if len(merged_df) > 0 else None,
         }
 
-        if min_delta is not None and abs(delta) >= min_delta:
-            high_delta_projects.append({**base_project_info, "delta": delta})
+        if min_group_rate_increase is not None and delta >= min_group_rate_increase:
+            high_delta_projects.append({**base_project_info, "group_rate_increase": delta})
 
         # Track projects where model2 creates more issues (groups less)
         if min_group_rate_decrease is not None:
@@ -453,10 +453,10 @@ def compare_models(
                     rename_map[col] = col.replace(old, new)
         return df.rename(rename_map)
 
-    # Print high delta projects
+    # Print projects with increased grouping
     if high_delta_projects:
-        # Sort by absolute delta descending
-        high_delta_projects.sort(key=lambda p: abs(p["delta"]), reverse=True)
+        # Sort by group_rate_increase descending
+        high_delta_projects.sort(key=lambda p: p["group_rate_increase"], reverse=True)
 
         # Exclude internal dataframe columns for display
         display_cols = [k for k in high_delta_projects[0] if not k.startswith("_")]
@@ -466,7 +466,7 @@ def compare_models(
             )
         )
         print(
-            f"\n=== Projects with |delta| >= {min_delta:.0%} ({len(high_delta_projects)}/{total_projects} projects) ==="
+            f"\n=== Projects with >= {min_group_rate_increase:.0%} increase in grouping ({len(high_delta_projects)}/{total_projects} projects) ==="
         )
         with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
             print(high_delta_df)
@@ -515,7 +515,7 @@ if __name__ == "__main__":
     result = compare_models(
         csv_path=csv_path,
         thresholds=thresholds,
-        min_delta=0.3,
+        min_group_rate_increase=0.3,
         min_group_rate_decrease=0.15,
         write_csvs=True,
         display_names={"gte-finetuned": "new"},
