@@ -1,3 +1,7 @@
+"""
+gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive
+"""
+
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +31,9 @@ class CompareResult:
 
     high_delta_projects: list[dict]
     """Projects with |delta| >= min_delta, sorted by absolute delta descending."""
+
+    more_issues_projects: list[dict]
+    """Projects where model2 creates more issues (groups less) by >= min_group_rate_decrease."""
 
 
 pl.Config.set_tbl_hide_dataframe_shape(True)
@@ -212,17 +219,21 @@ def plot_dumbbell_by_project(
         axes = [axes]
     axes: list[plt.Axes] = list(axes)
 
+    # Sort once by pred_GROUP_rate delta, use same order for all subplots
+    group_rate_col1 = f"{model1}_pred_GROUP_rate"
+    group_rate_col2 = f"{model2}_pred_GROUP_rate"
+    sorted_df = project_metrics_df.with_columns(
+        (pl.col(group_rate_col2) - pl.col(group_rate_col1)).alias("_delta")
+    ).sort("_delta")
+    y_labels = [f"{row['org_id']}|{row['project_id']}" for row in sorted_df.iter_rows(named=True)]
+
     for ax, metric in zip(axes, metrics):
         col1 = f"{model1}_{metric}"
         col2 = f"{model2}_{metric}"
 
-        # Sort by delta
-        plot_df = project_metrics_df.with_columns((pl.col(col2) - pl.col(col1)).alias("_delta")).sort("_delta")
-
-        y_labels = [f"{row['org_id']}|{row['project_id']}" for row in plot_df.iter_rows(named=True)]
-        x1 = plot_df[col1].to_numpy()
-        x2 = plot_df[col2].to_numpy()
-        y = range(len(plot_df))
+        x1 = sorted_df[col1].to_numpy()
+        x2 = sorted_df[col2].to_numpy()
+        y = range(len(sorted_df))
 
         # Draw lines colored by direction
         for i, (v1, v2) in enumerate(zip(x1, x2)):
@@ -238,9 +249,12 @@ def plot_dumbbell_by_project(
         ax.set_xlabel(metric)
         ax.set_title(metric)
         ax.set_xlim(0, 1)
-        ax.legend(loc="lower right", fontsize=8)
 
-    plt.tight_layout()
+    # Single legend for the whole figure
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=len(model_names), bbox_to_anchor=(0.5, 1.02))
+    fig.suptitle("Metrics by Project (org_id|project_id)", fontsize=14, y=1.05)
+    plt.tight_layout(rect=[0, 0, 1, 0.98])
     return fig
 
 
@@ -248,7 +262,9 @@ def compare_models(
     csv_path: Path,
     thresholds: dict[str, float],
     min_delta: float | None = 0.3,
+    min_group_rate_decrease: float | None = None,
     write_csvs: bool = True,
+    display_names: dict[str, str] | None = None,
 ) -> CompareResult:
     """
     Compare two models' grouping decisions and split data by (org_id, project_id).
@@ -258,7 +274,10 @@ def compare_models(
         thresholds: Dict mapping model-name to cos_sim_threshold.
             First key = model1 (baseline), second key = model2 (new model).
         min_delta: Print projects where absolute delta in pred_GROUP_rate >= this value. None to skip.
+        min_group_rate_decrease: Track projects where model2 GROUP rate is >= this value lower than model1 (absolute).
+            E.g., 0.10 means model2 has at least 10pp lower GROUP rate. None to skip.
         write_csvs: If True, write new.csv and merged.csv files for each project.
+        display_names: Optional mapping from model names to display names for charts/tables.
 
     Outputs are written to csv_path.parent / org_{org_id} / project_{project_id} /
     """
@@ -326,6 +345,7 @@ def compare_models(
         print("\n(Skipping CSV writes)")
 
     high_delta_projects = []
+    more_issues_projects = []
     all_project_metrics = []  # for computing project-averaged metrics
     total_projects = 0
     df_sorted = df.sort(["org_id", "project_id"])
@@ -349,26 +369,31 @@ def compare_models(
         new_df = group_df.filter((pl.col(pred1_col) == "GROUP") & (pl.col(pred2_col) == "SEPARATE"))
         merged_df = group_df.filter((pl.col(pred1_col) == "SEPARATE") & (pl.col(pred2_col) == "GROUP"))
 
+        # Base project info reused for filtered project lists
+        base_project_info = {
+            "org_id": org_id,
+            "project_id": project_id,
+            "platform": group_df["platform"][0],
+            "n_pairs": len(group_df),
+            "label_GROUP_rate": (group_df["label"] == "GROUP").mean(),
+            f"{model1}_GROUP_rate": model1_group_rate,
+            f"{model1}_prec": model1_metrics["precision_GROUP"],
+            f"{model1}_rec": model1_metrics["recall_GROUP"],
+            f"{model2}_GROUP_rate": model2_group_rate,
+            f"{model2}_prec": model2_metrics["precision_GROUP"],
+            f"{model2}_rec": model2_metrics["recall_GROUP"],
+            "_new_df": new_df.select(output_cols) if len(new_df) > 0 else None,
+            "_merged_df": merged_df.select(output_cols) if len(merged_df) > 0 else None,
+        }
+
         if min_delta is not None and abs(delta) >= min_delta:
-            high_delta_projects.append(
-                {
-                    "org_id": org_id,
-                    "project_id": project_id,
-                    "platform": group_df["platform"][0],
-                    "n_pairs": len(group_df),
-                    "label_GROUP_rate": (group_df["label"] == "GROUP").mean(),
-                    f"{model1}_GROUP_rate": model1_group_rate,
-                    f"{model1}_prec": model1_metrics["precision_GROUP"],
-                    f"{model1}_rec": model1_metrics["recall_GROUP"],
-                    f"{model2}_GROUP_rate": model2_group_rate,
-                    f"{model2}_prec": model2_metrics["precision_GROUP"],
-                    f"{model2}_rec": model2_metrics["recall_GROUP"],
-                    "delta": delta,
-                    # "path": str(proj_dir),
-                    "_new_df": new_df.select(output_cols) if len(new_df) > 0 else None,
-                    "_merged_df": merged_df.select(output_cols) if len(merged_df) > 0 else None,
-                }
-            )
+            high_delta_projects.append({**base_project_info, "delta": delta})
+
+        # Track projects where model2 creates more issues (groups less)
+        if min_group_rate_decrease is not None:
+            group_rate_decrease = -delta  # positive when model2 groups less
+            if group_rate_decrease >= min_group_rate_decrease:
+                more_issues_projects.append({**base_project_info, "group_rate_decrease": group_rate_decrease})
 
         if not write_csvs:
             continue
@@ -398,6 +423,25 @@ def compare_models(
         avg_metrics.append(avg)
     print(pl.DataFrame(avg_metrics).with_columns(pl.col(pl.Float64).round(2)))
 
+    # Apply display names for charts
+    display_names = display_names or {}
+    if display_names:
+        # Rename columns in project_metrics_df
+        rename_map = {}
+        for col in project_metrics_df.columns:
+            for old, new in display_names.items():
+                if col.startswith(f"{old}_"):
+                    rename_map[col] = col.replace(f"{old}_", f"{new}_", 1)
+        project_metrics_df = project_metrics_df.rename(rename_map)
+        # Rename pred_ and cos_sim_ columns in df
+        df_rename_map = {}
+        for col in df.columns:
+            for old, new in display_names.items():
+                if col == f"pred_{old}" or col == f"cos_sim_{old}":
+                    df_rename_map[col] = col.replace(old, new)
+        df = df.rename(df_rename_map)
+    display_model_names = [display_names.get(n, n) for n in model_names]
+
     # Print high delta projects
     if high_delta_projects:
         # Sort by absolute delta descending
@@ -414,11 +458,29 @@ def compare_models(
         with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
             print(high_delta_df)
 
+    # Print projects where model2 creates more issues
+    if more_issues_projects:
+        more_issues_projects.sort(key=lambda p: p["group_rate_decrease"], reverse=True)
+
+        display_cols = [k for k in more_issues_projects[0] if not k.startswith("_")]
+        more_issues_df = (
+            pl.DataFrame([{k: v for k, v in p.items() if k in display_cols} for p in more_issues_projects])
+            .with_columns(pl.col(pl.Float64).round(2))
+            .rename({"group_rate_decrease": "decrease"})
+        )
+        print(
+            f"\n=== Projects with >= {min_group_rate_decrease:.0%} decrease in grouping "
+            f"({len(more_issues_projects)}/{total_projects} projects) ==="
+        )
+        with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
+            print(more_issues_df)
+
     return CompareResult(
         df=df,
-        model_names=model_names,
+        model_names=display_model_names,
         project_metrics=project_metrics_df,
         high_delta_projects=high_delta_projects,
+        more_issues_projects=more_issues_projects,
     )
 
 
@@ -436,13 +498,14 @@ if __name__ == "__main__":
         "prod": 0.99,
         "gte-finetuned": 0.85,
     }
-    spreadsheet_id = "1-aHK2-ZO8WwmuHyP4gRRCtiPWQtYyZr4qcWkVa4Ptjw"
 
     result = compare_models(
         csv_path=csv_path,
         thresholds=thresholds,
         min_delta=0.3,
+        min_group_rate_decrease=0.15,
         write_csvs=True,
+        display_names={"gte-finetuned": "new"},
     )
 
     fig = plot_metrics_by_platform(result.df, result.model_names)
@@ -454,5 +517,10 @@ if __name__ == "__main__":
     print(f"Saved plot to {csv_path.parent / 'dumbbell_by_project.png'}")
 
     # Upload to Google Sheets (slowest step, do last)
+    # spreadsheet_id = "1-aHK2-ZO8WwmuHyP4gRRCtiPWQtYyZr4qcWkVa4Ptjw"
     # if spreadsheet_id and result.high_delta_projects:
     #     _upload_high_delta_projects_to_sheets(spreadsheet_id, result.high_delta_projects)
+
+    # spreadsheet_id_more_issues = "1u59V6D0G8WSidg9Jc43KcE22bLRrRs4B0twCINS7IbA"
+    # if spreadsheet_id_more_issues and result.more_issues_projects:
+    #     _upload_high_delta_projects_to_sheets(spreadsheet_id_more_issues, result.more_issues_projects)
