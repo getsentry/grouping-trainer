@@ -475,9 +475,9 @@ def compare_models(
 
         display_cols = [k for k in more_issues_projects[0] if not k.startswith("_")]
         more_issues_df = _apply_display_names(
-            pl.DataFrame([{k: v for k, v in p.items() if k in display_cols} for p in more_issues_projects])
-            .with_columns(pl.col(pl.Float64).round(2))
-            .rename({"group_rate_decrease": "decrease"})
+            pl.DataFrame(
+                [{k: v for k, v in p.items() if k in display_cols} for p in more_issues_projects]
+            ).with_columns(pl.col(pl.Float64).round(2))
         )
         print(
             f"\n=== Projects with >= {min_group_rate_decrease:.0%} decrease in grouping "
@@ -493,6 +493,88 @@ def compare_models(
         high_delta_projects=high_delta_projects,
         more_issues_projects=more_issues_projects,
     )
+
+
+def _add_token_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Add token estimate columns to dataframe."""
+    return df.with_columns(
+        (pl.col("query_stacktrace_string").str.len_chars() // 4).alias("query_tokens"),
+        (pl.col("candidate_stacktrace_string").str.len_chars() // 4).alias("candidate_tokens"),
+    )
+
+
+def compute_stacktrace_token_percentiles(csv_path: Path) -> pl.DataFrame:
+    """
+    Compute percentile metrics for stacktrace token counts in the test set.
+
+    Uses len(stacktrace) // 4 as a rough token count approximation.
+    Computes stats for query, candidate, and combined (max of the two per pair).
+    """
+    df = _add_token_columns(pl.read_csv(csv_path))
+
+    # Add combined metrics
+    df = df.with_columns(
+        pl.max_horizontal("query_tokens", "candidate_tokens").alias("max_tokens"),
+        (pl.col("query_tokens") + pl.col("candidate_tokens")).alias("total_tokens"),
+    )
+
+    # Compute percentiles for each token column
+    token_cols = ["query_tokens", "candidate_tokens", "max_tokens", "total_tokens"]
+    percentiles = [0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
+
+    rows = []
+    for col in token_cols:
+        row = {"metric": col}
+        row["min"] = df[col].min()
+        row["mean"] = df[col].mean()
+        for p in percentiles:
+            row[f"p{int(p * 100)}"] = df[col].quantile(p)
+        row["max"] = df[col].max()
+        rows.append(row)
+
+    result = pl.DataFrame(rows).with_columns(pl.col(pl.Float64).cast(pl.Int64))
+
+    print(f"\n=== Stacktrace Token Percentiles ({len(df)} pairs) ===")
+    print("(Using len(stacktrace) // 4 as token approximation)")
+    with pl.Config(tbl_rows=-1, tbl_cols=-1):
+        print(result)
+
+    return result
+
+
+def compare_metrics_by_stacktrace_length(
+    df: pl.DataFrame,
+    model_names: list[str],
+    token_col: str = "query_tokens",
+) -> None:
+    """
+    Compare model metrics for short (<=p10) and long (>=p90) stacktraces.
+
+    Args:
+        df: DataFrame with pred_{model_name} columns already added.
+        model_names: List of model names to compare.
+        token_col: Column to use for filtering (default: query_tokens).
+    """
+    # Add token columns if not present
+    if token_col not in df.columns:
+        df = _add_token_columns(df)
+
+    # Compute percentile thresholds
+    p10 = df[token_col].quantile(0.10)
+    p90 = df[token_col].quantile(0.90)
+
+    # Filter to short and long stacktraces
+    short_df = df.filter(pl.col(token_col) <= p10)
+    long_df = df.filter(pl.col(token_col) >= p90)
+
+    # Print metrics for each bucket
+    print(f"\n=== Short stacktraces ({token_col} <= p10 = {p10:.0f} tokens, {len(short_df)} pairs) ===")
+    print(f"label GROUP rate: {(short_df['label'] == 'GROUP').mean():.2%}")
+    print(_compute_metrics(short_df, model_names))
+
+    print(f"\n=== Long stacktraces ({token_col} >= p90 = {p90:.0f} tokens, {len(long_df)} pairs) ===")
+    print(f"label GROUP rate: {(long_df['label'] == 'GROUP').mean():.2%}")
+    print(_compute_metrics(long_df, model_names))
 
 
 if __name__ == "__main__":
@@ -518,6 +600,9 @@ if __name__ == "__main__":
         write_csvs=True,
         display_names={"gte-finetuned": "new"},
     )
+
+    # Compare metrics by stacktrace length
+    compare_metrics_by_stacktrace_length(result.df, result.model_names)
 
     fig = plot_metrics_by_platform(result.df, result.model_names)
     fig.savefig(csv_path.parent / "metrics_by_platform.png", dpi=150, bbox_inches="tight")
