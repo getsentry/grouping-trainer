@@ -1,17 +1,10 @@
-from sentence_transformers import SentenceTransformer as SentenceTransformerOriginal
 import torch
 import torch.nn.functional as F
 
+from grouping_trainer.utils import SentenceTransformer as SentenceTransformerGT
 
-class SentenceTransformer(SentenceTransformerOriginal):
-    """
-    This class was used for a kind of failed experiment where I wanted to see if we could
-    get rid of Python overhead. It works in the long run (2x speedup) but the first 25
-    calls to the model were too slow. Maybe something simple I'm missing re how I'm warming
-    up. I also don't like overriding `tokenize`. Feel like it's easy to silently mess up if
-    we use a different model. I tested correctness for the finetuned grouping model.
-    """
 
+class SentenceTransformer(SentenceTransformerGT):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.buckets = [64, 128, 256, 512, 1024, 2048, 4096]
