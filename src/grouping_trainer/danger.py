@@ -41,22 +41,17 @@ class SentenceTransformer(SentenceTransformerOriginal):
 
     def warmup_and_compile(self):
         self.forward = torch.compile(self.forward, mode="reduce-overhead")
-
         self.eval()
-        device = self.device
 
-        for length in self.buckets:
-            if length > self.max_seq_length:
+        for target_length in self.buckets:
+            if target_length > self.max_seq_length:
                 continue
-            encodings = {
-                "input_ids": torch.zeros((1, length), dtype=torch.long, device=device),
-                "attention_mask": torch.ones((1, length), dtype=torch.long, device=device),
-            }
-            # BERT usually has this.
-            if hasattr(self.tokenizer, "model_input_names") and "token_type_ids" in self.tokenizer.model_input_names:
-                encodings["token_type_ids"] = torch.zeros((1, length), dtype=torch.long, device=device)
+
+            num_words = target_length - self.tokenizer.num_special_tokens_to_add(pair=False)
+            # For BERT: [CLS]...[SEP]
+            text = "a " * num_words
+
             try:
-                with torch.inference_mode():
-                    self.forward(encodings)
+                _ = self.encode(text)
             except Exception as e:
-                print(f"Bucket failed: {length=}: {e}")
+                print(f"Bucket failed {target_length=}: {e}")
