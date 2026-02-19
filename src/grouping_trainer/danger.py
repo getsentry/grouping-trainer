@@ -72,5 +72,5 @@ class SentenceTransformer(SentenceTransformerGT):
         """
         seq_length = input["input_ids"].shape[1]
         if seq_length in self._buckets:
-            return self._compiled_forward(input)
-        return super().forward(input)
+            return self._compiled_forward(input, **kwargs)
+        return super().forward(input, **kwargs)
