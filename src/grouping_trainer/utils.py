@@ -23,6 +23,7 @@ from polars._typing import ConcatMethod
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer as SentenceTransformerOriginal
 import torch
+from transformers import PreTrainedTokenizerBase
 from tqdm.auto import tqdm
 
 
@@ -448,6 +449,16 @@ class SentenceTransformer(SentenceTransformerOriginal):
     Mainly just for the evaluator run, which can only OOM if the CUDA cache is too large (assuming the batch size is
     appropriate / can work).
     """
+
+    @property
+    def tokenizer(self) -> PreTrainedTokenizerBase:
+        return super().tokenizer
+
+    @tokenizer.setter
+    def tokenizer(self, value: PreTrainedTokenizerBase) -> None:
+        self._first_module().tokenizer = value
+
+    # The getter and setter above are just for type hints. SentenceTransformer annotates it as Any
 
     @_retry_cuda_errors_once
     def encode(self, texts: str | list[str], **kwargs):
