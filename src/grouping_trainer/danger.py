@@ -5,9 +5,14 @@ from grouping_trainer.utils import SentenceTransformer as SentenceTransformerGT
 
 
 class SentenceTransformer(SentenceTransformerGT):
+    """
+    Python is too slow for this small model and batch size 1. Need to compile.
+    Would be nice to show a profile comparing them.
+    """
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.buckets = [64, 128, 256, 512, 1024, 2048, 4096]
+        self._buckets = (64, 128, 256, 512, 1024, 2048)
 
     def tokenize(self, texts: list[str], **kwargs) -> dict[str, torch.Tensor]:
         """
@@ -16,7 +21,7 @@ class SentenceTransformer(SentenceTransformerGT):
         encodings = super().tokenize(texts, **kwargs)
         current_len = encodings["input_ids"].shape[1]
         target_len = current_len
-        for bucket in self.buckets:
+        for bucket in self._buckets:
             if bucket >= current_len:
                 target_len = bucket
                 break
@@ -36,7 +41,7 @@ class SentenceTransformer(SentenceTransformerGT):
         self.forward = torch.compile(self.forward, mode="reduce-overhead")
         self.eval()
 
-        for target_length in self.buckets:
+        for target_length in self._buckets:
             if target_length > self.max_seq_length:
                 continue
 
