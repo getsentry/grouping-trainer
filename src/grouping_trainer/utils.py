@@ -17,7 +17,10 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from IPython.display import display
+try:
+    from IPython.display import display
+except ImportError:
+    display = print
 import polars as pl
 from polars._typing import ConcatMethod
 from pydantic import BaseModel
