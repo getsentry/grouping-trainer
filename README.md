@@ -11,13 +11,24 @@ In a Workbench GPU instance (at least an L4, A100 recommended), open the termina
 
 ```bash
 export GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=github-token-grouping-trainer-temp --project=996102297610)
+export WANDB_API_KEY=$(gcloud secrets versions access latest --secret=wandb-api-key --project=996102297610)
 ```
 
 ```bash
 git clone https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git
 ```
 
-Then open [`./train.ipynb`](./train.ipynb) and run the cells.
+```bash
+gsutil -m cp -r wandb gs://grouping-data/runs/{OUTPUT_DIR}
+```
+
+```bash
+gsutil -m rsync -r {OUTPUT_DIR} gs://grouping-data/runs/{OUTPUT_DIR}/training
+```
+
+```bash
+gsutil -m cp -r train.ipynb gs://grouping-data/runs/{OUTPUT_DIR}
+```
 
 TODO: enable DDP training. Finetuning [gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) w/
 sdpa takes ~5 hours w/ 1 A100 80 GB. Our quota in
