@@ -16,7 +16,7 @@ assert torch.cuda.is_available()
 
 timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
-RUN_SHORTNAME = "gte-lr-2e-5"
+RUN_SHORTNAME = "gte-no-synthetic-semi-easy-negatives"
 
 SAMPLE_TRAIN: int | None = None if torch.cuda.is_available() else 30
 SAMPLE_VAL: int | None = 8000 if torch.cuda.is_available() else 20
@@ -68,6 +68,7 @@ len(dataset_val)
 dataset_dict_train, frac_positive = utils.load_train_dataset_dict(
     sample_size=SAMPLE_TRAIN,
     min_dataset_size=PER_DEVICE_TRAIN_BATCH_SIZE,
+    paths=("final_csvs/train.csv",),
     # paths=("final_csvs/train-no-sentry.csv", "final_csvs/synthetic-semi-easy-negatives.csv"),
 )
 len(dataset_dict_train)
@@ -112,7 +113,7 @@ trainer = gt.train.Trainer(
         seed=42,  # passed to batch sampler
         #
         # Optimizer
-        learning_rate=2e-5,
+        learning_rate=1e-4,
         learning_rate_mapping={
             # These are important to tune. Higher so that training doesn't get stuck. TODO: check
             r"^log_scale$": 2e-4,
@@ -142,8 +143,9 @@ trainer = gt.train.Trainer(
     loss=gt.train.SigmoidPairwiseLoss(
         model,
         bias_init=init_bias(frac_positive),
-        log_of_scale_init=torch.tensor(2).log(),
+        log_of_scale_init=torch.tensor(5).log(),
         matryoshka_dims=[768, 512, 256, 128, 64],
+        matryoshka_weights=[2, 1, 1, 0.5, 0.25],
         n_dims_per_step=2,
     ),
     data_collator=gt.train.DefaultDataCollator(tokenize_fn=model.tokenize),
