@@ -144,7 +144,6 @@ trainer = gt.train.Trainer(
         bias_init=init_bias(frac_positive),
         log_of_scale_init=torch.tensor(2).log(),
         matryoshka_dims=[768, 512, 256, 128, 64],
-        matryoshka_weights=[2, 1, 1, 0.5, 0.25],
         n_dims_per_step=2,
     ),
     data_collator=gt.train.DefaultDataCollator(tokenize_fn=model.tokenize),
