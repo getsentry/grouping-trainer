@@ -36,6 +36,7 @@ conda activate gt-env
 pip install -e .
 ```
 
+Run using `screen`
 
 ```bash
 gsutil -m cp -r wandb gs://grouping-data/runs/{OUTPUT_DIR}
@@ -46,7 +47,7 @@ gsutil -m rsync -r {OUTPUT_DIR} gs://grouping-data/runs/{OUTPUT_DIR}/training
 ```
 
 ```bash
-gsutil -m cp -r train.ipynb gs://grouping-data/runs/{OUTPUT_DIR}
+gsutil -m cp -r train.py gs://grouping-data/runs/{OUTPUT_DIR}
 ```
 
 TODO: enable DDP training. Finetuning [gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) w/
