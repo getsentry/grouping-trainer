@@ -7,7 +7,9 @@ Training code for Sentry's AI grouping model.
 
 ## Usage
 
-In a Workbench GPU instance (at least an L4, A100 recommended), open the terminal and:
+```bash
+gcloud compute instances create h100-flex --project=ml-ai-420606 --zone=us-central1-a --machine-type=a3-highgpu-1g --network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default --metadata=enable-osconfig=TRUE --maintenance-policy=TERMINATE --provisioning-model=FLEX_START --instance-termination-action=DELETE --max-run-duration=172800s --service-account=996102297610-compute@developer.gserviceaccount.com --scopes=https://www.googleapis.com/auth/cloud-platform --accelerator=count=1,type=nvidia-h100-80gb --create-disk=auto-delete=yes,boot=yes,device-name=h100-flex,image=projects/ml-images/global/images/c0-deeplearning-common-cu124-v20250325-debian-11-py310-conda,mode=rw,size=50,type=pd-balanced --no-shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring --labels=goog-ops-agent-policy=v2-x86-template-1-4-0,goog-ec-src=vm_add-gcloud --reservation-affinity=none && printf 'agentsRule:\n  packageState: installed\n  version: latest\ninstanceFilter:\n  inclusionLabels:\n  - labels:\n      goog-ops-agent-policy: v2-x86-template-1-4-0\n' > config.yaml && gcloud compute instances ops-agents policies create goog-ops-agent-v2-x86-template-1-4-0-us-central1-a --project=ml-ai-420606 --zone=us-central1-a --file=config.yaml && gcloud compute resource-policies create snapshot-schedule default-schedule-1 --project=ml-ai-420606 --region=us-central1 --max-retention-days=14 --on-source-disk-delete=keep-auto-snapshots --daily-schedule --start-time=20:00 && gcloud compute disks add-resource-policies h100-flex --project=ml-ai-420606 --zone=us-central1-a --resource-policies=projects/ml-ai-420606/regions/us-central1/resourcePolicies/default-schedule-1
+```
 
 ```bash
 export GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=github-token-grouping-trainer-temp --project=996102297610)
@@ -17,6 +19,19 @@ export WANDB_API_KEY=$(gcloud secrets versions access latest --secret=wandb-api-
 ```bash
 git clone https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git
 ```
+
+Make a venv
+
+```bash
+conda deactivate
+
+conda create -n gt-env python=3.10 -y
+
+conda activate gt-env
+
+pip install -e .
+```
+
 
 ```bash
 gsutil -m cp -r wandb gs://grouping-data/runs/{OUTPUT_DIR}
