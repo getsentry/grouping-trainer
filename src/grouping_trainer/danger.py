@@ -44,7 +44,8 @@ class SentenceTransformer(SentenceTransformerGT):
         return encodings
 
     def warmup_and_compile(self):
-        self._compiled_forward = torch.compile(super().forward, mode="reduce-overhead")
+        self._compiled_forward = torch.compile(super().forward, mode="reduce-overhead", dynamic=False)
+        # Compile a shape-specialized forward (no dynamic shapes) so each bucket gets cached CUDA graph
         self.eval()
 
         for target_length in self._buckets:
