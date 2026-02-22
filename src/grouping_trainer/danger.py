@@ -8,7 +8,18 @@ from grouping_trainer.utils import SentenceTransformer as SentenceTransformerGT
 class SentenceTransformer(SentenceTransformerGT):
     """
     Python is too slow for this small model and batch size 1. Need to compile.
-    Would be nice to show a profile comparing them.
+    Cost: warming up the cached graphs can take 60 seconds.
+
+    The profile of `.encode` calls should show:
+
+    Before::
+
+        python -> cuda -> python -> cuda -> python -> cuda -> python -> cuda -> python
+
+    After::
+
+        python -> cuda graph launch -> python
+
     """
 
     def __init__(self, *args, **kwargs):
@@ -45,7 +56,7 @@ class SentenceTransformer(SentenceTransformerGT):
 
     def warmup_and_compile(self):
         self._compiled_forward = torch.compile(super().forward, mode="reduce-overhead", dynamic=False)
-        # Compile a shape-specialized forward (no dynamic shapes) so each bucket gets cached CUDA graph
+        # dynamic=False forces Dynamo to build strictly static graphs for our buckets. Don't let it generalize shapes.
         self.eval()
 
         for target_length in self._buckets:
@@ -60,16 +71,22 @@ class SentenceTransformer(SentenceTransformerGT):
             # There are other approaches like creating the encoding ourselves, padding to the target length, and calling
             # .forward() (under inference_mode) ourselves. This approach didn't perform well—maybe b/c of subtle
             # differences in how .encode works. I prefer going through .encode and being loud about missing the target.
+            # To debug that other approach, can check which guards fail using TORCH_LOGS="recompiles" in a non-prod
+            # env.
             if self.tokenize([text])["input_ids"].shape[1] != target_length:
                 raise ValueError(f"Tokenization failed for {target_length=}")
 
             _ = self.encode(text)
 
+        # TODO: we could also end by encoding a 8192-length sequence to reserve a bunch of memory. Our model isn't that
+        # big. There is very likely enough room left to reserve our max seq length after the cached graphs are filled. I
+        # think this would be a pretty small optimization.
+
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
         """
         Only use the compiled forward if the sequence length matches one of our buckets. If we used the compiled forward
         for one that doesn't hit the bucket, we create a new CUDA graph for every unique sequence length above
-        2048—thrashing the cache.
+        2048, which thrashes the cache.
         """
         seq_length = input["input_ids"].shape[1]
         if seq_length in self._buckets:
