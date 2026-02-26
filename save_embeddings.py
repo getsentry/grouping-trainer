@@ -36,15 +36,15 @@ class ModelConfigs(BaseModel):
 
 
 class DataConfig(BaseModel):
-    val_df_path: str
+    df_path: str
     sample_size: int | None = None
 
 
 timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
-RUN_SHORTNAME = "val"
+RUN_SHORTNAME = "val-and-test"
 DATA_CONFIG = DataConfig(
-    val_df_path="final_csvs/val.csv",
+    df_path="final_csvs/val_and_test.csv",
     sample_size=None,
     # sample_size=100,
 )
@@ -84,9 +84,11 @@ def encode_timed(
     return np.array(embeddings), times
 
 
-df = utils.load_val_df(path=DATA_CONFIG.val_df_path, sample_size=DATA_CONFIG.sample_size)
+df = utils.load_val_df(path=DATA_CONFIG.df_path, sample_size=DATA_CONFIG.sample_size)
 print(df.shape)
 print(df.columns)
+
+model_config_name_to_query_and_candidate_embeddings: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
 for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
     print(model_config)
@@ -118,6 +120,8 @@ for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
     candidate_texts = df["candidate_stacktrace_string"].to_list()
     candidate_embeddings, candidate_times = encode_timed(model, candidate_texts, progress_bar_desc="Candidates")
 
+    model_config_name_to_query_and_candidate_embeddings[model_config.name] = (query_embeddings, candidate_embeddings)
+
     cos_sims = pairwise_cos_sim(query_embeddings, candidate_embeddings).detach().cpu().numpy()
 
     df = df.with_columns(
@@ -137,3 +141,8 @@ with open(f"{OUTPUT_DIR}/data_config.json", "w") as f:
     json.dump(DATA_CONFIG.model_dump(), f, indent=4)
 
 df.write_csv(f"{OUTPUT_DIR}/similarities.csv")
+
+for model_name, (query_embs, candidate_embs) in model_config_name_to_query_and_candidate_embeddings.items():
+    np.save(f"{OUTPUT_DIR}/{model_name}_query_embeddings.npy", query_embs)
+    np.save(f"{OUTPUT_DIR}/{model_name}_candidate_embeddings.npy", candidate_embs)
+    print(f"Saved embeddings for {model_name}: query {query_embs.shape}, candidate {candidate_embs.shape}")
