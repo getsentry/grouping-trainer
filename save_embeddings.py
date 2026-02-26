@@ -88,7 +88,7 @@ df = utils.load_val_df(path=DATA_CONFIG.df_path, sample_size=DATA_CONFIG.sample_
 print(df.shape)
 print(df.columns)
 
-model_config_name_to_query_and_candidate_embeddings: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+model_name_to_query_and_candidate_embeddings: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
 for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
     print(model_config)
@@ -98,14 +98,18 @@ for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
     else:
         st_class = gt.utils.SentenceTransformer
 
+    print(f"Loading model {model_config.name} from {model_config.path}")
+    start = time.monotonic()
     model = st_class(
         model_config.path,
         trust_remote_code=True,
         truncate_dim=model_config.truncate_dim,
         model_kwargs=model_config.model_kwargs,
     )
+    end = time.monotonic()
+    load_time = round(end - start, 1)
+    print(f"Model loaded in {load_time} seconds.")
 
-    start = time.monotonic()
     if hasattr(model, "warmup_and_compile"):
         model.warmup_and_compile()
     else:
@@ -120,7 +124,7 @@ for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
     candidate_texts = df["candidate_stacktrace_string"].to_list()
     candidate_embeddings, candidate_times = encode_timed(model, candidate_texts, progress_bar_desc="Candidates")
 
-    model_config_name_to_query_and_candidate_embeddings[model_config.name] = (query_embeddings, candidate_embeddings)
+    model_name_to_query_and_candidate_embeddings[model_config.name] = (query_embeddings, candidate_embeddings)
 
     cos_sims = pairwise_cos_sim(query_embeddings, candidate_embeddings).detach().cpu().numpy()
 
@@ -131,6 +135,7 @@ for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
             pl.Series(name=f"candidate_encode_time_{model_config.name}", values=candidate_times),
         ]
     )
+    print()
 
 os.mkdir(OUTPUT_DIR)
 
@@ -141,8 +146,9 @@ with open(f"{OUTPUT_DIR}/data_config.json", "w") as f:
     json.dump(DATA_CONFIG.model_dump(), f, indent=4)
 
 df.write_csv(f"{OUTPUT_DIR}/similarities.csv")
+print(f"Saved similarities to {OUTPUT_DIR}/similarities.csv")
 
-for model_name, (query_embs, candidate_embs) in model_config_name_to_query_and_candidate_embeddings.items():
+for model_name, (query_embs, candidate_embs) in model_name_to_query_and_candidate_embeddings.items():
     np.save(f"{OUTPUT_DIR}/{model_name}_query_embeddings.npy", query_embs)
     np.save(f"{OUTPUT_DIR}/{model_name}_candidate_embeddings.npy", candidate_embs)
     print(f"Saved embeddings for {model_name}: query {query_embs.shape}, candidate {candidate_embs.shape}")
