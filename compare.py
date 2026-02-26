@@ -586,7 +586,7 @@ if __name__ == "__main__":
     # min_project_size = None
     # max_model1_group_rate = None
 
-    csv_path = Path("similarities/2026-01-08-13-19-08-test/similarities.csv")
+    csv_path = Path("similarities/test-val-combined/similarities.csv")
     thresholds = {
         "prod": 0.99,
         "gte-finetuned": 0.80,
