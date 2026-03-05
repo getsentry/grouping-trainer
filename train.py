@@ -8,11 +8,10 @@ import torch
 import wandb
 
 import grouping_trainer as gt
-import utils
-
-wandb.login()
 
 assert torch.cuda.is_available()
+
+wandb.login()
 
 timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
 
@@ -30,6 +29,9 @@ EVAL_STEPS = 300
 PER_DEVICE_TOKEN_BUDGET = 8192 * 4  # increased for A100 80GB
 
 OUTPUT_DIR = f"./{timestamp}-{RUN_SHORTNAME}-output"
+GCS_DIR = f"gs://grouping-data/runs/{timestamp}-{RUN_SHORTNAME}"
+
+wandb.init(project="grouping-trainer", name=f"{timestamp}-{RUN_SHORTNAME}")
 
 assert (EVAL_STEPS % 5) == 0, "pls for sanity make it divisible by 5"
 
@@ -62,10 +64,10 @@ assert "batch" not in repr(model[0].auto_model).lower()
 
 _ = model.encode("test")
 
-dataset_val = gt.train.df_to_dataset(utils.load_val_df(sample_size=SAMPLE_VAL))
+dataset_val = gt.train.df_to_dataset(gt.data.load_val_df(sample_size=SAMPLE_VAL))
 len(dataset_val)
 
-dataset_dict_train, frac_positive = utils.load_train_dataset_dict(
+dataset_dict_train, frac_positive = gt.data.load_train_dataset_dict(
     sample_size=SAMPLE_TRAIN,
     min_dataset_size=PER_DEVICE_TRAIN_BATCH_SIZE,
     paths=("final_csvs/train.csv",),
@@ -74,19 +76,6 @@ dataset_dict_train, frac_positive = utils.load_train_dataset_dict(
 len(dataset_dict_train)
 
 sum(dataset_dict_train.num_rows.values())
-
-evaluator = gt.evaluator.MinPrecisionEvaluator(
-    sentences1=list(dataset_val["query_stacktrace_string"]),
-    sentences2=list(dataset_val["candidate_stacktrace_string"]),
-    labels=[int(record["label"]) for record in dataset_val],
-    name="val",
-    show_progress_bar=True,
-    batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
-    truncate_dims=(64, 768),
-)
-
-evaluator(model)
-
 
 def init_bias(frac_positive: float):
     return math.log(frac_positive / (1 - frac_positive))
@@ -153,10 +142,14 @@ trainer = gt.train.Trainer(
     shuffle_within_dataset=False,  # more cache hits in each forward
     per_device_token_budget=PER_DEVICE_TOKEN_BUDGET,
     #
-    # Evaluator
-    eval_dataset=dataset_val,  # val loss
-    evaluator=evaluator,  # val recall at x precision
+    # Eval (val loss only; precision/recall eval runs async on a separate machine)
+    eval_dataset=dataset_val,
+    #
+    # Callbacks
+    callbacks=[gt.train.GCSCheckpointUploadCallback(gcs_dir=GCS_DIR)],
 )
+
+print(f"\nRun on L4: python eval/eval_poller.py --gcs-dir {GCS_DIR} --wandb-run-id {wandb.run.id}\n")
 
 warnings.filterwarnings(
     "ignore",

@@ -6,4 +6,4 @@ __pycache__/
 final_csvs/
 output/
 gte-finetuned/
-similarities/
+eval/similarities/

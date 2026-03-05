@@ -8,6 +8,7 @@ from . import utils
 from . import train
 from . import evaluator
 from . import danger
+from . import data
 
 __all__ = [
     "__version__",
@@ -15,4 +16,5 @@ __all__ = [
     "train",
     "evaluator",
     "danger",
+    "data",
 ]

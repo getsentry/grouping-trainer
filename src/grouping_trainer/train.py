@@ -1,4 +1,8 @@
+import logging
+import os
 import random
+import subprocess
+import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
 from contextlib import nullcontext
@@ -20,10 +24,13 @@ from torch.utils.data import (
     default_collate,
 )
 from tqdm.auto import tqdm
+from transformers import TrainerCallback, TrainerState, TrainerControl, TrainingArguments
 from transformers.utils.import_utils import (
     is_torch_cuda_available,
     is_torch_mps_available,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | None = None) -> Dataset:
@@ -232,6 +239,9 @@ class Trainer(SentenceTransformerTrainer):
         """
         return inputs, inputs["label"]
 
+    def _count_tokens(self, text: str) -> int:
+        return self.model.tokenize([text])["input_ids"].shape[1]
+
     def training_step(
         self,
         model: torch.nn.Module,
@@ -301,7 +311,9 @@ class Trainer(SentenceTransformerTrainer):
             self.accelerator.distributed_type == DistributedType.MULTI_GPU and self.accelerator.sync_gradients
         )
 
-        sub_batches = batch_pairs_by_token_budget(inputs, token_budget=self.per_device_token_budget)
+        sub_batches = batch_pairs_by_token_budget(
+            inputs, token_budget=self.per_device_token_budget, count_tokens=self._count_tokens
+        )
         sub_iter = iter(sub_batches)
         prev_sub_batch = next(sub_iter)
         losses = []
@@ -437,3 +449,60 @@ class SigmoidPairwiseLoss(torch.nn.Module):
             batch["candidate_stacktrace_string"],
         )
         return self.compute_loss_mrl(query_embeddings, candidate_embeddings, labels.float())
+
+
+class GCSCheckpointUploadCallback(TrainerCallback):
+    """
+    Uploads checkpoints to GCS in a background thread after each save.
+
+    Writes a `.done` sentinel after each checkpoint upload so that a polling evaluator knows the upload is complete.
+    Writes a `.training_done` sentinel when training ends.
+    """
+
+    def __init__(self, gcs_dir: str):
+        self.gcs_dir = gcs_dir.rstrip("/")
+        self._prev_thread: threading.Thread | None = None
+
+    def _join_prev_thread(self):
+        if self._prev_thread is not None:
+            self._prev_thread.join()
+            self._prev_thread = None
+
+    def _upload_checkpoint(self, checkpoint_path: str, gcs_dest: str):
+        try:
+            subprocess.run(
+                ["gsutil", "-m", "rsync", "-r", checkpoint_path, gcs_dest],
+                check=True,
+            )
+            # Sentinel indicating upload is complete
+            subprocess.run(
+                ["gsutil", "cp", "-", f"{gcs_dest}/.done"],
+                input=b"",
+                check=True,
+            )
+            logger.info(f"Uploaded checkpoint to {gcs_dest}")
+        except subprocess.CalledProcessError:
+            logger.exception(f"Failed to upload checkpoint to {gcs_dest}")
+
+    def on_save(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+        # Join previous upload to avoid racing with save_total_limit cleanup
+        self._join_prev_thread()
+
+        checkpoint_path = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        gcs_dest = f"{self.gcs_dir}/checkpoint-{state.global_step}"
+
+        thread = threading.Thread(target=self._upload_checkpoint, args=(checkpoint_path, gcs_dest))
+        thread.start()
+        self._prev_thread = thread
+
+    def on_train_end(self, args, state, control, **kwargs):
+        self._join_prev_thread()
+        try:
+            subprocess.run(
+                ["gsutil", "cp", "-", f"{self.gcs_dir}/.training_done"],
+                input=b"",
+                check=True,
+            )
+            logger.info("Wrote .training_done sentinel")
+        except subprocess.CalledProcessError:
+            logger.exception("Failed to write .training_done sentinel")

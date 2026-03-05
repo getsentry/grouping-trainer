@@ -578,7 +578,7 @@ def compare_metrics_by_stacktrace_length(
 
 
 if __name__ == "__main__":
-    # csv_path = Path("similarities/2026-01-08-13-28-41-sentry/similarities.csv")
+    # csv_path = Path("eval/similarities/2026-01-08-13-28-41-sentry/similarities.csv")
     # thresholds = {
     #     "prod": 0.99,
     #     "gte-finetuned": 0.60,
@@ -586,7 +586,7 @@ if __name__ == "__main__":
     # min_project_size = None
     # max_model1_group_rate = None
 
-    csv_path = Path("similarities/test-val-combined/similarities.csv")
+    csv_path = Path("eval/similarities/2026-02-26-16-25-36-val-and-test/similarities.csv")
     thresholds = {
         "prod": 0.99,
         "gte-finetuned": 0.80,
