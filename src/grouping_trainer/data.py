@@ -1,6 +1,8 @@
 from functools import lru_cache
+from typing import TypedDict
 from datasets import DatasetDict
 import polars as pl
+import torch
 
 import grouping_trainer as gt
 
@@ -110,3 +112,16 @@ def load_train_dataset_dict(
     dataset_dict_train = gt.train.create_project_dataset_dict(df, min_dataset_size=min_dataset_size)
     frac_positive = (df["label"] == "GROUP").mean()
     return dataset_dict_train, frac_positive
+
+
+class Record(TypedDict):
+    query_stacktrace_string: str
+    candidate_stacktrace_string: str
+    label: int
+
+
+class Batch(TypedDict):
+    query_stacktrace_string: list[str]
+    candidate_stacktrace_string: list[str]
+    label: torch.Tensor
+    # NOTE: "label" is hardcoded in SentenceTransformerTrainer.collect_features, but we overrode it
