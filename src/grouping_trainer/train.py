@@ -480,8 +480,9 @@ def run(
 
     # Set up model
     gt.utils._cuda_empty_cache()
-    assert "layernorm" in repr(model[0].auto_model).lower()
-    assert "batch" not in repr(model[0].auto_model).lower(), "Batch norm messes up the deduplication strategy"
+    assert "batch" not in repr(model[0].auto_model).lower(), (
+        "Batch transformations like batch norm mess up deduplication"
+    )
     model = gt.loss.add_head_to_model(
         model,
         gt.loss.CalibrationHead(

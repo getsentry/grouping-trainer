@@ -15,7 +15,6 @@ import time
 
 from pydantic import BaseModel, Field
 from tap import tapify
-import torch
 import wandb
 
 import grouping_trainer as gt
@@ -112,12 +111,10 @@ def main(args: EvalPollerConfig | None = None):
                 model.warmup_and_compile()
 
                 loss_from_similarities = None
-                loss_path = os.path.join(tmp_dir, "loss.pt")
-                if os.path.exists(loss_path):
-                    # Dummy init values that will be overwritten by the checkpoint:
-                    loss = gt.loss.SigmoidPairwiseLoss()
+                head_for_loss_path = os.path.join(tmp_dir, "calibration_head.pt")
+                if os.path.exists(head_for_loss_path):
                     gt.loss.add_head_to_model_from_checkpoint(model, tmp_dir)
-                    loss.load_state_dict(torch.load(loss_path, map_location=model.device), strict=False)
+                    loss = gt.loss.SigmoidPairwiseLoss()
                     loss.eval()
                     loss_from_similarities = loss.compute_loss_from_similarities
 

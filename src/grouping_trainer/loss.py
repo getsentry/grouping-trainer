@@ -14,7 +14,7 @@ class CalibrationHead(torch.nn.Module):
     `bias_init` is highly dependent on the dataset. Start w/ log-odds if unsure.
     """
 
-    def __init__(self, *, bias_init: float, log_of_scale_init: torch.Tensor = torch.tensor(5.0).log()):
+    def __init__(self, *, bias_init: float = 0.0, log_of_scale_init: torch.Tensor = torch.tensor(5.0).log()):
         super().__init__()
         self.log_scale = torch.nn.Parameter(log_of_scale_init.clone().detach())
         self.bias = torch.nn.Parameter(torch.tensor(bias_init))
@@ -37,7 +37,7 @@ def add_head_to_model(model: SentenceTransformer, calibration_head: CalibrationH
 
 
 def add_head_to_model_from_checkpoint(model: SentenceTransformer, checkpoint_dir: str) -> None:
-    model.calibration_head = CalibrationHead(bias_init=0.0)
+    model.calibration_head = CalibrationHead()
     state = torch.load(os.path.join(checkpoint_dir, "calibration_head.pt"), map_location="cpu")
     model.calibration_head.load_state_dict(state)
     model.calibration_head.to(model.device)
@@ -47,6 +47,7 @@ class FeaturesWithHead(TypedDict):
     query_embeddings: torch.Tensor
     candidate_embeddings: torch.Tensor
     calibration_head: CalibrationHead
+    # TODO: rename to head_for_loss, type as nn.Module, pass type for add_head_to_model_from_checkpoint
 
 
 class SigmoidPairwiseLoss(torch.nn.Module):
