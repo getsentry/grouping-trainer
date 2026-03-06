@@ -206,12 +206,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         embeddings1 = torch.stack([sentence_to_embedding[sentence] for sentence in self.sentences1])
         embeddings2 = torch.stack([sentence_to_embedding[sentence] for sentence in self.sentences2])
 
-        full_dim = embeddings1.shape[-1]
-        if self.truncate_dims is None:
-            dims = (full_dim,)
-        else:
-            dims = self.truncate_dims
-
+        dims = (embeddings1.shape[-1],) if self.truncate_dims is None else self.truncate_dims
         metric_name_to_value: dict[str, float] = {}
         for dim in dims:
             embeddings1_truncated = embeddings1[..., :dim]

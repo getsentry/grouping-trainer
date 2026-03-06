@@ -299,12 +299,6 @@ class Trainer(SentenceTransformerTrainer):
 
                 return loss.detach()
 
-        # Whether we should suppress gradient synchronization for intermediate microbatches.
-        # If we're not syncing gradients anyway (e.g. during outer gradient accumulation), no_sync is unnecessary.
-        should_no_sync = (
-            self.accelerator.distributed_type == DistributedType.MULTI_GPU and self.accelerator.sync_gradients
-        )
-
         sub_batches = batch_pairs_by_token_budget(
             inputs, token_budget=self.per_device_token_budget, count_tokens=self._count_tokens
         )
@@ -312,13 +306,14 @@ class Trainer(SentenceTransformerTrainer):
         prev_sub_batch = next(sub_iter)
         losses = []
 
-        # Process all but the last with no_sync
+        # Backward all but the last with no_sync
+        # Nesting another no_sync would break FSDP2. Its no_sync unconditionally re-enables sync on exit
+        should_no_sync = self.accelerator.sync_gradients
         for next_sub_batch in sub_iter:
             loss = _backward_on_sub_batch(prev_sub_batch, no_sync=should_no_sync)
             prev_sub_batch = next_sub_batch
             losses.append(loss)
 
-        # Finally sync gradients for the last sub-batch.
         loss = _backward_on_sub_batch(prev_sub_batch, no_sync=False)
         losses.append(loss)
 
