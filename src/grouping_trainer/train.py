@@ -1,4 +1,6 @@
+from datetime import datetime
 import logging
+import math
 import os
 import random
 import subprocess
@@ -6,13 +8,17 @@ import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
 from contextlib import nullcontext
-from typing import Callable, TypedDict
+from typing import Annotated, Callable, Literal, TypedDict, cast, overload
+import warnings
 
 from accelerate import DistributedType
 import numpy as np
 import polars as pl
-from sentence_transformers import SentenceTransformer
+from annotated_types import MultipleOf
+from pydantic import BaseModel, ConfigDict
+from sentence_transformers import SentenceTransformer, SentenceTransformerTrainingArguments
 from sentence_transformers.data_collator import SentenceTransformerDataCollator
+from sentence_transformers.training_args import MultiDatasetBatchSamplers
 import torch
 from datasets import Dataset, DatasetDict
 from sentence_transformers.trainer import SentenceTransformerTrainer
@@ -25,10 +31,14 @@ from torch.utils.data import (
 )
 from tqdm.auto import tqdm
 from transformers import TrainerCallback, TrainerState, TrainerControl, TrainingArguments
+from transformers.trainer_utils import TrainOutput
 from transformers.utils.import_utils import (
     is_torch_cuda_available,
     is_torch_mps_available,
 )
+import wandb
+
+import grouping_trainer as gt
 
 logger = logging.getLogger(__name__)
 
@@ -506,3 +516,161 @@ class GCSCheckpointUploadCallback(TrainerCallback):
             logger.info("Wrote .training_done sentinel")
         except subprocess.CalledProcessError:
             logger.exception("Failed to write .training_done sentinel")
+
+
+class TrainingConfig(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    run_shortname: str
+
+    # Training args
+    per_device_train_batch_size: int
+    per_device_token_budget: int
+    training_csvs: tuple[str, ...] = ("final_csvs/train.csv", "final_csvs/synthetic-semi-easy-negatives.csv")
+    sample_size_train: int | None = None  # downsample for CPU sanity check runs
+    gradient_checkpointing: bool = False
+    log_of_scale_init: float = math.log(5)
+    learning_rate: float = 1e-4
+    learning_rate_mapping: dict[str, float] = {r"^log_scale$": 2e-4, r"^bias$": 2e-4}
+    weight_decay: float = 0.01
+    warmup_ratio: float = 0.1
+    # MRL
+    matryoshka_dims: tuple[int, ...] = (768, 512, 256, 128, 64)
+    matryoshka_weights: tuple[float, ...] = (2.0, 1.0, 1.0, 0.5, 0.25)
+    n_dims_per_step: int = 2
+    # Val args
+    per_device_eval_batch_size: int = 1  # use danger, never OOM
+    eval_steps: Annotated[int, MultipleOf(10)] = 300
+    sample_size_val: int | None = None
+    # Logging
+    wandb_project: str = "grouping-trainer"
+
+
+def init_bias(frac_positive: float) -> float:
+    return math.log(frac_positive / (1 - frac_positive))
+
+
+@overload
+def run(model: SentenceTransformer, training_config: TrainingConfig, just_make_trainer: Literal[True]) -> Trainer: ...
+
+
+@overload
+def run(
+    model: SentenceTransformer, training_config: TrainingConfig, just_make_trainer: Literal[False] = ...
+) -> TrainOutput: ...
+
+
+def run(
+    model: SentenceTransformer, training_config: TrainingConfig, just_make_trainer: bool = False
+) -> Trainer | TrainOutput:
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    run_name = f"{timestamp}-{training_config.run_shortname}"
+
+    # Set up model
+    gt.utils._cuda_empty_cache()
+    assert "layernorm" in repr(model[0].auto_model).lower()
+    assert "batch" not in repr(model[0].auto_model).lower(), "Batch norm messes up the deduplication strategy"
+    _ = model.encode("test")
+
+    # Load data
+    dataset_val = df_to_dataset(gt.data.load_val_df(sample_size=training_config.sample_size_val))
+    print(f"Validation dataset: {len(dataset_val):,} rows")
+    dataset_dict_train, frac_positive = gt.data.load_train_dataset_dict(
+        sample_size=training_config.sample_size_train,
+        min_dataset_size=training_config.per_device_train_batch_size,
+        paths=training_config.training_csvs,
+    )
+    print(f"Training dataset: {len(dataset_dict_train):,} projects, {sum(dataset_dict_train.num_rows.values()):,} rows")
+
+    # Build trainer
+    trainer = gt.train.Trainer(
+        model=model,
+        args=SentenceTransformerTrainingArguments(
+            output_dir=f"./{run_name}-output",
+            bf16=torch.cuda.is_bf16_supported(),
+            fp16=False,
+            dataloader_pin_memory=torch.cuda.is_available(),
+            num_train_epochs=1,
+            gradient_checkpointing=training_config.gradient_checkpointing,
+            #
+            # Datalaoder
+            multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL,
+            # Each iter, pick a project randomly, sample from it.
+            # Next iter, pick another project randomly, sample from it, etc.
+            per_device_train_batch_size=training_config.per_device_train_batch_size,
+            seed=42,  # passed to batch sampler
+            #
+            # Optimizer
+            learning_rate=training_config.learning_rate,
+            learning_rate_mapping=training_config.learning_rate_mapping,
+            weight_decay=training_config.weight_decay,
+            warmup_ratio=training_config.warmup_ratio,
+            #
+            # Eval
+            per_device_eval_batch_size=training_config.per_device_eval_batch_size,
+            eval_strategy="steps",
+            eval_steps=training_config.eval_steps,
+            #
+            # Logging
+            logging_strategy="steps",
+            logging_steps=training_config.eval_steps // 10,  # train loss alongside metrics table
+            run_name=run_name,
+            report_to="wandb" if not just_make_trainer else "none",
+            #
+            # Checkpointing
+            save_strategy="steps",
+            save_steps=training_config.eval_steps // 2,
+            save_total_limit=2,
+        ),
+        #
+        # Training
+        loss=gt.train.SigmoidPairwiseLoss(
+            model,
+            bias_init=init_bias(frac_positive),
+            log_of_scale_init=torch.tensor(training_config.log_of_scale_init),
+            matryoshka_dims=list(training_config.matryoshka_dims),
+            matryoshka_weights=list(training_config.matryoshka_weights),
+            n_dims_per_step=training_config.n_dims_per_step,
+        ),
+        data_collator=gt.train.DefaultDataCollator(tokenize_fn=model.tokenize),
+        train_dataset=dataset_dict_train,
+        shuffle_within_dataset=False,  # more cache hits in each forward
+        per_device_token_budget=training_config.per_device_token_budget,
+        #
+        # Eval (val loss only; precision/recall eval runs async on a separate machine)
+        eval_dataset=dataset_val,
+    )
+
+    if just_make_trainer:
+        return trainer
+
+    # Set up wandb + GCS for real training
+    wandb.login()
+    gcs_dir = f"gs://grouping-data/runs/{run_name}"
+    wandb.init(project=training_config.wandb_project, name=run_name)
+    trainer.add_callback(gt.train.GCSCheckpointUploadCallback(gcs_dir=gcs_dir))
+
+    print(f"\nRun on L4: python eval/eval_poller.py --gcs-dir {gcs_dir} --wandb-run-id {wandb.run.id}\n")
+
+    warnings.filterwarnings(
+        "ignore",
+        message=".*torch.utils.checkpoint: the use_reentrant parameter.*",
+        category=UserWarning,
+    )
+
+    train_output = cast(TrainOutput, trainer.train())
+    trainer.save_model()
+
+    # Upload wandb artifacts and final model to GCS
+    output_dir = f"./{run_name}-output"
+    subprocess.run(
+        ["gsutil", "-m", "cp", "-r", "wandb", f"{gcs_dir}/wandb"],
+        check=True,
+    )
+    subprocess.run(
+        ["gsutil", "-m", "rsync", "-r", output_dir, f"{gcs_dir}/training"],
+        check=True,
+    )
+    logger.info(f"Uploaded wandb artifacts and model to {gcs_dir}")
+
+    return train_output

@@ -7,8 +7,6 @@ Training code for Sentry's AI grouping model.
 
 ## Usage
 
-### Training + async eval
-
 1. Create the VMs (`bin/_startup.sh` auto-installs deps, clones repo, downloads data):
 
     ```bash
@@ -34,18 +32,11 @@ Training code for Sentry's AI grouping model.
     python eval/eval_poller.py --gcs-dir <printed> --wandb-run-id <printed>
     ```
 
-4. After training, upload wandb artifacts:
-
-    ```bash
-    gsutil -m cp -r wandb gs://grouping-data/runs/{OUTPUT_DIR}
-    gsutil -m rsync -r {OUTPUT_DIR} gs://grouping-data/runs/{OUTPUT_DIR}/training
-    ```
-
 ### screen cheatsheet
 
 ```bash
 screen -S name        # create session
-# Ctrl+A, then D      # detach
+# ctrl+a, then d      # detach
 screen -ls            # list sessions
 screen -r name        # reattach
 ```
