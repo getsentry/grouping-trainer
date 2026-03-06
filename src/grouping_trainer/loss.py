@@ -80,16 +80,19 @@ class SigmoidPairwiseLoss(torch.nn.Module):
 
         return query_embeddings, candidate_embeddings
 
+    def compute_loss_from_similarities(self, similarities: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        scale = torch.exp(self.log_scale)
+        logits = (similarities * scale) + self.bias
+        return self.bce_with_logits_loss(logits, labels)
+
     def compute_loss_from_embeddings(
         self,
         query_embeddings: torch.Tensor,
         candidate_embeddings: torch.Tensor,
         labels: torch.Tensor,
-    ):
-        scale = torch.exp(self.log_scale)
+    ) -> torch.Tensor:
         similarities = pairwise_cos_sim(query_embeddings, candidate_embeddings)
-        logits = (similarities * scale) + self.bias
-        return self.bce_with_logits_loss(logits, labels)
+        return self.compute_loss_from_similarities(similarities, labels)
 
     def compute_loss_mrl(
         self,

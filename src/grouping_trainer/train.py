@@ -8,12 +8,11 @@ import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
 from contextlib import nullcontext
-from typing import Annotated, Callable, Literal, cast, overload
+from typing import Callable, Literal, cast, overload
 import warnings
 
 from accelerate import DistributedType
 import polars as pl
-from annotated_types import MultipleOf
 from pydantic import BaseModel, ConfigDict
 from sentence_transformers import SentenceTransformer, SentenceTransformerTrainingArguments
 from sentence_transformers.data_collator import SentenceTransformerDataCollator
@@ -29,7 +28,7 @@ from torch.utils.data import (
 )
 from tqdm.auto import tqdm
 from transformers import TrainerCallback, TrainerState, TrainerControl, TrainingArguments
-from transformers.trainer_utils import TrainOutput
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, TrainOutput
 from transformers.utils.import_utils import (
     is_torch_cuda_available,
     is_torch_mps_available,
@@ -325,6 +324,20 @@ class Trainer(SentenceTransformerTrainer):
 
         return sum(losses)  # we already re-scaled each loss
 
+    def _save(self, output_dir: str | None = None, state_dict=None) -> None:
+        super()._save(output_dir, state_dict)
+        # Save the loss
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        # Exclude submodules that are SentenceTransformer instances (e.g. "model") — those are
+        # saved separately by the trainer. Match on exact attribute name, not prefix.
+        excluded = {
+            name for name, module in self.loss.named_modules() if name and isinstance(module, SentenceTransformer)
+        }
+        loss_state = {
+            key: tensor for key, tensor in self.loss.state_dict().items() if key.split(".")[0] not in excluded
+        }
+        torch.save(loss_state, os.path.join(output_dir, "loss.pt"))
+
 
 class GCSCheckpointUploadCallback(TrainerCallback):
     """
@@ -363,8 +376,8 @@ class GCSCheckpointUploadCallback(TrainerCallback):
         # Join previous upload to avoid racing with save_total_limit cleanup
         self._join_prev_thread()
 
-        checkpoint_path = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
-        gcs_dest = f"{self.gcs_dir}/checkpoint-{state.global_step}"
+        checkpoint_path = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
+        gcs_dest = f"{self.gcs_dir}/{PREFIX_CHECKPOINT_DIR}-{state.global_step}"
 
         thread = threading.Thread(target=self._upload_checkpoint, args=(checkpoint_path, gcs_dest))
         thread.start()
@@ -399,16 +412,16 @@ class TrainingConfig(BaseModel):
     learning_rate_mapping: dict[str, float] = {r"^log_scale$": 2e-4, r"^bias$": 2e-4}
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
+
     # MRL
     matryoshka_dims: tuple[int, ...] = (768, 512, 256, 128, 64)
     matryoshka_weights: tuple[float, ...] = (2.0, 1.0, 1.0, 0.5, 0.25)
     n_dims_per_step: int = 2
-    # Val args
-    per_device_eval_batch_size: int = 1  # use danger, never OOM
-    eval_steps: Annotated[int, MultipleOf(10)] = 300
-    sample_size_val: int | None = None
+
     # Logging
     wandb_project: str = "grouping-trainer"
+    logging_steps: int = 30
+    save_steps: int = 150
 
 
 def init_bias(frac_positive: float) -> float:
@@ -438,8 +451,6 @@ def run(
     _ = model.encode("test")
 
     # Load data
-    dataset_val = df_to_dataset(gt.data.load_val_df(sample_size=training_config.sample_size_val))
-    print(f"Validation dataset: {len(dataset_val):,} rows")
     dataset_dict_train, frac_positive = gt.data.load_train_dataset_dict(
         sample_size=training_config.sample_size_train,
         min_dataset_size=training_config.per_device_train_batch_size,
@@ -471,20 +482,15 @@ def run(
             weight_decay=training_config.weight_decay,
             warmup_ratio=training_config.warmup_ratio,
             #
-            # Eval
-            per_device_eval_batch_size=training_config.per_device_eval_batch_size,
-            eval_strategy="steps",
-            eval_steps=training_config.eval_steps,
-            #
             # Logging
             logging_strategy="steps",
-            logging_steps=training_config.eval_steps // 10,  # train loss alongside metrics table
+            logging_steps=training_config.logging_steps,
             run_name=run_name,
             report_to="wandb" if not just_make_trainer else "none",
             #
             # Checkpointing
             save_strategy="steps",
-            save_steps=training_config.eval_steps // 2,
+            save_steps=training_config.save_steps,
             save_total_limit=2,
         ),
         #
@@ -501,15 +507,13 @@ def run(
         train_dataset=dataset_dict_train,
         shuffle_within_dataset=False,  # more cache hits in each forward
         per_device_token_budget=training_config.per_device_token_budget,
-        #
-        # Eval (val loss only; precision/recall eval runs async on a separate machine)
-        eval_dataset=dataset_val,
+        # Eval runs async on a separate machine (eval_poller.py)
     )
 
     if just_make_trainer:
         return trainer
 
-    # Set up wandb + GCS for real training
+    # Set up wandb + GCS for training run
     wandb.login()
     gcs_dir = f"gs://grouping-data/runs/{run_name}"
     wandb.init(project=training_config.wandb_project, name=run_name)

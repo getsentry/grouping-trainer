@@ -3,16 +3,16 @@ from __future__ import annotations
 import csv
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import Protocol
 
 import numpy as np
 
 from sentence_transformers.evaluation import SentenceEvaluator
 from sentence_transformers.readers import InputExample
+from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import pairwise_cos_sim
+import torch
 
-if TYPE_CHECKING:
-    from sentence_transformers.SentenceTransformer import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 def _metric_name(*, dim: int, target_precision: float, metric: str) -> str:
     """Generate metric name like 'dim768_pr95_recall'."""
     return f"dim{dim}_pr{int(target_precision * 100)}_{metric}"
+
+
+def _metric_name_loss(*, dim: int) -> str:
+    return f"dim{dim}_loss"
+
+
+class LossFromSimilarities(Protocol):
+    def __call__(self, similarities: torch.Tensor, labels: torch.Tensor) -> torch.Tensor: ...
 
 
 class MinPrecisionEvaluator(SentenceEvaluator):
@@ -36,7 +44,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         sentences2: list[str],
         labels: list[int],
         name: str = "",
-        batch_size: int = 32,
+        batch_size: int = 1,
         show_progress_bar: bool | None = False,
         write_csv: bool = True,
         truncate_dims: tuple[int, ...] | None = None,
@@ -69,13 +77,9 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         # CSV headers will be built dynamically in __call__ once we know actual dims
         self.csv_headers: list[str] | None = None
 
-    def _build_csv_headers(self, dims: tuple[int, ...]) -> list[str]:
-        headers = ["epoch", "steps"]
-        for dim in dims:
-            for target_precision in self.target_precisions:
-                for metric in ("threshold", "precision", "recall", "n_predictions"):
-                    headers.append(_metric_name(dim=dim, target_precision=target_precision, metric=metric))
-        return headers
+    @staticmethod
+    def _build_csv_headers(raw_metrics: dict[str, float]) -> list[str]:
+        return ["epoch", "steps"] + list(raw_metrics.keys())
 
     def __call__(
         self,
@@ -83,6 +87,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         output_path: str | None = None,
         epoch: int = -1,
         steps: int = -1,
+        loss_from_similarities: LossFromSimilarities | None = None,
     ) -> dict[str, float]:
         """
         Compute the evaluation metrics for the given model.
@@ -106,11 +111,11 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
         logger.info(f"Min Precision Evaluation of the model on the {self.name} dataset{out_txt}:")
 
-        dims, raw_metrics = self.compute_metrics(model)
+        dims, raw_metrics = self.compute_metrics(model, loss_from_similarities=loss_from_similarities)
 
-        # Build CSV headers on first call (now that we know dims)
+        # Build CSV headers on first call (now that we know actual metrics)
         if self.csv_headers is None:
-            self.csv_headers = self._build_csv_headers(dims)
+            self.csv_headers = self._build_csv_headers(raw_metrics)
 
         # Log results
         for dim in dims:
@@ -130,11 +135,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
                     )
 
         # Build CSV row data
-        file_output_data: list = [epoch, steps]
-        for dim in dims:
-            for p in self.target_precisions:
-                for metric in ("threshold", "precision", "recall", "n_predictions"):
-                    file_output_data.append(raw_metrics[_metric_name(dim=dim, target_precision=p, metric=metric)])
+        file_output_data: list = [epoch, steps] + list(raw_metrics.values())
 
         # Write CSV
         if output_path is not None and self.write_csv:
@@ -171,19 +172,14 @@ class MinPrecisionEvaluator(SentenceEvaluator):
             scores.append(example.label)
         return cls(sentences1, sentences2, scores, **kwargs)
 
-    def embed_inputs(
-        self,
-        model: SentenceTransformer,
-        sentences: str | list[str] | np.ndarray,
-        **kwargs,
-    ) -> np.ndarray:
-        """Encode at full dimension (no truncation here)."""
+    def embed_inputs(self, model: SentenceTransformer, sentences: str | list[str], **encode_kwargs) -> torch.Tensor:
         return model.encode(
             sentences,
             batch_size=self.batch_size,
             show_progress_bar=self.show_progress_bar,
-            convert_to_numpy=True,
-            **kwargs,
+            convert_to_tensor=True,
+            convert_to_numpy=False,
+            **encode_kwargs,
         )
 
     def get_config_dict(self) -> dict:
@@ -194,57 +190,55 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         config_dict["min_predictions"] = self.min_predictions
         return config_dict
 
-    def compute_metrics(self, model: SentenceTransformer) -> tuple[tuple[int, ...], dict[str, float]]:
+    def compute_metrics(
+        self, model: SentenceTransformer, loss_from_similarities: LossFromSimilarities | None = None
+    ) -> tuple[tuple[int, ...], dict[str, float]]:
         """
         Compute embeddings, similarities, and find thresholds for each dimension and target precision.
 
         Returns:
             A tuple of (dims, metrics) where dims is the tuple of dimensions evaluated.
         """
-        # Encode at full dimension
-        try:
-            # If the sentences are hashable, use a set to avoid embedding duplicates
-            sentences = list(set(self.sentences1 + self.sentences2))
-        except TypeError:
-            # Otherwise embed everything (e.g., if sentences are images for CLIP)
-            embeddings1 = np.array(self.embed_inputs(model, self.sentences1))
-            embeddings2 = np.array(self.embed_inputs(model, self.sentences2))
-        else:
-            embeddings = self.embed_inputs(model, sentences)
-            emb_dict = {sent: emb for sent, emb in zip(sentences, embeddings)}
-            embeddings1 = np.array([emb_dict[sent] for sent in self.sentences1])
-            embeddings2 = np.array([emb_dict[sent] for sent in self.sentences2])
+        sentences = list(set(self.sentences1 + self.sentences2))
+        embeddings = self.embed_inputs(model, sentences)
+        assert embeddings.device == model.device
+        sentence_to_embedding = {sentence: embedding for sentence, embedding in zip(sentences, embeddings, strict=True)}
+        embeddings1 = torch.stack([sentence_to_embedding[sentence] for sentence in self.sentences1])
+        embeddings2 = torch.stack([sentence_to_embedding[sentence] for sentence in self.sentences2])
 
-        full_dim = embeddings1.shape[1]
-        labels = np.asarray(self.labels)
-
-        # Determine which dimensions to evaluate
+        full_dim = embeddings1.shape[-1]
         if self.truncate_dims is None:
             dims = (full_dim,)
         else:
             dims = self.truncate_dims
 
-        # Compute metrics for each dimension
-        all_metrics: dict[str, float] = {}
+        metric_name_to_value: dict[str, float] = {}
         for dim in dims:
-            # Truncate embeddings
-            emb1_truncated = embeddings1[..., :dim]
-            emb2_truncated = embeddings2[..., :dim]
+            embeddings1_truncated = embeddings1[..., :dim]
+            embeddings2_truncated = embeddings2[..., :dim]
 
-            # Compute cosine similarity
-            scores = pairwise_cos_sim(emb1_truncated, emb2_truncated).detach().cpu().numpy()
+            similarities = pairwise_cos_sim(embeddings1_truncated, embeddings2_truncated)
 
-            # Find thresholds
-            dim_metrics = self.find_recall_at_precision_thresholds(
-                scores=scores,
-                labels=labels,
-                target_precisions=self.target_precisions,
-                min_predictions=self.min_predictions,
-                dim=dim,
+            # Compute loss while we're here
+            if loss_from_similarities is not None:
+                with torch.inference_mode():
+                    loss = loss_from_similarities(
+                        similarities,
+                        labels=torch.as_tensor(self.labels, device=embeddings1.device),
+                    )
+                metric_name_to_value[_metric_name_loss(dim=dim)] = loss.detach().cpu().item()
+
+            metric_name_to_value.update(
+                self.find_recall_at_precision_thresholds(
+                    scores=similarities.detach().cpu().numpy(),
+                    labels=np.asarray(self.labels),
+                    target_precisions=self.target_precisions,
+                    min_predictions=self.min_predictions,
+                    dim=dim,
+                )
             )
-            all_metrics.update(dim_metrics)
 
-        return dims, all_metrics
+        return dims, metric_name_to_value
 
     @staticmethod
     def find_recall_at_precision_thresholds(

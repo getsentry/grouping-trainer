@@ -8,18 +8,7 @@ from grouping_trainer.utils import SentenceTransformer as SentenceTransformerGT
 class SentenceTransformer(SentenceTransformerGT):
     """
     Python is too slow for this small model and batch size 1. Need to compile.
-    Cost: warming up the cached graphs can take 60 seconds.
-
-    The profile of `.encode` calls should show:
-
-    Before::
-
-        python -> cuda -> python -> cuda -> python -> cuda -> python -> cuda -> python
-
-    After::
-
-        python -> cuda graph launch -> python
-
+    Cost: warming up the cached graphs can take 120 seconds for our data.
     """
 
     def __init__(self, *args, **kwargs):
