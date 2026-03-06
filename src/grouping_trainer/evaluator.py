@@ -13,6 +13,8 @@ from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import pairwise_cos_sim
 import torch
 
+import grouping_trainer as gt
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,9 @@ def _metric_name_loss(*, dim: int) -> str:
 
 
 class LossFromSimilarities(Protocol):
-    def __call__(self, similarities: torch.Tensor, labels: torch.Tensor) -> torch.Tensor: ...
+    def __call__(
+        self, similarities: torch.Tensor, labels: torch.Tensor, calibration_head: gt.loss.CalibrationHead
+    ) -> torch.Tensor: ...
 
 
 class MinPrecisionEvaluator(SentenceEvaluator):
@@ -83,7 +87,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
     def __call__(
         self,
-        model: SentenceTransformer,
+        model: SentenceTransformer | gt.loss.TrainableSentenceTransformer,
         output_path: str | None = None,
         epoch: int = -1,
         steps: int = -1,
@@ -172,7 +176,12 @@ class MinPrecisionEvaluator(SentenceEvaluator):
             scores.append(example.label)
         return cls(sentences1, sentences2, scores, **kwargs)
 
-    def embed_inputs(self, model: SentenceTransformer, sentences: str | list[str], **encode_kwargs) -> torch.Tensor:
+    def embed_inputs(
+        self,
+        model: SentenceTransformer | gt.loss.TrainableSentenceTransformer,
+        sentences: str | list[str],
+        **encode_kwargs,
+    ) -> torch.Tensor:
         return model.encode(
             sentences,
             batch_size=self.batch_size,
@@ -191,7 +200,9 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         return config_dict
 
     def compute_metrics(
-        self, model: SentenceTransformer, loss_from_similarities: LossFromSimilarities | None = None
+        self,
+        model: SentenceTransformer | gt.loss.TrainableSentenceTransformer,
+        loss_from_similarities: LossFromSimilarities | None = None,
     ) -> tuple[tuple[int, ...], dict[str, float]]:
         """
         Compute embeddings, similarities, and find thresholds for each dimension and target precision.
@@ -220,6 +231,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
                     loss = loss_from_similarities(
                         similarities,
                         labels=torch.as_tensor(self.labels, device=embeddings1.device),
+                        calibration_head=model.calibration_head,
                     )
                 metric_name_to_value[_metric_name_loss(dim=dim)] = loss.detach().cpu().item()
 

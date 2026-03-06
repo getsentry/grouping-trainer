@@ -44,6 +44,8 @@ COLUMNS_REQUIRED = (
     "org_id",
 )
 
+# Loading functions
+
 
 def _test_df(df: pl.DataFrame):
     assert set(COLUMNS_REQUIRED).issubset(df.columns)
@@ -114,6 +116,9 @@ def load_train_dataset_dict(
     return dataset_dict_train, frac_positive
 
 
+# Training data types
+
+
 class Record(TypedDict):
     query_stacktrace_string: str
     candidate_stacktrace_string: str
@@ -124,4 +129,3 @@ class Batch(TypedDict):
     query_stacktrace_string: list[str]
     candidate_stacktrace_string: list[str]
     label: torch.Tensor
-    # NOTE: "label" is hardcoded in SentenceTransformerTrainer.collect_features, but we overrode it

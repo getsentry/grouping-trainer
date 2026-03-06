@@ -111,15 +111,15 @@ def main(args: EvalPollerConfig | None = None):
                 model = gt.danger.SentenceTransformer(tmp_dir)
                 model.warmup_and_compile()
 
+                loss_from_similarities = None
                 loss_path = os.path.join(tmp_dir, "loss.pt")
                 if os.path.exists(loss_path):
                     # Dummy init values that will be overwritten by the checkpoint:
-                    loss = gt.loss.SigmoidPairwiseLoss(model, bias_init=0.0, log_of_scale_init=torch.tensor(0.0))
+                    loss = gt.loss.SigmoidPairwiseLoss()
+                    gt.loss.add_head_to_model_from_checkpoint(model, tmp_dir)
                     loss.load_state_dict(torch.load(loss_path, map_location=model.device), strict=False)
                     loss.eval()
                     loss_from_similarities = loss.compute_loss_from_similarities
-                else:
-                    loss_from_similarities = None
 
                 metrics = evaluator(model, loss_from_similarities=loss_from_similarities)
 

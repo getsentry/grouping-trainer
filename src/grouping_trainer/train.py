@@ -7,11 +7,12 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from typing import Callable, Literal, cast, overload
 import warnings
 
 from accelerate import DistributedType
+import numpy as np
 import polars as pl
 from pydantic import BaseModel, ConfigDict
 from sentence_transformers import SentenceTransformer, SentenceTransformerTrainingArguments
@@ -28,7 +29,7 @@ from torch.utils.data import (
 )
 from tqdm.auto import tqdm
 from transformers import TrainerCallback, TrainerState, TrainerControl, TrainingArguments
-from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, TrainOutput
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, TrainOutput, get_last_checkpoint
 from transformers.utils.import_utils import (
     is_torch_cuda_available,
     is_torch_mps_available,
@@ -101,24 +102,6 @@ def create_project_dataset_dict(
 
 @dataclass
 class DefaultDataCollator(SentenceTransformerDataCollator):
-    """
-    We'll let the forward pass do the tokenization + device transfers b/c we'll have custom deduplication logic in the
-    forward pass to save compute. It's easier to deduplicate via strings than via tensors.
-
-    If we need to, we can deduplicate via tensors—
-
-    Pros:
-    - `SentenceTransformerDataCollator` has some niceties like handling the task type.
-
-    Cons:
-    - Requires custom handling for whatever the niceties are lol.
-      Having `forward_deduplicated` dedupe input IDs is easy (re-pad them, call `torch.unique`). It's likely safe to
-      update the attention mask by hand by setting all pad tokens to 0.
-      I'm not familiar w/ the more custom encoding info for, e.g., sentence transformers that accept prompts.
-      Finally, get rid of the `.collect_features` override.
-    - Tokenization is repeated. I doubt it'd be a bottleneck, not sure.
-    """
-
     def __call__(self, records: list[gt.data.Record]) -> gt.data.Batch:
         return default_collate(records)
 
@@ -183,29 +166,52 @@ def batch_pairs_by_token_budget(
         }
 
 
+@contextmanager
+def _temp_delattr(obj, name: str):
+    had_attr = hasattr(obj, name)
+    if not had_attr:
+        yield
+        return
+
+    value = getattr(obj, name)
+    delattr(obj, name)
+    try:
+        yield
+    finally:
+        setattr(obj, name, value)
+
+
 class Trainer(SentenceTransformerTrainer):
     """
+    Note
+    ----
     Should pass `multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL` to get some interleaving of
     projects across batches, while keeping the batch size high to average each gradient over many candidates for each
     query.
     """
 
+    model: gt.loss.TrainableSentenceTransformer
+
     def __init__(
         self,
+        model: gt.loss.TrainableSentenceTransformer,
         *args,
         shuffle_within_dataset: bool = False,
         per_device_token_budget: int = 8192 * 4,  # works for A100 80GB w/o sdpa (like jina-ai)
         **kwargs,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(model, *args, **kwargs)
         self.shuffle_within_dataset = shuffle_within_dataset
         self.per_device_token_budget = per_device_token_budget
 
     def add_model_card_callback(self, default_args_dict):
         """
-        Skip this. The superclass tokenizes the entire dataset as part of init.
+        no-op. (The superclass tokenizes the entire dataset as part of init.)
         """
         return None
+
+    def live_device(self) -> torch.device:
+        return next(self.model.parameters()).device
 
     def get_batch_sampler(
         self,
@@ -227,11 +233,33 @@ class Trainer(SentenceTransformerTrainer):
         )
         return BatchSampler(sampler=sampler, batch_size=batch_size, drop_last=drop_last)
 
-    def collect_features(self, inputs: gt.data.Batch):
+    def collect_features(self, inputs: gt.data.Batch) -> tuple[gt.loss.FeaturesWithHead, torch.Tensor]:
         """
-        Pass through the collated batch as is. We tokenize inside forward.
+        Deduplicates inputs before calling the model.
         """
-        return inputs, inputs["label"]
+        queries = inputs["query_stacktrace_string"]
+        candidates = inputs["candidate_stacktrace_string"]
+
+        device = self.live_device()
+
+        texts_unique, inverse_indices = np.unique(queries + candidates, return_inverse=True)
+        inverse_indices = torch.as_tensor(inverse_indices, device=device)
+
+        encodings = self.model.tokenize(texts_unique.tolist(), return_tensors="pt", padding=True)
+        encodings = {k: v.to(device) for k, v in encodings.items()}
+        embeddings_unique: torch.Tensor = self.model(encodings)["sentence_embedding"]
+
+        all_embeddings = embeddings_unique[inverse_indices]
+        num_queries = len(queries)
+        query_embeddings = all_embeddings[:num_queries]
+        candidate_embeddings = all_embeddings[num_queries:]
+
+        features_with_head = gt.loss.FeaturesWithHead(
+            query_embeddings=query_embeddings,
+            candidate_embeddings=candidate_embeddings,
+            calibration_head=self.model.calibration_head,
+        )
+        return features_with_head, inputs["label"].to(device)
 
     def _count_tokens(self, text: str) -> int:
         return self.model.tokenize([text])["input_ids"].shape[1]
@@ -320,18 +348,20 @@ class Trainer(SentenceTransformerTrainer):
         return sum(losses)  # we already re-scaled each loss
 
     def _save(self, output_dir: str | None = None, state_dict=None) -> None:
-        super()._save(output_dir, state_dict)
-        # Save the loss
         output_dir = output_dir if output_dir is not None else self.args.output_dir
-        # Exclude submodules that are SentenceTransformer instances (e.g. "model") — those are
-        # saved separately by the trainer. Match on exact attribute name, not prefix.
-        excluded = {
-            name for name, module in self.loss.named_modules() if name and isinstance(module, SentenceTransformer)
+        os.makedirs(output_dir, exist_ok=True)
+
+        with _temp_delattr(self.model, "calibration_head"):
+            super()._save(output_dir, state_dict=state_dict)
+
+        # We need to save calibration_head so that we can:
+        # - resume training from a checkpoint
+        # - use its parameters during mid-train evaluation.
+        # Saved separately so that the model can be loaded to do inference using a plain SentenceTransformer.
+        calibration_head_state = {
+            key: cast(torch.Tensor, tensor).cpu() for key, tensor in self.model.calibration_head.state_dict().items()
         }
-        loss_state = {
-            key: tensor for key, tensor in self.loss.state_dict().items() if key.split(".")[0] not in excluded
-        }
-        torch.save(loss_state, os.path.join(output_dir, "loss.pt"))
+        torch.save(calibration_head_state, os.path.join(output_dir, "calibration_head.pt"))
 
 
 class GCSCheckpointUploadCallback(TrainerCallback):
@@ -407,6 +437,7 @@ class TrainingConfig(BaseModel):
     learning_rate_mapping: dict[str, float] = {r"^log_scale$": 2e-4, r"^bias$": 2e-4}
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
+    resume_from_checkpoint: str | bool | None = None
 
     # MRL
     matryoshka_dims: tuple[int, ...] = (768, 512, 256, 128, 64)
@@ -439,12 +470,6 @@ def run(
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_name = f"{timestamp}-{training_config.run_shortname}"
 
-    # Set up model
-    gt.utils._cuda_empty_cache()
-    assert "layernorm" in repr(model[0].auto_model).lower()
-    assert "batch" not in repr(model[0].auto_model).lower(), "Batch norm messes up the deduplication strategy"
-    _ = model.encode("test")
-
     # Load data
     dataset_dict_train, frac_positive = gt.data.load_train_dataset_dict(
         sample_size=training_config.sample_size_train,
@@ -452,6 +477,19 @@ def run(
         paths=training_config.training_csvs,
     )
     print(f"Training dataset: {len(dataset_dict_train):,} projects, {sum(dataset_dict_train.num_rows.values()):,} rows")
+
+    # Set up model
+    gt.utils._cuda_empty_cache()
+    assert "layernorm" in repr(model[0].auto_model).lower()
+    assert "batch" not in repr(model[0].auto_model).lower(), "Batch norm messes up the deduplication strategy"
+    model = gt.loss.add_head_to_model(
+        model,
+        gt.loss.CalibrationHead(
+            bias_init=init_bias(frac_positive),
+            log_of_scale_init=torch.tensor(training_config.log_of_scale_init),
+        ),
+    )
+    _ = model.encode("test")
 
     # Build trainer
     trainer = gt.train.Trainer(
@@ -491,9 +529,6 @@ def run(
         #
         # Training
         loss=gt.loss.SigmoidPairwiseLoss(
-            model,
-            bias_init=init_bias(frac_positive),
-            log_of_scale_init=torch.tensor(training_config.log_of_scale_init),
             matryoshka_dims=list(training_config.matryoshka_dims),
             matryoshka_weights=list(training_config.matryoshka_weights),
             n_dims_per_step=training_config.n_dims_per_step,
@@ -504,6 +539,7 @@ def run(
         per_device_token_budget=training_config.per_device_token_budget,
         # Eval runs async on a separate machine (eval_poller.py)
     )
+    assert trainer.args.output_dir is not None  # for typing
 
     if just_make_trainer:
         return trainer
@@ -512,27 +548,39 @@ def run(
     wandb.login()
     gcs_dir = f"gs://grouping-data/runs/{run_name}"
     wandb.init(project=training_config.wandb_project, name=run_name)
-    trainer.add_callback(gt.train.GCSCheckpointUploadCallback(gcs_dir=gcs_dir))
 
     print(f"\nRun on L4: python eval/eval_poller.py --gcs-dir {gcs_dir} --wandb-run-id {wandb.run.id}\n")
 
+    # Set up trainer
+    trainer.add_callback(gt.train.GCSCheckpointUploadCallback(gcs_dir=gcs_dir))
+    if (training_config.resume_from_checkpoint is not None) and (
+        (
+            last_checkpoint := (
+                training_config.resume_from_checkpoint
+                if isinstance(training_config.resume_from_checkpoint, str)
+                else get_last_checkpoint(trainer.args.output_dir)
+            )
+        )
+        is not None
+    ):
+        gt.loss.add_head_to_model_from_checkpoint(model, last_checkpoint)
+
+    # Train
     warnings.filterwarnings(
         "ignore",
         message=".*torch.utils.checkpoint: the use_reentrant parameter.*",
         category=UserWarning,
     )
-
     train_output = cast(TrainOutput, trainer.train())
     trainer.save_model()
 
     # Upload wandb artifacts and final model to GCS
-    output_dir = f"./{run_name}-output"
     subprocess.run(
         ["gsutil", "-m", "cp", "-r", "wandb", f"{gcs_dir}/wandb"],
         check=True,
     )
     subprocess.run(
-        ["gsutil", "-m", "rsync", "-r", output_dir, f"{gcs_dir}/training"],
+        ["gsutil", "-m", "rsync", "-r", trainer.args.output_dir, f"{gcs_dir}/training"],
         check=True,
     )
     logger.info(f"Uploaded wandb artifacts and model to {gcs_dir}")
