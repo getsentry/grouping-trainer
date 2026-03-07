@@ -12,7 +12,7 @@ import grouping_trainer as gt
 def main(mini_cpu_test: bool = False):
     """Train a grouping model.
 
-    :param mini_cpu_test: Run a minimal CPU sanity check instead of full training.
+    :param mini_cpu_test: Run a mini training run on CPU to sanity check the code.
     """
     is_cuda = torch.cuda.is_available()
 
