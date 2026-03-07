@@ -5,7 +5,7 @@ gcloud compute instances create h100-flex \
     --machine-type=a3-highgpu-1g \
     --network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default \
     --metadata=enable-osconfig=TRUE,install-nvidia-driver=True \
-    --metadata-from-file=startup-script=bin/train.sh \
+    --metadata-from-file=startup-script=bin/_train.sh \
     --maintenance-policy=TERMINATE \
     --provisioning-model=FLEX_START \
     --instance-termination-action=DELETE \

@@ -8,7 +8,7 @@ Sampling and labeling is in [data-analysis](https://github.com/getsentry/data-an
 ## Usage
 
 ```bash
-./bin/train.sh
+./bin/flex_h100.sh
 ```
 
 Finetuning [gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) w/
