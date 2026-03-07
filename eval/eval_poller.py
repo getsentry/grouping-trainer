@@ -10,7 +10,6 @@ import logging
 import re
 import subprocess
 import tempfile
-import os
 import time
 
 from pydantic import BaseModel, Field
@@ -27,7 +26,7 @@ def list_ready_checkpoints(gcs_dir: str) -> list[tuple[int, str]]:
     """Return (step, gcs_path) for checkpoints that have a .done sentinel, sorted by step."""
     try:
         result = subprocess.run(
-            ["gsutil", "ls", f"{gcs_dir}/"],
+            ["gcloud", "storage", "ls", f"{gcs_dir}/"],
             capture_output=True,
             text=True,
             check=True,
@@ -47,7 +46,7 @@ def list_ready_checkpoints(gcs_dir: str) -> list[tuple[int, str]]:
 
         # Check for .done sentinel
         sentinel = f"{gcs_path}/.done"
-        check = subprocess.run(["gsutil", "ls", sentinel], capture_output=True)
+        check = subprocess.run(["gcloud", "storage", "ls", sentinel], capture_output=True)
         if check.returncode == 0:
             checkpoints.append((step, gcs_path))
 
@@ -56,21 +55,23 @@ def list_ready_checkpoints(gcs_dir: str) -> list[tuple[int, str]]:
 
 
 def training_done(gcs_dir: str) -> bool:
-    result = subprocess.run(["gsutil", "ls", f"{gcs_dir}/.training_done"], capture_output=True)
+    result = subprocess.run(["gcloud", "storage", "ls", f"{gcs_dir}/.training_done"], capture_output=True)
     return result.returncode == 0
 
 
 def download_checkpoint(gcs_path: str, local_dir: str):
-    subprocess.run(["gsutil", "-m", "rsync", "-r", gcs_path, local_dir], check=True)
+    subprocess.run(["gcloud", "storage", "rsync", "-r", gcs_path, local_dir], check=True)
 
 
 class EvalPollerConfig(BaseModel):
     gcs_dir: str = Field(description="GCS directory containing checkpoints")
     wandb_run_id: str = Field(description="W&B run ID to log metrics to")
+    base_model: str = Field(
+        default="Alibaba-NLP/gte-modernbert-base", description="Base model used to init the encoder"
+    )
     wandb_project: str = "grouping-trainer"
     poll_interval: int = Field(default=60, description="Seconds between polls")
     sample_val: int = 8000
-    eval_batch_size: int = 2
     truncate_dims: tuple[int, ...] = (64, 768)
 
 
@@ -96,6 +97,8 @@ def main(args: EvalPollerConfig | None = None):
     )
 
     evaluated_steps: set[int] = set()
+    encoder = gt.danger.SentenceTransformer(args.base_model)
+    encoder.warmup_and_compile()
 
     while True:
         checkpoints = list_ready_checkpoints(args.gcs_dir)
@@ -106,19 +109,8 @@ def main(args: EvalPollerConfig | None = None):
 
             with tempfile.TemporaryDirectory() as tmp_dir:
                 download_checkpoint(gcs_path, tmp_dir)
-                # rsync syncs contents directly into tmp_dir
-                model = gt.danger.SentenceTransformer(tmp_dir)
-                model.warmup_and_compile()
-
-                loss_from_similarities = None
-                head_for_loss_path = os.path.join(tmp_dir, "head_for_loss.pt")
-                if os.path.exists(head_for_loss_path):
-                    gt.loss.add_head_to_model_from_checkpoint(model, checkpoint_dir=tmp_dir)
-                    loss = gt.loss.SigmoidPairwiseLoss()
-                    loss.eval()
-                    loss_from_similarities = loss.compute_loss_from_similarities
-
-                metrics = evaluator(model, loss_from_similarities=loss_from_similarities)
+                model = gt.train.ModelForTraining.from_checkpoint(checkpoint_dir=tmp_dir, encoder=encoder)
+                metrics = evaluator(model)
 
             # Prefix metrics for async eval namespace
             log_dict = {"eval_step": step}

@@ -4,41 +4,55 @@ Evaluation runs async on a separate machine.
 """
 
 import torch
+from tap import tapify
 
 import grouping_trainer as gt
 
-IS_CUDA_AVAILABLE = torch.cuda.is_available()
 
-model = gt.utils.SentenceTransformer(
-    "Alibaba-NLP/gte-modernbert-base",
-    model_kwargs=(
-        dict(
-            dtype=torch.bfloat16,
-            attn_implementation="sdpa",
+def main(mini_cpu_test: bool = False):
+    """Train a grouping model.
+
+    :param mini_cpu_test: Run a minimal CPU sanity check instead of full training.
+    """
+    is_cuda = torch.cuda.is_available()
+
+    if not mini_cpu_test:
+        assert is_cuda, "CUDA is required for full training"
+        assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
+
+    model = gt.utils.SentenceTransformer(
+        "Alibaba-NLP/gte-modernbert-base",
+        model_kwargs=(
+            dict(
+                dtype=torch.bfloat16,
+                attn_implementation="sdpa",
+            )
+            if is_cuda
+            else None
+        ),
+    )
+
+    if mini_cpu_test:
+        config = gt.train.TrainingConfig(
+            run_shortname="cpu-sanity-check",
+            per_device_train_batch_size=2,
+            per_device_token_budget=64,
+            gradient_checkpointing=True,
+            sample_size_train=30,
+            sample_size_val=20,
+            logging_steps=1,
+            save_steps=10,
         )
-        if IS_CUDA_AVAILABLE
-        else None
-    ),
-)
+    else:
+        config = gt.train.TrainingConfig(
+            run_shortname="gte",
+            per_device_train_batch_size=256,
+            per_device_token_budget=8192 * 4,
+            sample_size_val=8000,
+        )
 
-training_config_full = gt.train.TrainingConfig(
-    run_shortname="gte",
-    per_device_train_batch_size=256,
-    per_device_token_budget=8192 * 4,
-    sample_size_val=8000,
-)
+    gt.train.run(model, config)
 
-training_config_mini = gt.train.TrainingConfig(
-    run_shortname="cpu-sanity-check",
-    per_device_train_batch_size=2,
-    per_device_token_budget=512,
-    gradient_checkpointing=True,
-    sample_size_train=30,
-    sample_size_val=20,
-)
 
 if __name__ == "__main__":
-    assert IS_CUDA_AVAILABLE  # comment out for local sanity check runs
-    assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
-
-    gt.train.run(model, training_config_full if IS_CUDA_AVAILABLE else training_config_mini)
+    tapify(main)

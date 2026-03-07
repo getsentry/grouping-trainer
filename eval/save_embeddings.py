@@ -156,5 +156,5 @@ for model_name, (query_embs, candidate_embs) in model_name_to_query_and_candidat
 # Upload to GCS
 GCS_DIR = f"gs://grouping-data/runs/{OUTPUT_DIR.lstrip('./')}"
 print(f"\nUploading to {GCS_DIR}...")
-subprocess.run(["gsutil", "-m", "rsync", "-r", OUTPUT_DIR, GCS_DIR], check=True)
+subprocess.run(["gcloud", "storage", "rsync", "-r", OUTPUT_DIR, GCS_DIR], check=True)
 print(f"Uploaded to {GCS_DIR}")

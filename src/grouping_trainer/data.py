@@ -129,3 +129,8 @@ class Batch(TypedDict):
     query_stacktrace_string: list[str]
     candidate_stacktrace_string: list[str]
     label: torch.Tensor
+
+
+class Features(TypedDict):
+    query_embeddings: torch.Tensor
+    candidate_embeddings: torch.Tensor

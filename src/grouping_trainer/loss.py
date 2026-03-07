@@ -2,68 +2,25 @@
 Pairwise loss w/ deduplication.
 """
 
-import os
-from typing import TypedDict, cast
-from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import pairwise_cos_sim
 import torch
 
-
-class CalibrationHead(torch.nn.Module):
-    """
-    `bias_init` is highly dependent on the dataset. Start w/ log-odds if unsure.
-    """
-
-    def __init__(self, *, bias_init: float = 0.0, log_of_scale_init: torch.Tensor = torch.tensor(5.0).log()):
-        super().__init__()
-        self.log_scale = torch.nn.Parameter(log_of_scale_init.clone().detach())
-        self.bias = torch.nn.Parameter(torch.tensor(bias_init))
-
-    def forward(self, similarities: torch.Tensor) -> torch.Tensor:
-        scale = torch.exp(self.log_scale)
-        return (similarities * scale) + self.bias
-
-
-class TrainableSentenceTransformer(SentenceTransformer):  # just for typing
-    head_for_loss: torch.nn.Module
-
-
-def add_head_to_model(model: SentenceTransformer, head_for_loss: torch.nn.Module) -> TrainableSentenceTransformer:
-    """
-    Add a module w/ parameters to the model so that things like DDP work out of the box.
-    """
-    model.head_for_loss = head_for_loss
-    return cast(TrainableSentenceTransformer, model)
-
-
-def add_head_to_model_from_checkpoint(
-    model: SentenceTransformer,
-    checkpoint_dir: str,
-    *head_args,
-    head_cls: type[torch.nn.Module] = CalibrationHead,
-    **head_kwargs,
-) -> None:
-    model.head_for_loss = head_cls(*head_args, **head_kwargs)
-    state = torch.load(os.path.join(checkpoint_dir, "head_for_loss.pt"), map_location="cpu")
-    model.head_for_loss.load_state_dict(state)
-    model.head_for_loss.to(model.device)
-
-
-class FeaturesWithHead(TypedDict):
-    query_embeddings: torch.Tensor
-    candidate_embeddings: torch.Tensor
-    head_for_loss: torch.nn.Module
+import grouping_trainer as gt
 
 
 class SigmoidPairwiseLoss(torch.nn.Module):
     def __init__(
         self,
         *,
+        bias_init: float = 0.0,
+        log_of_scale_init: torch.Tensor = torch.tensor(5.0).log(),
         matryoshka_dims: list[int] | None = None,
         matryoshka_weights: list[float] | None = None,
         n_dims_per_step: int = -1,
     ):
         super().__init__()
+        self.log_scale = torch.nn.Parameter(log_of_scale_init.clone().detach())
+        self.bias = torch.nn.Parameter(torch.tensor(bias_init))
         self.bce_with_logits_loss = torch.nn.BCEWithLogitsLoss(reduction="mean")
 
         self.n_dims_per_step = n_dims_per_step
@@ -81,31 +38,22 @@ class SigmoidPairwiseLoss(torch.nn.Module):
             self.matryoshka_dims = matryoshka_dims
             self.matryoshka_weights = matryoshka_weights
 
-    def compute_loss_from_similarities(
-        self, similarities: torch.Tensor, labels: torch.Tensor, head_for_loss: torch.nn.Module
-    ) -> torch.Tensor:
-        logits = head_for_loss(similarities)
+    def compute_loss_from_similarities(self, similarities: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        scale = torch.exp(self.log_scale)
+        logits = (similarities * scale) + self.bias
         return self.bce_with_logits_loss(logits, labels)
 
     def compute_loss_from_embeddings(
-        self,
-        query_embeddings: torch.Tensor,
-        candidate_embeddings: torch.Tensor,
-        labels: torch.Tensor,
-        head_for_loss: torch.nn.Module,
+        self, query_embeddings: torch.Tensor, candidate_embeddings: torch.Tensor, labels: torch.Tensor
     ) -> torch.Tensor:
         similarities = pairwise_cos_sim(query_embeddings, candidate_embeddings)
-        return self.compute_loss_from_similarities(similarities, labels, head_for_loss)
+        return self.compute_loss_from_similarities(similarities, labels)
 
     def compute_loss_mrl(
-        self,
-        query_embeddings: torch.Tensor,
-        candidate_embeddings: torch.Tensor,
-        labels: torch.Tensor,
-        head_for_loss: torch.nn.Module,
+        self, query_embeddings: torch.Tensor, candidate_embeddings: torch.Tensor, labels: torch.Tensor
     ) -> torch.Tensor:
         if self.matryoshka_dims is None:
-            return self.compute_loss_from_embeddings(query_embeddings, candidate_embeddings, labels, head_for_loss)
+            return self.compute_loss_from_embeddings(query_embeddings, candidate_embeddings, labels)
 
         embedding_dim = query_embeddings.shape[-1]
         if any(d > embedding_dim for d in self.matryoshka_dims):
@@ -117,20 +65,19 @@ class SigmoidPairwiseLoss(torch.nn.Module):
                 : self.n_dims_per_step
             ].tolist()
 
-        loss_total = 0.0
+        loss_total = torch.zeros((), device=query_embeddings.device)
         for idx in dim_indices:
             dim = self.matryoshka_dims[idx]
             weight = self.matryoshka_weights[idx]
             loss_dim = self.compute_loss_from_embeddings(
-                query_embeddings[..., :dim], candidate_embeddings[..., :dim], labels, head_for_loss
+                query_embeddings[..., :dim], candidate_embeddings[..., :dim], labels
             )
             loss_total += weight * loss_dim
         return loss_total / len(dim_indices)
 
-    def forward(self, features_with_head: FeaturesWithHead, labels: torch.Tensor) -> torch.Tensor:
+    def forward(self, features: gt.data.Features, labels: torch.Tensor) -> torch.Tensor:
         return self.compute_loss_mrl(
-            query_embeddings=features_with_head["query_embeddings"],
-            candidate_embeddings=features_with_head["candidate_embeddings"],
+            query_embeddings=features["query_embeddings"],
+            candidate_embeddings=features["candidate_embeddings"],
             labels=labels.float(),
-            head_for_loss=features_with_head["head_for_loss"],
         )

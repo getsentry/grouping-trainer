@@ -20,7 +20,7 @@ echo "export WANDB_API_KEY=$WANDB_API_KEY" >> "$USER_HOME/.bashrc"
 
 git clone "https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git" "$REPO_DIR"
 chown -R "$USERNAME:$USERNAME" "$REPO_DIR"
-gsutil -m cp -r gs://grouping-data/final_csvs "$REPO_DIR/"
+gcloud storage cp -r gs://grouping-data/final_csvs "$REPO_DIR/"
 chown -R "$USERNAME:$USERNAME" "$REPO_DIR/final_csvs"
 
 # conda is pre-installed on the deep learning VM image

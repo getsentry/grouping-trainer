@@ -8,16 +8,18 @@ import subprocess
 import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from typing import Callable, Literal, cast, overload
 import warnings
 
 from accelerate import DistributedType
+from safetensors.torch import load_model as safetensors_load_model
 import numpy as np
 import polars as pl
 from pydantic import BaseModel, ConfigDict
 from sentence_transformers import SentenceTransformer, SentenceTransformerTrainingArguments
 from sentence_transformers.data_collator import SentenceTransformerDataCollator
+from sentence_transformers.models import Pooling
 from sentence_transformers.training_args import MultiDatasetBatchSamplers
 import torch
 from datasets import Dataset, DatasetDict
@@ -30,7 +32,7 @@ from torch.utils.data import (
 )
 from tqdm.auto import tqdm
 from transformers import TrainerCallback, TrainerState, TrainerControl, TrainingArguments
-from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, TrainOutput, get_last_checkpoint
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, TrainOutput
 from transformers.utils.import_utils import (
     is_torch_cuda_available,
     is_torch_mps_available,
@@ -167,28 +169,56 @@ def batch_pairs_by_token_budget(
         }
 
 
-@contextmanager
-def _temp_delattr(obj, name: str):
-    had_attr = hasattr(obj, name)
-    if not had_attr:
-        yield
-        return
+class ModelForTraining(torch.nn.Module):
+    def __init__(self, encoder: SentenceTransformer, loss: torch.nn.Module):
+        super().__init__()
+        self.encoder = encoder
+        self.loss = loss
 
-    value = getattr(obj, name)
-    delattr(obj, name)
-    try:
-        yield
-    finally:
-        setattr(obj, name, value)
+    def encode(self, inputs: gt.data.Batch) -> gt.data.Features:
+        """
+        Deduplicates inputs before calling the model.
+        Recall that our dataloader loads stacktraces from the same project together, sorted by query string.
+        """
+        queries = inputs["query_stacktrace_string"]
+        candidates = inputs["candidate_stacktrace_string"]
+
+        device = self.encoder.device
+
+        texts_unique, inverse_indices = np.unique(queries + candidates, return_inverse=True)
+        inverse_indices = torch.as_tensor(inverse_indices, device=device)
+
+        encodings = self.encoder.tokenize(texts_unique.tolist(), return_tensors="pt", padding=True)
+        encodings = {k: v.to(device) for k, v in encodings.items()}
+        embeddings_unique: torch.Tensor = self.encoder(encodings)["sentence_embedding"]
+
+        all_embeddings = embeddings_unique[inverse_indices]
+        num_queries = len(queries)
+        query_embeddings = all_embeddings[:num_queries]
+        candidate_embeddings = all_embeddings[num_queries:]
+
+        return gt.data.Features(query_embeddings=query_embeddings, candidate_embeddings=candidate_embeddings)
+
+    def forward(self, inputs: gt.data.Batch, labels: torch.Tensor) -> torch.Tensor:
+        features = self.encode(inputs)
+        return self.loss(features, labels)
+
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None) -> None:
+        self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
+
+    @classmethod
+    def from_checkpoint(cls, checkpoint_dir: str, encoder: SentenceTransformer) -> "ModelForTraining":
+        loss = gt.loss.SigmoidPairwiseLoss()
+        model = cls(encoder=encoder, loss=loss)
+        safetensors_load_model(model, os.path.join(checkpoint_dir, "model.safetensors"))
+        return model
 
 
 class Trainer(SentenceTransformerTrainer):
     """
-    Unlike `SentenceTransformerTrainer`, this `Trainer` assumes all parameters are attached to the `model`. Parameters
-    for the loss (that are irrelevant to inference) should be attached to the model as a `head_for_loss` module.
-    Internally, this module is passed to the loss function, and is excluded from the saved model checkpoint.
-
-    This assumption makes things like DDP and FSDP work out of the box.
+    Inputs a module whose forward method computes the loss. This change makes things like DDP and FSDP work out of the
+    box. The saved model is not what should be used for inference. Its `.encoder` is saved separately using
+    `trainer.model.save_for_inference()`.
 
     Note
     ----
@@ -197,11 +227,11 @@ class Trainer(SentenceTransformerTrainer):
     query.
     """
 
-    model: gt.loss.TrainableSentenceTransformer
+    model: ModelForTraining
 
     def __init__(
         self,
-        model: gt.loss.TrainableSentenceTransformer,
+        model: ModelForTraining,
         *args,
         shuffle_within_dataset: bool = False,
         per_device_token_budget: int = 8192 * 4,  # works for A100 80GB w/o sdpa (like jina-ai)
@@ -210,8 +240,8 @@ class Trainer(SentenceTransformerTrainer):
         super().__init__(model, *args, **kwargs)
         self.shuffle_within_dataset = shuffle_within_dataset
         self.per_device_token_budget = per_device_token_budget
-        if not hasattr(model, "head_for_loss"):
-            raise ValueError("Model must have a head_for_loss module")
+        self.loss = None
+        "The loss is part of the model."
 
     def add_model_card_callback(self, default_args_dict):
         """
@@ -219,8 +249,34 @@ class Trainer(SentenceTransformerTrainer):
         """
         return None
 
-    def live_device(self) -> torch.device:
-        return next(self.model.parameters()).device
+    def _include_prompt_length(self) -> bool:
+        for module in self.model.encoder:
+            if isinstance(module, Pooling):
+                return not module.include_prompt
+        return False
+
+    def call_model_init(self, trial=None):
+        return super(SentenceTransformerTrainer, self).call_model_init(trial=trial)
+
+    def collect_features(self, inputs: gt.data.Batch) -> tuple[gt.data.Batch, torch.Tensor]:
+        """
+        Pass-through. The model encodes and calculates the loss.
+        """
+        return inputs, inputs["label"]
+
+    def prepare_loss(self, loss, model):
+        """
+        Pass-through. The model has the loss module. So it's on the device.
+        """
+        return loss
+
+    def compute_loss(
+        self, model: ModelForTraining, inputs: gt.data.Batch, return_outputs: bool = False, num_items_in_batch=None
+    ):
+        loss = model(inputs, inputs["label"])
+        if return_outputs:
+            return loss, {}
+        return loss
 
     def get_batch_sampler(
         self,
@@ -242,37 +298,8 @@ class Trainer(SentenceTransformerTrainer):
         )
         return BatchSampler(sampler=sampler, batch_size=batch_size, drop_last=drop_last)
 
-    def collect_features(self, inputs: gt.data.Batch) -> tuple[gt.loss.FeaturesWithHead, torch.Tensor]:
-        """
-        Deduplicates inputs before calling the model.
-        Recall that our dataloader loads stacktraces from the same project together, sorted by query string.
-        """
-        queries = inputs["query_stacktrace_string"]
-        candidates = inputs["candidate_stacktrace_string"]
-
-        device = self.live_device()
-
-        texts_unique, inverse_indices = np.unique(queries + candidates, return_inverse=True)
-        inverse_indices = torch.as_tensor(inverse_indices, device=device)
-
-        encodings = self.model.tokenize(texts_unique.tolist(), return_tensors="pt", padding=True)
-        encodings = {k: v.to(device) for k, v in encodings.items()}
-        embeddings_unique: torch.Tensor = self.model(encodings)["sentence_embedding"]
-
-        all_embeddings = embeddings_unique[inverse_indices]
-        num_queries = len(queries)
-        query_embeddings = all_embeddings[:num_queries]
-        candidate_embeddings = all_embeddings[num_queries:]
-
-        features_with_head = gt.loss.FeaturesWithHead(
-            query_embeddings=query_embeddings,
-            candidate_embeddings=candidate_embeddings,
-            head_for_loss=self.model.head_for_loss,
-        )
-        return features_with_head, inputs["label"].to(device)
-
     def _count_tokens(self, text: str) -> int:
-        return self.model.tokenize([text])["input_ids"].shape[1]
+        return self.model.encoder.tokenize([text])["input_ids"].shape[1]
 
     def training_step(
         self,
@@ -356,20 +383,20 @@ class Trainer(SentenceTransformerTrainer):
 
         return sum(losses)  # we already re-scaled each loss
 
-    def get_default_decay_parameter_names(self, model) -> list[str]:
+    def get_default_decay_parameter_names(self, model: ModelForTraining) -> list[str]:
         # Rename the method `get_decay_parameter_names` for clarity. The `forbidden_name_patterns` list is hardcoded.
         return super().get_decay_parameter_names(model)
 
-    def get_decay_parameter_names(self, model) -> list[str]:
+    def get_decay_parameter_names(self, model: ModelForTraining) -> list[str]:
         """
-        Additionally excludes `head_for_loss.log_scale`.
+        Additionally excludes `loss.log_scale`.
         """
         default_decay_parameters = set(self.get_default_decay_parameter_names(model))
-        default_decay_parameters.discard("head_for_loss.log_scale")
+        default_decay_parameters.discard("loss.log_scale")
         return list(default_decay_parameters)
 
     def get_optimizer_cls_and_kwargs(
-        self, args: SentenceTransformerTrainingArguments, model: SentenceTransformer | None = None
+        self, args: SentenceTransformerTrainingArguments, model: ModelForTraining | None = None
     ):
         """
         Overrides optimizer param groups to be based on the model, not the loss.
@@ -398,6 +425,7 @@ class Trainer(SentenceTransformerTrainer):
                     "weight_decay": 0.0,
                 },
             ]
+        # TODO: type optimizer_kwargs
 
         # One of "params", "model", or "optimizer_dict" should be present.
         optimizer_param_keys = set(optimizer_kwargs.keys()) & {"params", "model", "optimizer_dict"}
@@ -444,20 +472,10 @@ class Trainer(SentenceTransformerTrainer):
         return optimizer_cls, optimizer_kwargs
 
     def _save(self, output_dir: str | None = None, state_dict=None) -> None:
-        output_dir = output_dir if output_dir is not None else self.args.output_dir
-        os.makedirs(output_dir, exist_ok=True)
+        super(SentenceTransformerTrainer, self)._save(output_dir, state_dict=state_dict)
 
-        with _temp_delattr(self.model, "head_for_loss"):
-            super()._save(output_dir, state_dict=state_dict)
-
-        # We need to save head_for_loss so that we can:
-        # - resume training from a checkpoint
-        # - use its parameters during mid-train evaluation.
-        # Saved separately so that the model can be loaded to do inference using a plain SentenceTransformer.
-        head_for_loss_state = {
-            key: cast(torch.Tensor, tensor).cpu() for key, tensor in self.model.head_for_loss.state_dict().items()
-        }
-        torch.save(head_for_loss_state, os.path.join(output_dir, "head_for_loss.pt"))
+    def _load_from_checkpoint(self, checkpoint_path: str) -> None:
+        super(SentenceTransformerTrainer, self)._load_from_checkpoint(checkpoint_path)
 
 
 class GCSCheckpointUploadCallback(TrainerCallback):
@@ -480,12 +498,12 @@ class GCSCheckpointUploadCallback(TrainerCallback):
     def _upload_checkpoint(self, checkpoint_path: str, gcs_dest: str):
         try:
             subprocess.run(
-                ["gsutil", "-m", "rsync", "-r", checkpoint_path, gcs_dest],
+                ["gcloud", "storage", "rsync", "-r", checkpoint_path, gcs_dest],
                 check=True,
             )
             # Sentinel indicating upload is complete
             subprocess.run(
-                ["gsutil", "cp", "-", f"{gcs_dest}/.done"],
+                ["gcloud", "storage", "cp", "-", f"{gcs_dest}/.done"],
                 input=b"",
                 check=True,
             )
@@ -508,7 +526,7 @@ class GCSCheckpointUploadCallback(TrainerCallback):
         self._join_prev_thread()
         try:
             subprocess.run(
-                ["gsutil", "cp", "-", f"{self.gcs_dir}/.training_done"],
+                ["gcloud", "storage", "cp", "-", f"{self.gcs_dir}/.training_done"],
                 input=b"",
                 check=True,
             )
@@ -525,14 +543,17 @@ class TrainingConfig(BaseModel):
     # Training args
     per_device_train_batch_size: int
     per_device_token_budget: int
-    training_csvs: tuple[str, ...] = ("final_csvs/train.csv", "final_csvs/synthetic-semi-easy-negatives.csv")
+    training_csvs: tuple[str, ...] = (
+        "final_csvs/train.csv",
+        "final_csvs/synthetic-semi-easy-negatives.csv",
+    )  # TODO: Literal
     sample_size_train: int | None = None  # downsample for CPU sanity check runs
     gradient_checkpointing: bool = False
     log_of_scale_init: float = math.log(5)
     learning_rate: float = 1e-4
     learning_rate_mapping: dict[str, float] = {
-        r"^head_for_loss\.log_scale$": 2e-4,
-        r"^head_for_loss\.bias$": 2e-4,
+        r"^loss\.log_scale$": 2e-4,
+        r"^loss\.bias$": 2e-4,
     }
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
@@ -588,19 +609,20 @@ def run(
     assert "batch" not in repr(model[0].auto_model).lower(), (
         "Batch transformations like batch norm mess up deduplication"
     )
-    if not hasattr(model, "head_for_loss"):
-        _ = model.encode("test")  # tiny warm up using the regular forward
-    model = gt.loss.add_head_to_model(
-        model,
-        gt.loss.CalibrationHead(
+    model_for_training = ModelForTraining(
+        encoder=model,
+        loss=gt.loss.SigmoidPairwiseLoss(
             bias_init=init_bias(frac_positive),
             log_of_scale_init=torch.tensor(training_config.log_of_scale_init),
+            matryoshka_dims=list(training_config.matryoshka_dims),
+            matryoshka_weights=list(training_config.matryoshka_weights),
+            n_dims_per_step=training_config.n_dims_per_step,
         ),
     )
 
     # Build trainer
     trainer = gt.train.Trainer(
-        model=model,
+        model=model_for_training,
         args=SentenceTransformerTrainingArguments(
             output_dir=f"./{run_name}-output",
             bf16=torch.cuda.is_bf16_supported(),
@@ -635,12 +657,7 @@ def run(
         ),
         #
         # Training
-        loss=gt.loss.SigmoidPairwiseLoss(
-            matryoshka_dims=list(training_config.matryoshka_dims),
-            matryoshka_weights=list(training_config.matryoshka_weights),
-            n_dims_per_step=training_config.n_dims_per_step,
-        ),
-        data_collator=gt.train.DefaultDataCollator(tokenize_fn=model.tokenize),
+        data_collator=gt.train.DefaultDataCollator(tokenize_fn=model_for_training.encoder.tokenize),
         train_dataset=dataset_dict_train,
         shuffle_within_dataset=False,  # more cache hits in each forward
         per_device_token_budget=training_config.per_device_token_budget,
@@ -656,21 +673,11 @@ def run(
     gcs_dir = f"gs://grouping-data/runs/{run_name}"
     wandb.init(project=training_config.wandb_project, name=run_name)
 
-    print(f"\nRun on L4: python eval/eval_poller.py --gcs-dir {gcs_dir} --wandb-run-id {wandb.run.id}\n")
+    base_model = model_for_training.encoder.model_card_data.base_model
+    print(f"\nRun on L4: python eval/eval_poller.py --gcs-dir {gcs_dir} --wandb-run-id {wandb.run.id} --base-model {base_model}\n")
 
     # Set up trainer
     trainer.add_callback(gt.train.GCSCheckpointUploadCallback(gcs_dir=gcs_dir))
-    if (training_config.resume_from_checkpoint is not None) and (
-        (
-            last_checkpoint := (
-                training_config.resume_from_checkpoint
-                if isinstance(training_config.resume_from_checkpoint, str)
-                else get_last_checkpoint(trainer.args.output_dir)
-            )
-        )
-        is not None
-    ):
-        gt.loss.add_head_to_model_from_checkpoint(model, last_checkpoint)
 
     # Train
     warnings.filterwarnings(
@@ -678,16 +685,17 @@ def run(
         message=".*torch.utils.checkpoint: the use_reentrant parameter.*",
         category=UserWarning,
     )
-    train_output = cast(TrainOutput, trainer.train())
+    train_output = cast(TrainOutput, trainer.train(resume_from_checkpoint=training_config.resume_from_checkpoint))
     trainer.save_model()
+    trainer.model.encoder.save_pretrained(os.path.join(trainer.args.output_dir, "inference"))
 
     # Upload wandb artifacts and final model to GCS
     subprocess.run(
-        ["gsutil", "-m", "cp", "-r", "wandb", f"{gcs_dir}/wandb"],
+        ["gcloud", "storage", "cp", "-r", "wandb", f"{gcs_dir}/wandb"],
         check=True,
     )
     subprocess.run(
-        ["gsutil", "-m", "rsync", "-r", trainer.args.output_dir, f"{gcs_dir}/training"],
+        ["gcloud", "storage", "rsync", "-r", trainer.args.output_dir, f"{gcs_dir}/training"],
         check=True,
     )
     logger.info(f"Uploaded wandb artifacts and model to {gcs_dir}")

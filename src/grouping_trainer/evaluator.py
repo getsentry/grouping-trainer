@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import logging
 import os
-from typing import Protocol
 
 import numpy as np
 
@@ -15,7 +14,6 @@ import torch
 
 import grouping_trainer as gt
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -26,12 +24,6 @@ def _metric_name(*, dim: int, target_precision: float, metric: str) -> str:
 
 def _metric_name_loss(*, dim: int) -> str:
     return f"dim{dim}_loss"
-
-
-class LossFromSimilarities(Protocol):
-    def __call__(
-        self, similarities: torch.Tensor, labels: torch.Tensor, head_for_loss: torch.nn.Module
-    ) -> torch.Tensor: ...
 
 
 class MinPrecisionEvaluator(SentenceEvaluator):
@@ -87,11 +79,10 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
     def __call__(
         self,
-        model: SentenceTransformer | gt.loss.TrainableSentenceTransformer,
+        model: SentenceTransformer | gt.train.ModelForTraining,
         output_path: str | None = None,
         epoch: int = -1,
         steps: int = -1,
-        loss_from_similarities: LossFromSimilarities | None = None,
     ) -> dict[str, float]:
         """
         Compute the evaluation metrics for the given model.
@@ -115,7 +106,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
         logger.info(f"Min Precision Evaluation of the model on the {self.name} dataset{out_txt}:")
 
-        dims, raw_metrics = self.compute_metrics(model, loss_from_similarities=loss_from_similarities)
+        dims, raw_metrics = self.compute_metrics(model)
 
         # Build CSV headers on first call (now that we know actual metrics)
         if self.csv_headers is None:
@@ -160,7 +151,8 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
         # Prefix with name
         metrics = self.prefix_name_to_metrics(raw_metrics, self.name)
-        self.store_metrics_in_model_card_data(model, metrics, epoch, steps)
+        encoder = model.encoder if isinstance(model, gt.train.ModelForTraining) else model
+        self.store_metrics_in_model_card_data(encoder, metrics, epoch, steps)
 
         return metrics
 
@@ -178,11 +170,12 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
     def embed_inputs(
         self,
-        model: SentenceTransformer | gt.loss.TrainableSentenceTransformer,
+        model: SentenceTransformer | gt.train.ModelForTraining,
         sentences: str | list[str],
         **encode_kwargs,
     ) -> torch.Tensor:
-        return model.encode(
+        encoder = model.encoder if isinstance(model, gt.train.ModelForTraining) else model
+        return encoder.encode(
             sentences,
             batch_size=self.batch_size,
             show_progress_bar=self.show_progress_bar,
@@ -201,8 +194,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
     def compute_metrics(
         self,
-        model: SentenceTransformer | gt.loss.TrainableSentenceTransformer,
-        loss_from_similarities: LossFromSimilarities | None = None,
+        model: SentenceTransformer | gt.train.ModelForTraining,
     ) -> tuple[tuple[int, ...], dict[str, float]]:
         """
         Compute embeddings, similarities, and find thresholds for each dimension and target precision.
@@ -212,7 +204,8 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         """
         sentences = list(set(self.sentences1 + self.sentences2))
         embeddings = self.embed_inputs(model, sentences)
-        assert embeddings.device == model.device
+        encoder = model.encoder if isinstance(model, gt.train.ModelForTraining) else model
+        assert embeddings.device == encoder.device
         sentence_to_embedding = {sentence: embedding for sentence, embedding in zip(sentences, embeddings, strict=True)}
         embeddings1 = torch.stack([sentence_to_embedding[sentence] for sentence in self.sentences1])
         embeddings2 = torch.stack([sentence_to_embedding[sentence] for sentence in self.sentences2])
@@ -225,13 +218,12 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
             similarities = pairwise_cos_sim(embeddings1_truncated, embeddings2_truncated)
 
-            # Compute loss while we're here
-            if loss_from_similarities is not None:
+            # Compute loss if model includes the loss head
+            if isinstance(model, gt.train.ModelForTraining):
                 with torch.inference_mode():
-                    loss = loss_from_similarities(
+                    loss = model.loss.compute_loss_from_similarities(
                         similarities,
-                        labels=torch.as_tensor(self.labels, device=embeddings1.device),
-                        head_for_loss=model.head_for_loss,
+                        labels=torch.as_tensor(self.labels, device=embeddings1.device, dtype=torch.float),
                     )
                 metric_name_to_value[_metric_name_loss(dim=dim)] = loss.detach().cpu().item()
 
