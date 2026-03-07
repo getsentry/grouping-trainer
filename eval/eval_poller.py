@@ -111,9 +111,9 @@ def main(args: EvalPollerConfig | None = None):
                 model.warmup_and_compile()
 
                 loss_from_similarities = None
-                head_for_loss_path = os.path.join(tmp_dir, "calibration_head.pt")
+                head_for_loss_path = os.path.join(tmp_dir, "head_for_loss.pt")
                 if os.path.exists(head_for_loss_path):
-                    gt.loss.add_head_to_model_from_checkpoint(model, tmp_dir)
+                    gt.loss.add_head_to_model_from_checkpoint(model, checkpoint_dir=tmp_dir)
                     loss = gt.loss.SigmoidPairwiseLoss()
                     loss.eval()
                     loss_from_similarities = loss.compute_loss_from_similarities

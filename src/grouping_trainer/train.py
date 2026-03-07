@@ -185,8 +185,8 @@ def _temp_delattr(obj, name: str):
 class Trainer(SentenceTransformerTrainer):
     """
     Unlike `SentenceTransformerTrainer`, this `Trainer` assumes all parameters are attached to the `model`. Parameters
-    for the loss should be attached to the model as a `head_for_loss` module. Internally, this module is passed to the
-    loss function.
+    for the loss (that are irrelevant to inference) should be attached to the model as a `head_for_loss` module.
+    Internally, this module is passed to the loss function, and is excluded from the saved model checkpoint.
 
     This assumption makes things like DDP and FSDP work out of the box.
 
@@ -210,8 +210,8 @@ class Trainer(SentenceTransformerTrainer):
         super().__init__(model, *args, **kwargs)
         self.shuffle_within_dataset = shuffle_within_dataset
         self.per_device_token_budget = per_device_token_budget
-        if not hasattr(model, "calibration_head"):
-            raise ValueError("Model must have a calibration_head module")
+        if not hasattr(model, "head_for_loss"):
+            raise ValueError("Model must have a head_for_loss module")
 
     def add_model_card_callback(self, default_args_dict):
         """
@@ -267,7 +267,7 @@ class Trainer(SentenceTransformerTrainer):
         features_with_head = gt.loss.FeaturesWithHead(
             query_embeddings=query_embeddings,
             candidate_embeddings=candidate_embeddings,
-            calibration_head=self.model.calibration_head,
+            head_for_loss=self.model.head_for_loss,
         )
         return features_with_head, inputs["label"].to(device)
 
@@ -356,6 +356,18 @@ class Trainer(SentenceTransformerTrainer):
 
         return sum(losses)  # we already re-scaled each loss
 
+    def get_default_decay_parameter_names(self, model) -> list[str]:
+        # Rename the method `get_decay_parameter_names` for clarity. The `forbidden_name_patterns` list is hardcoded.
+        return super().get_decay_parameter_names(model)
+
+    def get_decay_parameter_names(self, model) -> list[str]:
+        """
+        Additionally excludes `head_for_loss.log_scale`.
+        """
+        default_decay_parameters = set(self.get_default_decay_parameter_names(model))
+        default_decay_parameters.discard("head_for_loss.log_scale")
+        return list(default_decay_parameters)
+
     def get_optimizer_cls_and_kwargs(
         self, args: SentenceTransformerTrainingArguments, model: SentenceTransformer | None = None
     ):
@@ -435,17 +447,17 @@ class Trainer(SentenceTransformerTrainer):
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
 
-        with _temp_delattr(self.model, "calibration_head"):
+        with _temp_delattr(self.model, "head_for_loss"):
             super()._save(output_dir, state_dict=state_dict)
 
-        # We need to save calibration_head so that we can:
+        # We need to save head_for_loss so that we can:
         # - resume training from a checkpoint
         # - use its parameters during mid-train evaluation.
         # Saved separately so that the model can be loaded to do inference using a plain SentenceTransformer.
-        calibration_head_state = {
-            key: cast(torch.Tensor, tensor).cpu() for key, tensor in self.model.calibration_head.state_dict().items()
+        head_for_loss_state = {
+            key: cast(torch.Tensor, tensor).cpu() for key, tensor in self.model.head_for_loss.state_dict().items()
         }
-        torch.save(calibration_head_state, os.path.join(output_dir, "calibration_head.pt"))
+        torch.save(head_for_loss_state, os.path.join(output_dir, "head_for_loss.pt"))
 
 
 class GCSCheckpointUploadCallback(TrainerCallback):
@@ -519,8 +531,8 @@ class TrainingConfig(BaseModel):
     log_of_scale_init: float = math.log(5)
     learning_rate: float = 1e-4
     learning_rate_mapping: dict[str, float] = {
-        r"^log_scale$": 2e-4,
-        r"^bias$": 2e-4,
+        r"^head_for_loss\.log_scale$": 2e-4,
+        r"^head_for_loss\.bias$": 2e-4,
     }
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
@@ -538,7 +550,9 @@ class TrainingConfig(BaseModel):
 
 
 def init_bias(frac_positive: float) -> float:
-    return math.log(frac_positive / (1 - frac_positive))
+    bias_init = math.log(frac_positive / (1 - frac_positive))
+    print(f"Bias init: {bias_init:.4f}")
+    return bias_init
 
 
 @overload
@@ -563,6 +577,10 @@ def run(
         min_dataset_size=training_config.per_device_train_batch_size,
         paths=training_config.training_csvs,
     )
+    print(
+        f"Packed {len(dataset_dict_train['__packed__'])} pairs from projects w/ fewer than "
+        f"{training_config.per_device_train_batch_size} rows into a single dataset."
+    )
     print(f"Training dataset: {len(dataset_dict_train):,} projects, {sum(dataset_dict_train.num_rows.values()):,} rows")
 
     # Set up model
@@ -570,6 +588,8 @@ def run(
     assert "batch" not in repr(model[0].auto_model).lower(), (
         "Batch transformations like batch norm mess up deduplication"
     )
+    if not hasattr(model, "head_for_loss"):
+        _ = model.encode("test")  # tiny warm up using the regular forward
     model = gt.loss.add_head_to_model(
         model,
         gt.loss.CalibrationHead(
@@ -577,7 +597,6 @@ def run(
             log_of_scale_init=torch.tensor(training_config.log_of_scale_init),
         ),
     )
-    _ = model.encode("test")
 
     # Build trainer
     trainer = gt.train.Trainer(

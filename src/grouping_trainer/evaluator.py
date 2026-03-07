@@ -30,7 +30,7 @@ def _metric_name_loss(*, dim: int) -> str:
 
 class LossFromSimilarities(Protocol):
     def __call__(
-        self, similarities: torch.Tensor, labels: torch.Tensor, calibration_head: gt.loss.CalibrationHead
+        self, similarities: torch.Tensor, labels: torch.Tensor, head_for_loss: torch.nn.Module
     ) -> torch.Tensor: ...
 
 
@@ -231,7 +231,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
                     loss = loss_from_similarities(
                         similarities,
                         labels=torch.as_tensor(self.labels, device=embeddings1.device),
-                        calibration_head=model.calibration_head,
+                        head_for_loss=model.head_for_loss,
                     )
                 metric_name_to_value[_metric_name_loss(dim=dim)] = loss.detach().cpu().item()
 
