@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import random
+import re
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -183,6 +184,12 @@ def _temp_delattr(obj, name: str):
 
 class Trainer(SentenceTransformerTrainer):
     """
+    Unlike `SentenceTransformerTrainer`, this `Trainer` assumes all parameters are attached to the `model`. Parameters
+    for the loss should be attached to the model as a `head_for_loss` module. Internally, this module is passed to the
+    loss function.
+
+    This assumption makes things like DDP and FSDP work out of the box.
+
     Note
     ----
     Should pass `multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL` to get some interleaving of
@@ -203,6 +210,8 @@ class Trainer(SentenceTransformerTrainer):
         super().__init__(model, *args, **kwargs)
         self.shuffle_within_dataset = shuffle_within_dataset
         self.per_device_token_budget = per_device_token_budget
+        if not hasattr(model, "calibration_head"):
+            raise ValueError("Model must have a calibration_head module")
 
     def add_model_card_callback(self, default_args_dict):
         """
@@ -236,6 +245,7 @@ class Trainer(SentenceTransformerTrainer):
     def collect_features(self, inputs: gt.data.Batch) -> tuple[gt.loss.FeaturesWithHead, torch.Tensor]:
         """
         Deduplicates inputs before calling the model.
+        Recall that our dataloader loads stacktraces from the same project together, sorted by query string.
         """
         queries = inputs["query_stacktrace_string"]
         candidates = inputs["candidate_stacktrace_string"]
@@ -276,7 +286,6 @@ class Trainer(SentenceTransformerTrainer):
 
         NOTE: training_step corresponds to one optimizer.step call.
         """
-        # No context parallelism here. I highly doubt we need that. Rather DDP if we have multiple GPUs.
         model.train()
         if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
             self.optimizer.train()
@@ -346,6 +355,81 @@ class Trainer(SentenceTransformerTrainer):
         losses.append(loss)
 
         return sum(losses)  # we already re-scaled each loss
+
+    def get_optimizer_cls_and_kwargs(
+        self, args: SentenceTransformerTrainingArguments, model: SentenceTransformer | None = None
+    ):
+        """
+        Overrides optimizer param groups to be based on the model, not the loss.
+        """
+        # NOTE: ideally this logic is in a superclass method where the model is passed.
+
+        if model is None:  # NOTE: this model is only wrapped when using sagemaker MP
+            model = self.model
+
+        optimizer_cls, optimizer_kwargs = super(SentenceTransformerTrainer, self).get_optimizer_cls_and_kwargs(
+            args, model
+        )
+
+        decay_parameters = self.get_decay_parameter_names(model)
+
+        # If the superclass did not already provide optimizer groups, create them from model params.
+        if not {"params", "model", "optimizer_dict"} & set(optimizer_kwargs.keys()):
+            # NOTE: optimizer_dict is what Trainer uses to store param groups to avoid argument conflicts.
+            optimizer_kwargs["optimizer_dict"] = [
+                {
+                    "params": [p for n, p in model.named_parameters() if n in decay_parameters and p.requires_grad],
+                    "weight_decay": self.args.weight_decay,
+                },
+                {
+                    "params": [p for n, p in model.named_parameters() if n not in decay_parameters and p.requires_grad],
+                    "weight_decay": 0.0,
+                },
+            ]
+
+        # One of "params", "model", or "optimizer_dict" should be present.
+        optimizer_param_keys = set(optimizer_kwargs.keys()) & {"params", "model", "optimizer_dict"}
+        optimizer_param_key = optimizer_param_keys.pop() if optimizer_param_keys else "optimizer_dict"
+
+        for parameter_pattern, learning_rate in args.learning_rate_mapping.items():
+            matching_params = {n: p for n, p in model.named_parameters() if re.search(parameter_pattern, n)}
+
+            if not matching_params:
+                raise ValueError(
+                    f"No parameters found matching the pattern '{parameter_pattern}' in the model. "
+                    "Please check the pattern and ensure it matches some of the model's parameters."
+                )
+
+            # Remove matching params from any existing optimizer groups so they can be re-added
+            # with their custom learning rate.
+            for group in optimizer_kwargs[optimizer_param_key]:
+                if "params" in group:
+                    group["params"] = [
+                        p for p in group["params"] if all(p is not param for param in matching_params.values())
+                    ]
+
+            matching_params_with_decay = {n: p for n, p in matching_params.items() if n in decay_parameters}
+            matching_params_without_decay = {n: p for n, p in matching_params.items() if n not in decay_parameters}
+
+            if matching_params_with_decay:
+                optimizer_kwargs[optimizer_param_key].append(
+                    {
+                        "params": list(matching_params_with_decay.values()),
+                        "lr": learning_rate,
+                        "weight_decay": self.args.weight_decay,
+                    }
+                )
+
+            if matching_params_without_decay:
+                optimizer_kwargs[optimizer_param_key].append(
+                    {
+                        "params": list(matching_params_without_decay.values()),
+                        "lr": learning_rate,
+                        "weight_decay": 0.0,
+                    }
+                )
+
+        return optimizer_cls, optimizer_kwargs
 
     def _save(self, output_dir: str | None = None, state_dict=None) -> None:
         output_dir = output_dir if output_dir is not None else self.args.output_dir
@@ -434,7 +518,10 @@ class TrainingConfig(BaseModel):
     gradient_checkpointing: bool = False
     log_of_scale_init: float = math.log(5)
     learning_rate: float = 1e-4
-    learning_rate_mapping: dict[str, float] = {r"^log_scale$": 2e-4, r"^bias$": 2e-4}
+    learning_rate_mapping: dict[str, float] = {
+        r"^log_scale$": 2e-4,
+        r"^bias$": 2e-4,
+    }
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
     resume_from_checkpoint: str | bool | None = None
