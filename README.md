@@ -11,7 +11,7 @@ Training code for Sentry's AI grouping model.
 
     ```bash
     ./bin/flex_h100.sh   # training
-    ./bin/flex_l4.sh     # async eval
+    ./bin/create_l4.sh     # async eval
     ```
 
 2. SSH into the H100, wait for setup (`cat /tmp/setup-done`), then:

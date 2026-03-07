@@ -4,7 +4,9 @@ import math
 import os
 import random
 import re
+import shutil
 import subprocess
+import tempfile
 import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
@@ -535,6 +537,26 @@ class GCSCheckpointUploadCallback(TrainerCallback):
             logger.exception("Failed to write .training_done sentinel")
 
 
+def _launch_l4_eval(eval_cmd: str):
+    """Copy the startup script to a tempfile with the eval command appended, then create the L4 instance."""
+    startup_path = os.path.join(os.path.dirname(__file__), "../../bin/_startup.sh")
+    # Append the eval command to run after setup, activating the conda env.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as tmp:
+        shutil.copyfileobj(open(startup_path), tmp)
+        tmp.write(f"\n{eval_cmd}\n")
+        tmp_path = tmp.name
+
+    try:
+        create_l4_path = os.path.join(os.path.dirname(__file__), "../../bin/create_l4.sh")
+        with open(create_l4_path) as f:
+            create_script = f.read()
+        create_script = create_script.replace("startup-script=bin/_startup.sh", f"startup-script={tmp_path}")
+        subprocess.run(["bash", "-c", create_script], check=True)
+    finally:
+        os.unlink(tmp_path)
+    logger.info("Created l4-eval instance with eval poller in startup script")
+
+
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -673,8 +695,11 @@ def run(
     gcs_dir = f"gs://grouping-data/runs/{run_name}"
     wandb.init(project=training_config.wandb_project, name=run_name)
 
+    # Create an instance which polls for checkpoints and evaluates them
     base_model = model_for_training.encoder.model_card_data.base_model
-    print(f"\nRun on L4: python eval/eval_poller.py --gcs-dir {gcs_dir} --wandb-run-id {wandb.run.id} --base-model {base_model}\n")
+    eval_cmd = f"python eval/eval_poller.py --gcs-dir {gcs_dir} --wandb-run-id {wandb.run.id} --base-model {base_model}"
+    print(f"\nEval command: {eval_cmd}\n")
+    _launch_l4_eval(eval_cmd)
 
     # Set up trainer
     trainer.add_callback(gt.train.GCSCheckpointUploadCallback(gcs_dir=gcs_dir))
