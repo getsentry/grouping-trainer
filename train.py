@@ -1,6 +1,6 @@
 """
 Trains a model, logs to wandb, and saves it to local and GCS.
-Evaluation runs async on a separate machine.
+Evaluation runs async on a separate machine. See eval/eval_poller.py
 """
 
 import torch
@@ -10,9 +10,13 @@ import grouping_trainer as gt
 
 
 def main(mini_cpu_test: bool = False):
-    """Train a grouping model.
+    """
+    Train a grouping model.
 
-    :param mini_cpu_test: Run a mini training run on CPU to sanity check the code.
+    Parameters
+    ----------
+    mini_cpu_test
+        Run a mini training run on CPU to sanity check plumbing.
     """
     is_cuda = torch.cuda.is_available()
 

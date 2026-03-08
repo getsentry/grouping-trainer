@@ -77,7 +77,7 @@ def download_checkpoint(checkpoint_gcs_path: str, local_dir: str):
     subprocess.run(["gcloud", "storage", "rsync", "-r", checkpoint_gcs_path, local_dir], check=True)
 
 
-def make_evaluator(sample_val: int, truncate_dims: tuple[int, ...]) -> gt.evaluator.MinPrecisionEvaluator:
+def make_evaluator(sample_val: int | None, truncate_dims: tuple[int, ...]) -> gt.evaluator.MinPrecisionEvaluator:
     dataset_val = gt.train.df_to_dataset(gt.data.load_val_df(sample_size=sample_val))
     return gt.evaluator.MinPrecisionEvaluator(
         sentences1=list(dataset_val["query_stacktrace_string"]),
@@ -171,9 +171,29 @@ def main(
     base_model: str = "Alibaba-NLP/gte-modernbert-base",
     wandb_project: str = "grouping-trainer",
     poll_interval_sec: int = 120,
-    sample_val: int = 8000,
+    sample_val: int | None = 20_000,
     truncate_dims: tuple[int, ...] = (64, 768),
 ):
+    """
+    Poll GCS for new training checkpoints and evaluate each one.
+
+    Parameters
+    ----------
+    run_gcs_dir
+        GCS path to the training run directory (e.g. gs://grouping-data/runs/...).
+    wandb_run_id
+        W&B run ID to resume logging into (from the training job).
+    base_model
+        HuggingFace model ID for the base encoder. Used to load architecture before applying checkpoint weights.
+    wandb_project
+        W&B project name.
+    poll_interval_sec
+        Seconds to sleep between polling cycles when no new checkpoints are found.
+    sample_val
+        Number of validation examples to sample. None uses the full val set.
+    truncate_dims
+        Matryoshka dimensions to evaluate at.
+    """
     wandb.login()
     wandb.init(id=wandb_run_id, project=wandb_project, resume="allow")
 
