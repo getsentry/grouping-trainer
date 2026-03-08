@@ -10,8 +10,7 @@ import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
 from contextlib import nullcontext
-from typing import Callable, Literal, cast, overload
-import warnings
+from typing import Callable
 
 from accelerate import DistributedType
 from safetensors.torch import load_model as safetensors_load_model
@@ -33,13 +32,11 @@ from torch.utils.data import (
 )
 from tqdm.auto import tqdm
 from transformers import TrainerCallback, TrainerState, TrainerControl, TrainingArguments
-from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, TrainOutput
+from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from transformers.utils.import_utils import (
     is_torch_cuda_available,
     is_torch_mps_available,
 )
-import wandb
-
 import grouping_trainer as gt
 
 logger = logging.getLogger(__name__)
@@ -238,7 +235,7 @@ class Trainer(SentenceTransformerTrainer):
         model: ModelForTraining,
         *args,
         shuffle_within_dataset: bool = False,
-        per_device_token_budget: int = 8192 * 4,  # works for A100 80GB w/o sdpa (like jina-ai)
+        per_device_token_budget: int = 8192 * 4,
         **kwargs,
     ):
         super().__init__(model, *args, **kwargs)
@@ -315,8 +312,11 @@ class Trainer(SentenceTransformerTrainer):
         Stacktrace lengths are intentionally variant.
         Reduce the chance of OOM by splitting `inputs` into sub-batches and accumulating gradients.
 
+        Couldn't get flash attention working, so can't use varlen.
+
         NOTE: training_step corresponds to one optimizer.step call.
         """
+        # TODO: maybe balance the sharded batch sampler across GPUs
         model.train()
         if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
             self.optimizer.train()
@@ -368,23 +368,39 @@ class Trainer(SentenceTransformerTrainer):
 
                 return loss.detach()
 
-        sub_batches = batch_pairs_by_token_budget(
-            inputs, token_budget=self.per_device_token_budget, count_tokens=self._count_tokens
+        sub_batches = list(
+            batch_pairs_by_token_budget(
+                inputs, token_budget=self.per_device_token_budget, count_tokens=self._count_tokens
+            )
         )
-        sub_iter = iter(sub_batches)
-        prev_sub_batch = next(sub_iter)
-        losses = []
+        num_sub_batches = len(sub_batches)
 
-        # Backward all but the last with no_sync
+        # Each GPU can have a different number of sub-batches. Need all to call backward() the same number of times with
+        # the same no_sync pattern, otherwise DDP deadlocks.
+        # To fix, pad to the max sub-batch count with dummy backward passes.
+        if self.accelerator.num_processes > 1:
+            local_count = torch.tensor([num_sub_batches], dtype=torch.long, device=self.accelerator.device)
+            max_sub_batches = self.accelerator.gather(local_count).max().item()
+        else:
+            max_sub_batches = num_sub_batches
+
         # Nesting another no_sync would break FSDP2. Its no_sync unconditionally re-enables sync on exit
         should_no_sync = self.accelerator.sync_gradients
-        for next_sub_batch in sub_iter:
-            loss = _backward_on_sub_batch(prev_sub_batch, no_sync=should_no_sync)
-            prev_sub_batch = next_sub_batch
-            losses.append(loss)
+        losses = []
 
-        loss = _backward_on_sub_batch(prev_sub_batch, no_sync=False)
-        losses.append(loss)
+        for sub_batch_idx in range(max_sub_batches):
+            is_last = sub_batch_idx == max_sub_batches - 1
+            no_sync = should_no_sync and not is_last
+
+            if sub_batch_idx < num_sub_batches:
+                loss = _backward_on_sub_batch(sub_batches[sub_batch_idx], no_sync=no_sync)
+                losses.append(loss)
+            else:
+                # Dummy backward to keep DDP in sync
+                dummy_loss = sum(p.sum() for p in model.parameters() if p.requires_grad) * 0.0
+                sync_ctx = self.accelerator.no_sync(model) if no_sync else nullcontext()
+                with sync_ctx:
+                    self.accelerator.backward(dummy_loss)
 
         return sum(losses)  # we already re-scaled each loss
 
@@ -473,14 +489,15 @@ class GCSCheckpointUploadCallback(TrainerCallback):
         logger.info("Wrote .training_done sentinel")
 
 
-def _launch_l4_eval(eval_cmd: str):
+def launch_l4_eval(eval_cmd: str):
     """
     Copy the startup script to a tempfile with the eval command appended, then create the L4 instance.
     """
     startup_path = os.path.join(os.path.dirname(__file__), "../../bin/_startup.sh")
     # Append the eval command to run after setup, activating the conda env.
     with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as tmp:
-        shutil.copyfileobj(open(startup_path), tmp)
+        with open(startup_path) as src:
+            shutil.copyfileobj(src, tmp)
         tmp.write(f"\n{eval_cmd}\n")
         tmp_path = tmp.name
 
@@ -536,19 +553,10 @@ def init_bias(frac_positive: float) -> float:
     return bias_init
 
 
-@overload
-def run(model: SentenceTransformer, training_config: TrainingConfig, just_make_trainer: Literal[True]) -> Trainer: ...
+def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) -> Trainer:
+    if model.model_card_data.base_model is None:
+        raise ValueError("Base model is not set in the model card. Please set it in the model card data.")
 
-
-@overload
-def run(
-    model: SentenceTransformer, training_config: TrainingConfig, just_make_trainer: Literal[False] = ...
-) -> TrainOutput: ...
-
-
-def run(
-    model: SentenceTransformer, training_config: TrainingConfig, just_make_trainer: bool = False
-) -> Trainer | TrainOutput:
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_name = f"{timestamp}-{training_config.run_shortname}"
 
@@ -558,10 +566,11 @@ def run(
         min_dataset_size=training_config.per_device_train_batch_size,
         paths=training_config.training_csvs,
     )
-    print(
-        f"Packed {len(dataset_dict_train['__packed__'])} pairs from projects w/ fewer than "
-        f"{training_config.per_device_train_batch_size} rows into a single dataset."
-    )
+    if "__packed__" in dataset_dict_train:
+        print(
+            f"Packed {len(dataset_dict_train['__packed__'])} pairs from projects w/ fewer than "
+            f"{training_config.per_device_train_batch_size} rows into a single dataset."
+        )
     print(f"Training dataset: {len(dataset_dict_train):,} projects, {sum(dataset_dict_train.num_rows.values()):,} rows")
 
     # Set up model
@@ -580,8 +589,7 @@ def run(
         ),
     )
 
-    # Build trainer
-    trainer = gt.train.Trainer(
+    return gt.train.Trainer(
         model=model_for_training,
         args=SentenceTransformerTrainingArguments(
             output_dir=f"./{run_name}",
@@ -608,7 +616,7 @@ def run(
             logging_strategy="steps",
             logging_steps=training_config.logging_steps,
             run_name=run_name,
-            report_to="wandb" if not just_make_trainer else "none",
+            report_to="wandb",
             #
             # Checkpointing
             save_strategy="steps",
@@ -621,46 +629,6 @@ def run(
         train_dataset=dataset_dict_train,
         shuffle_within_dataset=False,  # more cache hits in each forward
         per_device_token_budget=training_config.per_device_token_budget,
-        # Eval runs async on a separate machine (eval_poller.py)
+        #
+        # Eval runs async on a separate machine. See eval_poller.py
     )
-    assert trainer.args.output_dir is not None  # for typing
-
-    if just_make_trainer:
-        return trainer
-
-    # Set up wandb + GCS for training run
-    wandb.login()
-    run_gcs_dir = f"gs://grouping-data/runs/{run_name}"
-    wandb.init(project=training_config.wandb_project, name=run_name)
-
-    # Create an instance which polls for checkpoints and evaluates them
-    base_model = model_for_training.encoder.model_card_data.base_model
-    eval_cmd = f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --wandb_run_id {wandb.run.id} --base_model {base_model}"
-    print(f"\nEval command: {eval_cmd}\n")
-    _launch_l4_eval(eval_cmd)
-
-    # Set up trainer
-    trainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run_gcs_dir))
-
-    # Train
-    warnings.filterwarnings(
-        "ignore",
-        message=".*torch.utils.checkpoint: the use_reentrant parameter.*",
-        category=UserWarning,
-    )
-    train_output = cast(TrainOutput, trainer.train(resume_from_checkpoint=training_config.resume_from_checkpoint))
-    trainer.save_model()
-    trainer.model.encoder.save_pretrained(os.path.join(trainer.args.output_dir, "inference"))
-
-    # Upload wandb artifacts and final model to GCS
-    subprocess.run(
-        ["gcloud", "storage", "cp", "-r", "wandb", f"{run_gcs_dir}/wandb"],
-        check=True,
-    )
-    subprocess.run(
-        ["gcloud", "storage", "rsync", "-r", trainer.args.output_dir, f"{run_gcs_dir}/training"],
-        check=True,
-    )
-    logger.info(f"Uploaded wandb artifacts and model to {run_gcs_dir}")
-
-    return train_output

@@ -96,6 +96,11 @@ def make_encoder(base_model: str) -> gt.danger.SentenceTransformer:
     return encoder
 
 
+def log_eval_metrics(step: int, metrics: dict):
+    wandb.log({"train/global_step": step, **{f"eval_{key}": value for key, value in metrics.items()}})
+    logger.info(f"Step {step} eval: {metrics}")
+
+
 def evaluate_checkpoint(
     step: int,
     checkpoint_gcs_path: str,
@@ -112,16 +117,24 @@ def evaluate_checkpoint(
         model = gt.train.ModelForTraining.from_checkpoint(checkpoint_dir=tmp_dir, encoder=encoder)
         metrics = evaluator(model)
 
-    wandb.log({"train/global_step": step, **{f"eval_{key}": value for key, value in metrics.items()}})
+    log_eval_metrics(step, metrics)
     subprocess.run(
         ["gcloud", "storage", "cp", "-", f"{checkpoint_gcs_path}/{gt.sentinels.EVAL_DONE}"],
         input=b"",
         check=True,
     )
-    logger.info(f"Step {step} eval complete: {metrics}")
 
 
-def _backfill(run_gcs_dir: str, encoder: gt.danger.SentenceTransformer, evaluator: gt.evaluator.MinPrecisionEvaluator):
+def evaluate_baseline(encoder: gt.danger.SentenceTransformer, evaluator: gt.evaluator.MinPrecisionEvaluator):
+    """
+    Evaluate the base model (before any fine-tuning) and log metrics at step 0.
+    """
+    model_baseline = gt.train.ModelForTraining(encoder=encoder, loss=gt.loss.SigmoidPairwiseLoss())
+    metrics_baseline = evaluator(model_baseline)
+    log_eval_metrics(0, metrics_baseline)
+
+
+def backfill(run_gcs_dir: str, encoder: gt.danger.SentenceTransformer, evaluator: gt.evaluator.MinPrecisionEvaluator):
     """
     Evaluate all unevaluated checkpoints.
     """
@@ -132,7 +145,7 @@ def _backfill(run_gcs_dir: str, encoder: gt.danger.SentenceTransformer, evaluato
         evaluate_checkpoint(checkpoint_info.step, checkpoint_info.gcs_path, encoder, evaluator)
 
 
-def _poll(
+def poll(
     run_gcs_dir: str,
     poll_interval_sec: int,
     encoder: gt.danger.SentenceTransformer,
@@ -157,7 +170,7 @@ def _poll(
 
         if gcloud_storage_ls(f"{run_gcs_dir}/{gt.sentinels.TRAINING_DONE}") is not None:
             logger.info("Training done. Running final backfill pass.")
-            _backfill(run_gcs_dir, encoder, evaluator)
+            backfill(run_gcs_dir, encoder, evaluator)
             break
 
         if not new_checkpoints:
@@ -199,7 +212,9 @@ def main(
 
     evaluator = make_evaluator(sample_val, truncate_dims)
     encoder = make_encoder(base_model)
-    _poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
+
+    evaluate_baseline(encoder, evaluator)
+    poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
 
     wandb.finish()
 

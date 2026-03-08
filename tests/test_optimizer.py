@@ -29,7 +29,7 @@ def config() -> gt.train.TrainingConfig:
 
 @pytest.fixture()
 def trainer(model: gt.utils.SentenceTransformer, config: gt.train.TrainingConfig) -> gt.train.Trainer:
-    return gt.train.run(model, config, just_make_trainer=True)
+    return gt.train.make_trainer(model, config)
 
 
 @pytest.fixture()

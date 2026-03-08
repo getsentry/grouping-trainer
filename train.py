@@ -3,13 +3,21 @@ Trains a model, logs to wandb, and saves it to local and GCS.
 Evaluation runs async on a separate machine. See eval/eval_poller.py
 """
 
+import logging
+import os
+import subprocess
+import warnings
+
 import torch
+import wandb
 from tap import tapify
 
 import grouping_trainer as gt
 
+logger = logging.getLogger(__name__)
 
-def main(mini_cpu_test: bool = False):
+
+def run(mini_cpu_test: bool = False):
     """
     Train a grouping model.
 
@@ -43,20 +51,63 @@ def main(mini_cpu_test: bool = False):
             per_device_token_budget=64,
             gradient_checkpointing=True,
             sample_size_train=30,
-            sample_size_val=20,
             logging_steps=1,
             save_steps=10,
         )
     else:
         config = gt.train.TrainingConfig(
             run_shortname="gte",
-            per_device_train_batch_size=256,
+            per_device_train_batch_size=64,
+            # Sample a large-enough batch to capture a good amount of the same query for cache hits in the forward pass.
+            gradient_accumulation_steps=16,
+            # Accumulate over enough batches to get signal from more projects and reduce gradient variance.
             per_device_token_budget=8192 * 4,
-            sample_size_val=8000,
         )
 
-    gt.train.run(model, config)
+    trainer = gt.train.make_trainer(model, config)
+
+    is_main_process = trainer.accelerator.is_main_process
+    run_gcs_dir = f"gs://grouping-data/runs/{trainer.args.run_name}"
+
+    if is_main_process:
+        wandb.login()
+        wandb.init(project=config.wandb_project, name=trainer.args.run_name)
+
+        base_model = trainer.model.encoder.model_card_data.base_model
+        eval_cmd = (
+            f"python eval/eval_poller.py"
+            f" --run_gcs_dir {run_gcs_dir}"
+            f" --wandb_run_id {wandb.run.id}"
+            f" --base_model {base_model}"
+        )
+        print(f"\nEval command: {eval_cmd}\n")
+        if not mini_cpu_test:
+            gt.train.launch_l4_eval(eval_cmd)
+        else:
+            print("Skipping eval on CPU")
+
+        trainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run_gcs_dir))
+
+    warnings.filterwarnings(
+        "ignore",
+        message=".*torch.utils.checkpoint: the use_reentrant parameter.*",
+        category=UserWarning,
+    )
+    trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
+    trainer.save_model()  # already rank-gated
+
+    if is_main_process:
+        trainer.model.encoder.save_pretrained(os.path.join(trainer.args.output_dir, "inference"))
+        subprocess.run(
+            ["gcloud", "storage", "cp", "-r", "wandb", f"{run_gcs_dir}/wandb"],
+            check=True,
+        )
+        subprocess.run(
+            ["gcloud", "storage", "rsync", "-r", trainer.args.output_dir, f"{run_gcs_dir}/training"],
+            check=True,
+        )
+        logger.info(f"Uploaded wandb artifacts and model to {run_gcs_dir}")
 
 
 if __name__ == "__main__":
-    tapify(main)
+    tapify(run)
