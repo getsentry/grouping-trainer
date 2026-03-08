@@ -219,8 +219,7 @@ class ModelForTraining(torch.nn.Module):
 class Trainer(SentenceTransformerTrainer):
     """
     Inputs a module whose forward method computes the loss. This change makes things like DDP and FSDP work out of the
-    box. The saved model is not what should be used for inference. Its `.encoder` is saved separately using
-    `trainer.model.save_for_inference()`.
+    box. The saved model is not what should be used for inference. Saved `.encoder` separately.
 
     Note
     ----
@@ -484,7 +483,7 @@ class GCSCheckpointUploadCallback(TrainerCallback):
     """
     Uploads checkpoints to GCS in a background thread after each save.
 
-    Writes a `.done` sentinel after each checkpoint upload so that a polling evaluator knows the upload is complete.
+    Writes a `.checkpoint_done` sentinel after each checkpoint upload so that a polling evaluator knows the upload is complete.
     Writes a `.training_done` sentinel when training ends.
     """
 
@@ -498,20 +497,22 @@ class GCSCheckpointUploadCallback(TrainerCallback):
             self._prev_thread = None
 
     def _upload_checkpoint(self, checkpoint_path: str, gcs_dest: str):
-        try:
-            subprocess.run(
-                ["gcloud", "storage", "rsync", "-r", checkpoint_path, gcs_dest],
-                check=True,
-            )
-            # Sentinel indicating upload is complete
-            subprocess.run(
-                ["gcloud", "storage", "cp", "-", f"{gcs_dest}/.done"],
-                input=b"",
-                check=True,
-            )
-            logger.info(f"Uploaded checkpoint to {gcs_dest}")
-        except subprocess.CalledProcessError:
-            logger.exception(f"Failed to upload checkpoint to {gcs_dest}")
+        subprocess.run(
+            ["gcloud", "storage", "rsync", "-r", checkpoint_path, gcs_dest],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "gcloud",
+                "storage",
+                "cp",
+                "-",
+                f"{gcs_dest}/{gt.sentinels.CHECKPOINT_DONE}",
+            ],  # eval poller triggers eval on this sentinel
+            input=b"",
+            check=True,
+        )
+        logger.info(f"Uploaded checkpoint to {gcs_dest}")
 
     def on_save(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
         # Join previous upload to avoid racing with save_total_limit cleanup
@@ -526,15 +527,18 @@ class GCSCheckpointUploadCallback(TrainerCallback):
 
     def on_train_end(self, args, state, control, **kwargs):
         self._join_prev_thread()
-        try:
-            subprocess.run(
-                ["gcloud", "storage", "cp", "-", f"{self.gcs_dir}/.training_done"],
-                input=b"",
-                check=True,
-            )
-            logger.info("Wrote .training_done sentinel")
-        except subprocess.CalledProcessError:
-            logger.exception("Failed to write .training_done sentinel")
+        subprocess.run(
+            [
+                "gcloud",
+                "storage",
+                "cp",
+                "-",
+                f"{self.gcs_dir}/{gt.sentinels.TRAINING_DONE}",
+            ],  # eval poller stops on this sentinel
+            input=b"",
+            check=True,
+        )
+        logger.info("Wrote .training_done sentinel")
 
 
 def _launch_l4_eval(eval_cmd: str):
@@ -697,7 +701,9 @@ def run(
 
     # Create an instance which polls for checkpoints and evaluates them
     base_model = model_for_training.encoder.model_card_data.base_model
-    eval_cmd = f"python eval/eval_poller.py --gcs-dir {gcs_dir} --wandb-run-id {wandb.run.id} --base-model {base_model}"
+    eval_cmd = (
+        f"python eval/eval_poller.py --run_gcs_dir {gcs_dir} --wandb_run_id {wandb.run.id} --base_model {base_model}"
+    )
     print(f"\nEval command: {eval_cmd}\n")
     _launch_l4_eval(eval_cmd)
 
