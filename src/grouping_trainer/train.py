@@ -49,8 +49,8 @@ def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | Non
     """
     Convert a DataFrame to a Dataset, grouping records by `query_stacktrace_string`.
 
-    Records with the same `query_stacktrace_string` are kept together for cache hits in the forward pass. By default, the
-    order of groups is randomized to avoid alphabetical ordering bias during training.
+    Records with the same `query_stacktrace_string` are kept together for cache hits in the forward pass. By default,
+    the order of groups is randomized to avoid alphabetical ordering bias during training.
     """
     query_group_dfs = [group_df for _, group_df in df.group_by("query_stacktrace_string")]
     if shuffle_groups:
@@ -217,14 +217,16 @@ class ModelForTraining(torch.nn.Module):
 
 class Trainer(SentenceTransformerTrainer):
     """
-    Inputs a module whose forward method computes the loss. This makes things like DDP and FSDP work out of the box. The
-    saved model is not what should be used directly for inference. Save `.encoder` separately.
+    Inputs a module whose forward computes the loss. This makes things like DDP and FSDP work out of the box.
+
+    Also fixes a bug where loss parameters aren't saved and aren't picked up when resuming training from a checkpoint.
 
     Note
     ----
-    Should pass `multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL` to get some interleaving of
-    projects across batches, while keeping the batch size high to average each gradient over many candidates for each
-    query.
+    - The saved model is not what should be used directly for inference. Save `.encoder` separately.
+    - Should pass `multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL` to get some interleaving of
+      projects across batches, while keeping the batch size high to average each gradient over many candidates for each
+      query.
     """
 
     model: ModelForTraining
@@ -245,7 +247,7 @@ class Trainer(SentenceTransformerTrainer):
 
     def add_model_card_callback(self, default_args_dict):
         """
-        no-op. (The superclass tokenizes the entire dataset as part of init.)
+        No-op. (The superclass tokenizes the entire dataset as part of init.)
         """
         return None
 
@@ -344,6 +346,7 @@ class Trainer(SentenceTransformerTrainer):
 
                 loss = loss * (num_pairs_sub_batch / num_pairs_total)
                 # Assume the loss is an average over the sub-batch. Re-scale to match averaging over the full batch.
+                #
                 # The rest of this is just loss.backward() w/ MP bells and whistles.
 
                 # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
@@ -398,13 +401,11 @@ class Trainer(SentenceTransformerTrainer):
     def get_optimizer_cls_and_kwargs(
         self, args: SentenceTransformerTrainingArguments, model: ModelForTraining | None = None
     ):
-        """
-        Overrides optimizer param groups to be based on the model, not the loss.
-        """
-        # SentenceTransformerTrainer has the learning_rate_mapping feature.
-        try:
+        try:  # there are good tests for this hack
             self.loss = self.model
+            # Override optimizer param groups to be based on the model, not the loss.
             return super().get_optimizer_cls_and_kwargs(args, model)
+            # SentenceTransformerTrainer has the learning_rate_mapping feature, so use super()
         finally:
             self.loss = None
 
@@ -419,12 +420,13 @@ class GCSCheckpointUploadCallback(TrainerCallback):
     """
     Uploads checkpoints to GCS in a background thread after each save.
 
-    Writes a `.checkpoint_done` sentinel after each checkpoint upload so that a polling evaluator knows the upload is complete.
-    Writes a `.training_done` sentinel when training ends.
+    Writes a sentinel file after each checkpoint upload so that a polling evaluator knows the upload is complete.
+
+    Writes a sentinel file when training is complete.
     """
 
-    def __init__(self, gcs_dir: str):
-        self.gcs_dir = gcs_dir.rstrip("/")
+    def __init__(self, run_gcs_dir: str):
+        self.run_gcs_dir = run_gcs_dir.rstrip("/")
         self._prev_thread: threading.Thread | None = None
 
     def _join_prev_thread(self):
@@ -438,13 +440,8 @@ class GCSCheckpointUploadCallback(TrainerCallback):
             check=True,
         )
         subprocess.run(
-            [
-                "gcloud",
-                "storage",
-                "cp",
-                "-",
-                f"{gcs_dest}/{gt.sentinels.CHECKPOINT_DONE}",
-            ],  # eval poller triggers eval on this sentinel
+            ["gcloud", "storage", "cp", "-", f"{gcs_dest}/{gt.sentinels.CHECKPOINT_DONE}"],
+            # eval poller triggers eval on this sentinel
             input=b"",
             check=True,
         )
@@ -455,22 +452,19 @@ class GCSCheckpointUploadCallback(TrainerCallback):
         self._join_prev_thread()
 
         checkpoint_path = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
-        gcs_dest = f"{self.gcs_dir}/{PREFIX_CHECKPOINT_DIR}-{state.global_step}"
+        gcs_dest = f"{self.run_gcs_dir}/{PREFIX_CHECKPOINT_DIR}-{state.global_step}"
 
         thread = threading.Thread(target=self._upload_checkpoint, args=(checkpoint_path, gcs_dest))
         thread.start()
         self._prev_thread = thread
 
     def on_train_end(self, args, state, control, **kwargs):
+        # Join to ensure the last CHECKPOINT_DONE is visible before TRAINING_DONE.
+        # Otherwise the eval poller's final backfill could miss it.
         self._join_prev_thread()
         subprocess.run(
-            [
-                "gcloud",
-                "storage",
-                "cp",
-                "-",
-                f"{self.gcs_dir}/{gt.sentinels.TRAINING_DONE}",
-            ],  # eval poller stops on this sentinel
+            ["gcloud", "storage", "cp", "-", f"{self.run_gcs_dir}/{gt.sentinels.TRAINING_DONE}"],
+            # eval poller stops on this sentinel
             input=b"",
             check=True,
         )
@@ -478,7 +472,9 @@ class GCSCheckpointUploadCallback(TrainerCallback):
 
 
 def _launch_l4_eval(eval_cmd: str):
-    """Copy the startup script to a tempfile with the eval command appended, then create the L4 instance."""
+    """
+    Copy the startup script to a tempfile with the eval command appended, then create the L4 instance.
+    """
     startup_path = os.path.join(os.path.dirname(__file__), "../../bin/_startup.sh")
     # Append the eval command to run after setup, activating the conda env.
     with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as tmp:
@@ -586,7 +582,7 @@ def run(
     trainer = gt.train.Trainer(
         model=model_for_training,
         args=SentenceTransformerTrainingArguments(
-            output_dir=f"./{run_name}-output",
+            output_dir=f"./{run_name}",
             bf16=torch.cuda.is_bf16_supported(),
             fp16=False,
             dataloader_pin_memory=torch.cuda.is_available(),
@@ -632,19 +628,17 @@ def run(
 
     # Set up wandb + GCS for training run
     wandb.login()
-    gcs_dir = f"gs://grouping-data/runs/{run_name}"
+    run_gcs_dir = f"gs://grouping-data/runs/{run_name}"
     wandb.init(project=training_config.wandb_project, name=run_name)
 
     # Create an instance which polls for checkpoints and evaluates them
     base_model = model_for_training.encoder.model_card_data.base_model
-    eval_cmd = (
-        f"python eval/eval_poller.py --run_gcs_dir {gcs_dir} --wandb_run_id {wandb.run.id} --base_model {base_model}"
-    )
+    eval_cmd = f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --wandb_run_id {wandb.run.id} --base_model {base_model}"
     print(f"\nEval command: {eval_cmd}\n")
     _launch_l4_eval(eval_cmd)
 
     # Set up trainer
-    trainer.add_callback(gt.train.GCSCheckpointUploadCallback(gcs_dir=gcs_dir))
+    trainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run_gcs_dir))
 
     # Train
     warnings.filterwarnings(
@@ -658,13 +652,13 @@ def run(
 
     # Upload wandb artifacts and final model to GCS
     subprocess.run(
-        ["gcloud", "storage", "cp", "-r", "wandb", f"{gcs_dir}/wandb"],
+        ["gcloud", "storage", "cp", "-r", "wandb", f"{run_gcs_dir}/wandb"],
         check=True,
     )
     subprocess.run(
-        ["gcloud", "storage", "rsync", "-r", trainer.args.output_dir, f"{gcs_dir}/training"],
+        ["gcloud", "storage", "rsync", "-r", trainer.args.output_dir, f"{run_gcs_dir}/training"],
         check=True,
     )
-    logger.info(f"Uploaded wandb artifacts and model to {gcs_dir}")
+    logger.info(f"Uploaded wandb artifacts and model to {run_gcs_dir}")
 
     return train_output

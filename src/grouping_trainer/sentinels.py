@@ -1,8 +1,21 @@
-"""GCS sentinel filenames used to coordinate between training and eval polling."""
+"""
+GCS filenames used to coordinate between training and eval polling.
+"""
 
 CHECKPOINT_DONE = ".checkpoint_done"
-"""Written inside a checkpoint dir after it's fully uploaded to GCS."""
+"""
+Written when: the trainer finishes uploading a checkpoint dir to GCS.
+Causes: the eval poller to consider this checkpoint ready for evaluation.
+"""
+
 EVAL_DONE = ".eval_done"
-"""Written inside a checkpoint dir after the eval poller has evaluated it."""
+"""
+Written when: the eval poller finishes evaluating a checkpoint.
+Causes: the eval poller to skip this checkpoint on future polling cycles.
+"""
+
 TRAINING_DONE = ".training_done"
-"""Written at the run's GCS root when training is complete."""
+"""
+Written when: training ends (on_train_end), at the run's GCS root.
+Causes: the eval poller to run a final backfill pass and then exit.
+"""
