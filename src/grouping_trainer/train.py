@@ -513,7 +513,7 @@ def launch_l4_eval(eval_cmd: str):
 
 
 class TrainingConfig(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_shortname: str
 
@@ -526,6 +526,7 @@ class TrainingConfig(BaseModel):
     )  # TODO: Literal
     sample_size_train: int | None = None  # downsample for CPU sanity check runs
     gradient_checkpointing: bool = False
+    gradient_accumulation_steps: int = 1
     log_of_scale_init: float = math.log(5)
     learning_rate: float = 1e-4
     learning_rate_mapping: dict[str, float] = {
@@ -598,11 +599,13 @@ def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) ->
             dataloader_pin_memory=torch.cuda.is_available(),
             num_train_epochs=1,
             gradient_checkpointing=training_config.gradient_checkpointing,
+            gradient_accumulation_steps=training_config.gradient_accumulation_steps,
             #
             # Datalaoder
             multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL,
             # Each iter, pick a project randomly, sample from it.
             # Next iter, pick another project randomly, sample from it, etc.
+            # And should accumulate the gradient across projects.
             per_device_train_batch_size=training_config.per_device_train_batch_size,
             seed=42,  # passed to batch sampler
             #
