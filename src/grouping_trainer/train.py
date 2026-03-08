@@ -217,8 +217,8 @@ class ModelForTraining(torch.nn.Module):
 
 class Trainer(SentenceTransformerTrainer):
     """
-    Inputs a module whose forward method computes the loss. This change makes things like DDP and FSDP work out of the
-    box. The saved model is not what should be used for inference. Saved `.encoder` separately.
+    Inputs a module whose forward method computes the loss. This makes things like DDP and FSDP work out of the box. The
+    saved model is not what should be used directly for inference. Save `.encoder` separately.
 
     Note
     ----

@@ -1,10 +1,5 @@
 """
-Polls GCS for new training checkpoints and runs evaluation on each one.
-Run on a separate machine (e.g., L4) so that the training GPU stays fully utilized.
-
-Usage:
-    python eval/eval_poller.py --run_gcs_dir gs://grouping-data/runs/... --wandb_run_id abc123
-
+Polls GCS for new training checkpoints and runs evaluation on each one. Run this script on an L4.
 """
 
 import logging
@@ -15,6 +10,7 @@ import time
 
 from pydantic import BaseModel
 from tap import tapify
+import torch
 import wandb
 
 import grouping_trainer as gt
@@ -189,4 +185,5 @@ def main(
 
 
 if __name__ == "__main__":
+    assert torch.cuda.is_available(), "Run this on an L4"
     tapify(main, description=__doc__)
