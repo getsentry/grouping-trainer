@@ -3,7 +3,6 @@ import logging
 import math
 import os
 import random
-import re
 import shutil
 import subprocess
 import tempfile
@@ -402,75 +401,12 @@ class Trainer(SentenceTransformerTrainer):
         """
         Overrides optimizer param groups to be based on the model, not the loss.
         """
-        # NOTE: ideally this logic is in a superclass method where the model is passed.
-
-        if model is None:  # NOTE: this model is only wrapped when using sagemaker MP
-            model = self.model
-
-        optimizer_cls, optimizer_kwargs = super(SentenceTransformerTrainer, self).get_optimizer_cls_and_kwargs(
-            args, model
-        )
-
-        decay_parameters = self.get_decay_parameter_names(model)
-
-        # If the superclass did not already provide optimizer groups, create them from model params.
-        if not {"params", "model", "optimizer_dict"} & set(optimizer_kwargs.keys()):
-            # NOTE: optimizer_dict is what Trainer uses to store param groups to avoid argument conflicts.
-            optimizer_kwargs["optimizer_dict"] = [
-                {
-                    "params": [p for n, p in model.named_parameters() if n in decay_parameters and p.requires_grad],
-                    "weight_decay": self.args.weight_decay,
-                },
-                {
-                    "params": [p for n, p in model.named_parameters() if n not in decay_parameters and p.requires_grad],
-                    "weight_decay": 0.0,
-                },
-            ]
-        # TODO: type optimizer_kwargs
-
-        # One of "params", "model", or "optimizer_dict" should be present.
-        optimizer_param_keys = set(optimizer_kwargs.keys()) & {"params", "model", "optimizer_dict"}
-        optimizer_param_key = optimizer_param_keys.pop() if optimizer_param_keys else "optimizer_dict"
-
-        for parameter_pattern, learning_rate in args.learning_rate_mapping.items():
-            matching_params = {n: p for n, p in model.named_parameters() if re.search(parameter_pattern, n)}
-
-            if not matching_params:
-                raise ValueError(
-                    f"No parameters found matching the pattern '{parameter_pattern}' in the model. "
-                    "Please check the pattern and ensure it matches some of the model's parameters."
-                )
-
-            # Remove matching params from any existing optimizer groups so they can be re-added
-            # with their custom learning rate.
-            for group in optimizer_kwargs[optimizer_param_key]:
-                if "params" in group:
-                    group["params"] = [
-                        p for p in group["params"] if all(p is not param for param in matching_params.values())
-                    ]
-
-            matching_params_with_decay = {n: p for n, p in matching_params.items() if n in decay_parameters}
-            matching_params_without_decay = {n: p for n, p in matching_params.items() if n not in decay_parameters}
-
-            if matching_params_with_decay:
-                optimizer_kwargs[optimizer_param_key].append(
-                    {
-                        "params": list(matching_params_with_decay.values()),
-                        "lr": learning_rate,
-                        "weight_decay": self.args.weight_decay,
-                    }
-                )
-
-            if matching_params_without_decay:
-                optimizer_kwargs[optimizer_param_key].append(
-                    {
-                        "params": list(matching_params_without_decay.values()),
-                        "lr": learning_rate,
-                        "weight_decay": 0.0,
-                    }
-                )
-
-        return optimizer_cls, optimizer_kwargs
+        # SentenceTransformerTrainer has the learning_rate_mapping feature.
+        try:
+            self.loss = self.model
+            return super().get_optimizer_cls_and_kwargs(args, model)
+        finally:
+            self.loss = None
 
     def _save(self, output_dir: str | None = None, state_dict=None) -> None:
         super(SentenceTransformerTrainer, self)._save(output_dir, state_dict=state_dict)

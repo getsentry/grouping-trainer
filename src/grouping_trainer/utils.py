@@ -448,9 +448,6 @@ def _retry_cuda_errors_once(func):
 class SentenceTransformer(SentenceTransformerOriginal):
     """
     `SentenceTransformer` which deduplicates texts during inference and retries OOMs once.
-
-    Mainly just for the evaluator run, which can only OOM if the CUDA cache is too large (assuming the batch size is
-    appropriate / can work).
     """
 
     @property
