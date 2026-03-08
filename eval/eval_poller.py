@@ -134,7 +134,7 @@ def _backfill(run_gcs_dir: str, encoder: gt.danger.SentenceTransformer, evaluato
 
 def _poll(
     run_gcs_dir: str,
-    poll_interval: int,
+    poll_interval_sec: int,
     encoder: gt.danger.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
 ):
@@ -161,8 +161,8 @@ def _poll(
             break
 
         if not new_checkpoints:
-            logger.info(f"No new checkpoints. Sleeping {poll_interval}s...")
-            time.sleep(poll_interval)
+            logger.info(f"No new checkpoints. Sleeping {poll_interval_sec}s...")
+            time.sleep(poll_interval_sec)
 
 
 def main(
@@ -170,7 +170,7 @@ def main(
     wandb_run_id: str,
     base_model: str = "Alibaba-NLP/gte-modernbert-base",
     wandb_project: str = "grouping-trainer",
-    poll_interval: int = 60,
+    poll_interval_sec: int = 120,
     sample_val: int = 8000,
     truncate_dims: tuple[int, ...] = (64, 768),
 ):
@@ -179,7 +179,7 @@ def main(
 
     evaluator = make_evaluator(sample_val, truncate_dims)
     encoder = make_encoder(base_model)
-    _poll(run_gcs_dir, poll_interval, encoder, evaluator)
+    _poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
 
     wandb.finish()
 
