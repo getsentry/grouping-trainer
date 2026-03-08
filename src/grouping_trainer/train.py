@@ -174,6 +174,8 @@ class ModelForTraining(torch.nn.Module):
     def __init__(self, encoder: SentenceTransformer, loss: torch.nn.Module):
         super().__init__()
         self.encoder = encoder
+        # TODO: torch.compile(encoder[0].auto_model, dynamic=True) b/c variable batch sizes when calling the model, and
+        # very variable sequence lengths. Don't batch by sequence length b/c that seems statistically bad.
         self.loss = loss
 
     def encode(self, inputs: gt.data.Batch) -> gt.data.Features:
