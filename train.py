@@ -7,6 +7,7 @@ import logging
 import os
 import subprocess
 import warnings
+import tempfile
 
 import torch
 import wandb
@@ -16,6 +17,26 @@ import grouping_trainer as gt
 
 torch.set_float32_matmul_precision("high")
 logger = logging.getLogger(__name__)
+
+
+def upload_run_metadata(run_gcs_dir: str, config: gt.train.TrainingConfig) -> None:
+    """
+    Save training config and git commit to a local temp dir, then upload to GCS as metadata/.
+    """
+
+    with tempfile.TemporaryDirectory() as dir_metadata:
+        with open(os.path.join(dir_metadata, "training_config.json"), "w") as f:
+            f.write(config.model_dump_json(indent=2))
+        git_commit = subprocess.run(
+            ["git", "describe", "--always", "--dirty", "--long"], capture_output=True, text=True
+        ).stdout.strip()
+        with open(os.path.join(dir_metadata, "git_commit.txt"), "w") as f:
+            f.write(git_commit + "\n")
+        subprocess.run(
+            ["gcloud", "storage", "rsync", "-r", dir_metadata, f"{run_gcs_dir}/metadata"],
+            check=True,
+        )
+    logger.info(f"Uploaded run metadata (git: {git_commit}) to {run_gcs_dir}/metadata")
 
 
 def run(mini_cpu_test: bool = False):
@@ -75,6 +96,8 @@ def run(mini_cpu_test: bool = False):
     run_gcs_dir = f"gs://grouping-data/runs/{trainer.args.run_name}"
 
     if is_main_process:
+        upload_run_metadata(run_gcs_dir, config)
+
         wandb.login()
         wandb.init(project=config.wandb_project, name=trainer.args.run_name)
 

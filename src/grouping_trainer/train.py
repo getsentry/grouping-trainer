@@ -545,8 +545,8 @@ class TrainingConfig(BaseModel):
 
     # Logging
     wandb_project: str = "grouping-trainer"
-    num_logs: int = 50
-    num_checkpoints: int = 10
+    num_logs: int = 100
+    num_checkpoints: int = 10  # also the number of eval runs
 
 
 def init_bias(frac_positive: float) -> float:

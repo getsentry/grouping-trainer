@@ -227,7 +227,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
             metric_name_to_value.update(
                 self.find_recall_at_precision_thresholds(
-                    scores=similarities.detach().cpu().numpy(),
+                    scores=similarities.detach().float().cpu().numpy(),
                     labels=np.asarray(self.labels),
                     target_precisions=self.target_precisions,
                     min_predictions=self.min_predictions,
