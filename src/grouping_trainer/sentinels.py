@@ -14,6 +14,12 @@ Written when: the eval poller finishes evaluating a checkpoint.
 Causes: the eval poller to skip this checkpoint on future polling cycles.
 """
 
+BASELINE_EVAL_DONE = ".baseline_eval_done"
+"""
+Written when: the eval poller finishes evaluating the base model (step 0).
+Causes: the eval poller to skip the baseline evaluation on restart.
+"""
+
 TRAINING_DONE = ".training_done"
 """
 Written when: training ends (on_train_end), at the run's GCS root.

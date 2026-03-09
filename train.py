@@ -14,6 +14,7 @@ from tap import tapify
 
 import grouping_trainer as gt
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -80,11 +81,11 @@ def run(mini_cpu_test: bool = False):
             f" --wandb_run_id {wandb.run.id}"
             f" --base_model {base_model}"
         )
-        print(f"\nEval command:\n\n{eval_cmd}\n")
+        logger.info(f"\nEval command:\n\n{eval_cmd}\n")
         if not mini_cpu_test:
             gt.train.launch_l4_eval(eval_cmd)
         else:
-            print("Skipping eval on CPU")
+            logger.info("Skipping eval on CPU")
 
         trainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run_gcs_dir))
 
@@ -101,19 +102,6 @@ def run(mini_cpu_test: bool = False):
         trainer.model.encoder.save_pretrained(dir_inference)
         subprocess.run(
             ["gcloud", "storage", "cp", "-r", "wandb", f"{run_gcs_dir}/wandb"],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "gcloud",
-                "storage",
-                "rsync",
-                "-r",
-                "-x",
-                "inference/.*",
-                trainer.args.output_dir,
-                f"{run_gcs_dir}/training",
-            ],
             check=True,
         )
         subprocess.run(

@@ -39,6 +39,7 @@ from transformers.utils.import_utils import (
 )
 import grouping_trainer as gt
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -466,7 +467,7 @@ class GCSCheckpointUploadCallback(TrainerCallback):
         logger.info(f"Uploaded checkpoint to {gcs_dest}")
 
     def on_save(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-        # Join previous upload to avoid racing with save_total_limit cleanup
+        # Avoid racing with save_total_limit cleanup. Useful for mini CPU runs
         self._join_prev_thread()
 
         checkpoint_path = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
@@ -550,7 +551,7 @@ class TrainingConfig(BaseModel):
 
 def init_bias(frac_positive: float) -> float:
     bias_init = math.log(frac_positive / (1 - frac_positive))
-    print(f"Bias init: {bias_init:.4f}")
+    logger.info(f"Bias init: {bias_init:.4f}")
     return bias_init
 
 
@@ -568,12 +569,12 @@ def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) ->
         paths=training_config.training_csvs,
     )
     if "__packed__" in dataset_dict_train:
-        print(
+        logger.info(
             f"Packed {len(dataset_dict_train['__packed__'])} pairs from projects w/ fewer than "
             f"{training_config.per_device_train_batch_size} rows into a single dataset."
         )
     num_rows = sum(dataset_dict_train.num_rows.values())
-    print(f"Training dataset: {len(dataset_dict_train):,} projects, {num_rows:,} pairs")
+    logger.info(f"Training dataset: {len(dataset_dict_train):,} projects, {num_rows:,} pairs")
 
     # Turn num_logs and num_checkpoints into log_steps and save_steps
     num_devices = max(1, torch.cuda.device_count())
@@ -582,7 +583,7 @@ def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) ->
     steps_total = math.ceil(num_batches / training_config.gradient_accumulation_steps)
     logging_steps = max(1, steps_total // training_config.num_logs)
     save_steps = max(1, steps_total // training_config.num_checkpoints)
-    print(f"Estimated {steps_total:,} optimizer steps, logging every {logging_steps}, saving every {save_steps}")
+    logger.info(f"Estimated {steps_total:,} optimizer steps, logging every {logging_steps}, saving every {save_steps}")
 
     # Set up model
     gt.utils._cuda_empty_cache()

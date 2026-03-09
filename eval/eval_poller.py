@@ -7,7 +7,9 @@ import re
 import subprocess
 import tempfile
 import time
+from typing import Literal, overload
 
+import polars as pl
 from pydantic import BaseModel
 from tap import tapify
 import torch
@@ -66,7 +68,7 @@ def list_done_checkpoints(run_gcs_dir: str) -> list[CheckpointInfo]:
             )
         )
 
-    checkpoints.sort(key=lambda x: x.step)
+    checkpoints.sort(key=lambda checkpoint_info: checkpoint_info.step)
     return checkpoints
 
 
@@ -90,15 +92,44 @@ def make_evaluator(sample_val: int | None, truncate_dims: tuple[int, ...]) -> gt
     )
 
 
-def make_encoder(base_model: str) -> gt.danger.SentenceTransformer:
+@overload
+def make_encoder(base_model: str, use_auto_detected_device: Literal[True]) -> gt.utils.SentenceTransformer: ...
+
+
+@overload
+def make_encoder(base_model: str, use_auto_detected_device: Literal[False] = ...) -> gt.danger.SentenceTransformer: ...
+
+
+def make_encoder(
+    base_model: str, use_auto_detected_device: bool = False
+) -> gt.utils.SentenceTransformer | gt.danger.SentenceTransformer:
+    if use_auto_detected_device:
+        return gt.utils.SentenceTransformer(base_model)
     encoder = gt.danger.SentenceTransformer(base_model)
     encoder.warmup_and_compile()
     return encoder
 
 
-def log_eval_metrics(step: int, metrics: dict):
+def _format_metrics(metrics: dict[str, float]) -> str:
+    """
+    Format eval metrics as a polars table, parsed from flat key structure.
+    """
+    rows = []
+    for key, value in metrics.items():
+        parts = key.split("_", 2)  # e.g. ["val", "dim64", "pr85_threshold"]
+        if len(parts) >= 3:
+            rows.append({"dim": parts[1], "metric": parts[2], "value": value})
+        else:
+            rows.append({"dim": "", "metric": key, "value": value})
+
+    df = pl.DataFrame(rows).pivot(on="metric", index="dim", values="value")
+    with pl.Config(tbl_cols=-1, tbl_width_chars=200):
+        return str(df)
+
+
+def log_eval_metrics(step: int, metrics: dict[str, float]):
     wandb.log({"train/global_step": step, **{f"eval_{key}": value for key, value in metrics.items()}})
-    logger.info(f"Step {step} eval: {metrics}")
+    logger.info(f"Step {step} eval:\n{_format_metrics(metrics)}")
 
 
 def evaluate_checkpoint(
@@ -125,13 +156,25 @@ def evaluate_checkpoint(
     )
 
 
-def evaluate_baseline(encoder: gt.danger.SentenceTransformer, evaluator: gt.evaluator.MinPrecisionEvaluator):
+def evaluate_baseline(
+    run_gcs_dir: str,
+    encoder: gt.danger.SentenceTransformer,
+    evaluator: gt.evaluator.MinPrecisionEvaluator,
+):
     """
     Evaluate the base model (before any fine-tuning) and log metrics at step 0.
+    Writes a sentinel so the baseline is not re-evaluated on restart.
     """
+    sentinel_path = f"{run_gcs_dir}/{gt.sentinels.BASELINE_EVAL_DONE}"
+    if gcloud_storage_ls(sentinel_path) is not None:
+        logger.info("Baseline already evaluated. Skipping.")
+        return
+
+    logger.info("Evaluating base model.")
     model_baseline = gt.train.ModelForTraining(encoder=encoder, loss=gt.loss.SigmoidPairwiseLoss())
     metrics_baseline = evaluator(model_baseline)
-    log_eval_metrics(0, metrics_baseline)
+    log_eval_metrics(step=0, metrics=metrics_baseline)
+    subprocess.run(["gcloud", "storage", "cp", "-", sentinel_path], input=b"", check=True)
 
 
 def backfill(run_gcs_dir: str, encoder: gt.danger.SentenceTransformer, evaluator: gt.evaluator.MinPrecisionEvaluator):
@@ -186,6 +229,7 @@ def main(
     poll_interval_sec: int = 120,
     sample_val: int | None = 20_000,
     truncate_dims: tuple[int, ...] = (64, 768),
+    use_auto_detected_device: bool = False,
 ):
     """
     Poll GCS for new training checkpoints and evaluate each one.
@@ -206,19 +250,25 @@ def main(
         Number of validation examples to sample. None uses the full val set.
     truncate_dims
         Matryoshka dimensions to evaluate at.
+    use_auto_detected_device
+        Leave the model on its auto-detected device and use a plain SentenceTransformer w/o compilation.
     """
+    if not use_auto_detected_device:
+        assert torch.cuda.is_available(), "Run this on a GPU or pass --use_auto_detected_device"
+
     wandb.login()
     wandb.init(id=wandb_run_id, project=wandb_project, resume="allow")
+    wandb.define_metric("train/global_step")
+    wandb.define_metric("eval_*", step_metric="train/global_step")
 
     evaluator = make_evaluator(sample_val, truncate_dims)
-    encoder = make_encoder(base_model)
+    encoder = make_encoder(base_model, use_auto_detected_device=use_auto_detected_device)
 
-    evaluate_baseline(encoder, evaluator)
+    evaluate_baseline(run_gcs_dir, encoder, evaluator)
     poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
 
     wandb.finish()
 
 
 if __name__ == "__main__":
-    assert torch.cuda.is_available(), "Run this on an L4"
     tapify(main, description=__doc__)
