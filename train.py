@@ -14,7 +14,6 @@ from tap import tapify
 
 import grouping_trainer as gt
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -66,6 +65,10 @@ def run(mini_cpu_test: bool = False):
         )
 
     trainer = gt.train.make_trainer(model, config)
+    gt.logging.configure_logging(
+        run_name=trainer.args.run_name,
+        process_type="training",
+    )
 
     is_main_process = trainer.accelerator.is_main_process
     run_gcs_dir = f"gs://grouping-data/runs/{trainer.args.run_name}"
@@ -81,11 +84,13 @@ def run(mini_cpu_test: bool = False):
             f" --wandb_run_id {wandb.run.id}"
             f" --base_model {base_model}"
         )
-        logger.info(f"\nEval command:\n\n{eval_cmd}\n")
+        if mini_cpu_test:
+            eval_cmd += " --sample_val 200 --use_auto_detected_device --use_simple_precisions"
+        logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")
         if not mini_cpu_test:
             gt.train.launch_l4_eval(eval_cmd)
         else:
-            logger.info("Skipping eval on CPU")
+            logger.info("Skipping async eval on L4 for mini_cpu_test")
 
         trainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run_gcs_dir))
 
@@ -94,8 +99,9 @@ def run(mini_cpu_test: bool = False):
         message=".*torch.utils.checkpoint: the use_reentrant parameter.*",
         category=UserWarning,
     )
+    logger.info("Training - start")
     trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
-    trainer.save_model()  # already rank-gated
+    logger.info("Training - complete")
 
     if is_main_process:
         dir_inference = os.path.join(trainer.args.output_dir, "inference")

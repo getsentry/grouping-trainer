@@ -487,7 +487,7 @@ class GCSCheckpointUploadCallback(TrainerCallback):
             input=b"",
             check=True,
         )
-        logger.info("Wrote .training_done sentinel")
+        logger.info("Wrote TRAINING_DONE sentinel")
 
 
 def launch_l4_eval(eval_cmd: str):

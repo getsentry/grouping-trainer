@@ -1,5 +1,5 @@
 """
-Polls GCS for new training checkpoints and runs evaluation on each one. Run this script on an L4.
+Polls GCS for new training checkpoints and runs evaluation on each one. Run this script on an L4. Idempotent.
 """
 
 import logging
@@ -17,7 +17,6 @@ import wandb
 
 import grouping_trainer as gt
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -79,7 +78,9 @@ def download_checkpoint(checkpoint_gcs_path: str, local_dir: str):
     subprocess.run(["gcloud", "storage", "rsync", "-r", checkpoint_gcs_path, local_dir], check=True)
 
 
-def make_evaluator(sample_val: int | None, truncate_dims: tuple[int, ...]) -> gt.evaluator.MinPrecisionEvaluator:
+def make_evaluator(
+    sample_val: int | None, truncate_dims: tuple[int, ...], use_simple_precisions: bool = False
+) -> gt.evaluator.MinPrecisionEvaluator:
     dataset_val = gt.train.df_to_dataset(gt.data.load_val_df(sample_size=sample_val))
     return gt.evaluator.MinPrecisionEvaluator(
         sentences1=list(dataset_val["query_stacktrace_string"]),
@@ -89,6 +90,7 @@ def make_evaluator(sample_val: int | None, truncate_dims: tuple[int, ...]) -> gt
         show_progress_bar=True,
         batch_size=1,  # pls use the CUDA graph-cached model
         truncate_dims=truncate_dims,
+        target_precisions=[0.7, 0.8] if use_simple_precisions else None,
     )
 
 
@@ -230,6 +232,7 @@ def main(
     sample_val: int | None = 20_000,
     truncate_dims: tuple[int, ...] = (64, 768),
     use_auto_detected_device: bool = False,
+    use_simple_precisions: bool = False,
 ):
     """
     Poll GCS for new training checkpoints and evaluate each one.
@@ -252,7 +255,15 @@ def main(
         Matryoshka dimensions to evaluate at.
     use_auto_detected_device
         Leave the model on its auto-detected device and use a plain SentenceTransformer w/o compilation.
+    use_simple_precisions
+        Use a simpler set of target precisions—[0.7, 0.8]—for faster eval.
     """
+    run_name = run_gcs_dir.rstrip("/").rsplit("/", 1)[-1]
+    gt.logging.configure_logging(
+        run_name=run_name,
+        process_type="eval_poller",
+    )
+
     if not use_auto_detected_device:
         assert torch.cuda.is_available(), "Run this on a GPU or pass --use_auto_detected_device"
 
@@ -261,7 +272,7 @@ def main(
     wandb.define_metric("train/global_step")
     wandb.define_metric("eval_*", step_metric="train/global_step")
 
-    evaluator = make_evaluator(sample_val, truncate_dims)
+    evaluator = make_evaluator(sample_val, truncate_dims, use_simple_precisions=use_simple_precisions)
     encoder = make_encoder(base_model, use_auto_detected_device=use_auto_detected_device)
 
     evaluate_baseline(run_gcs_dir, encoder, evaluator)
