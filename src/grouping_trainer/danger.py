@@ -4,6 +4,8 @@ import torch.nn.functional as F
 
 from grouping_trainer.utils import SentenceTransformer as SentenceTransformerGT
 
+torch.set_float32_matmul_precision("high")
+
 
 class SentenceTransformer(SentenceTransformerGT):
     """
@@ -65,7 +67,7 @@ class SentenceTransformer(SentenceTransformerGT):
             if self.tokenize([text])["input_ids"].shape[1] != target_length:
                 raise ValueError(f"Tokenization failed for {target_length=}")
 
-            _ = self.encode(text)
+            _ = self.encode(text, show_progress_bar=False)
 
         # TODO: we could also end by encoding a 8192-length sequence to reserve a bunch of memory. Our model isn't that
         # big. There is very likely enough room left to reserve our max seq length after the cached graphs are filled. I

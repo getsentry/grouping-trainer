@@ -107,7 +107,13 @@ def make_encoder(
 ) -> gt.utils.SentenceTransformer | gt.danger.SentenceTransformer:
     if use_auto_detected_device:
         return gt.utils.SentenceTransformer(base_model)
-    encoder = gt.danger.SentenceTransformer(base_model)
+    encoder = gt.danger.SentenceTransformer(
+        base_model,
+        model_kwargs=dict(
+            dtype=torch.bfloat16,
+            attn_implementation="sdpa",
+        ),
+    )
     encoder.warmup_and_compile()
     return encoder
 
