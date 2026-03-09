@@ -61,7 +61,7 @@ def run(mini_cpu_test: bool = False):
             per_device_train_batch_size=64,
             # Accumulate over enough batches to get signal from more projects and reduce gradient variance.
             gradient_accumulation_steps=16,
-            per_device_token_budget=8192 * 4,
+            per_device_token_budget=8192 * 5,
         )
 
     trainer = gt.train.make_trainer(model, config)
