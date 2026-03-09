@@ -136,7 +136,7 @@ def _format_metrics(metrics: dict[str, float]) -> str:
 
 
 def log_eval_metrics(step: int, metrics: dict[str, float]):
-    wandb.log({"train/global_step": step, **{f"eval_{key}": value for key, value in metrics.items()}})
+    wandb.log({"eval/step": step, **{f"eval/{key}": value for key, value in metrics.items()}})
     logger.info(f"Step {step} eval:\n{_format_metrics(metrics)}")
 
 
@@ -231,11 +231,10 @@ def poll(
 
 def main(
     run_gcs_dir: str,
-    wandb_run_id: str,
     base_model: str = "Alibaba-NLP/gte-modernbert-base",
     wandb_project: str = "grouping-trainer",
-    poll_interval_sec: int = 60 * 5,
-    sample_val: int | None = 20_000,
+    poll_interval_sec: int = 60 * 2,
+    sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
     truncate_dims: tuple[int, ...] = (64, 768),
     use_auto_detected_device: bool = False,
     use_simple_precisions: bool = False,
@@ -247,8 +246,6 @@ def main(
     ----------
     run_gcs_dir
         GCS path to the training run directory (e.g. gs://grouping-data/runs/...).
-    wandb_run_id
-        W&B run ID to resume logging into (from the training job).
     base_model
         HuggingFace model ID for the base encoder. Used to load architecture before applying checkpoint weights.
     wandb_project
@@ -274,17 +271,18 @@ def main(
         assert torch.cuda.is_available(), "Run this on a GPU or pass --use_auto_detected_device"
 
     wandb.login()
-    wandb.init(id=wandb_run_id, project=wandb_project, resume="allow")
-    wandb.define_metric("train/global_step")
-    wandb.define_metric("eval_*", step_metric="train/global_step")
+    wandb.init(project=wandb_project, name=f"{run_name}-eval", group=run_name)
+    wandb.define_metric("eval/step")
+    wandb.define_metric("eval/*", step_metric="eval/step")
 
-    evaluator = make_evaluator(sample_val, truncate_dims, use_simple_precisions=use_simple_precisions)
-    encoder = make_encoder(base_model, use_auto_detected_device=use_auto_detected_device)
+    try:
+        evaluator = make_evaluator(sample_val, truncate_dims, use_simple_precisions=use_simple_precisions)
+        encoder = make_encoder(base_model, use_auto_detected_device=use_auto_detected_device)
 
-    evaluate_baseline(run_gcs_dir, encoder, evaluator)
-    poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
-
-    wandb.finish()
+        evaluate_baseline(run_gcs_dir, encoder, evaluator)
+        poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
+    finally:
+        wandb.finish()
 
 
 if __name__ == "__main__":

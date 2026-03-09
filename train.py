@@ -83,7 +83,7 @@ def run(mini_cpu_test: bool = False):
             per_device_train_batch_size=64,
             # Accumulate over enough batches to get signal from more projects and reduce gradient variance.
             gradient_accumulation_steps=16,
-            per_device_token_budget=8192 * 5,
+            per_device_token_budget=8192 * 8,
         )
 
     trainer = gt.train.make_trainer(model, config)
@@ -99,15 +99,10 @@ def run(mini_cpu_test: bool = False):
         upload_run_metadata(run_gcs_dir, config)
 
         wandb.login()
-        wandb.init(project=config.wandb_project, name=trainer.args.run_name)
+        wandb.init(project=config.wandb_project, name=trainer.args.run_name, group=trainer.args.run_name)
 
         base_model = trainer.model.encoder.model_card_data.base_model
-        eval_cmd = (
-            f"python eval/eval_poller.py"
-            f" --run_gcs_dir {run_gcs_dir}"
-            f" --wandb_run_id {wandb.run.id}"
-            f" --base_model {base_model}"
-        )
+        eval_cmd = f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model}"
         if mini_cpu_test:
             eval_cmd += " --sample_val 200 --use_auto_detected_device --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")
