@@ -520,13 +520,13 @@ class TrainingConfig(BaseModel):
     # Training args
     per_device_train_batch_size: int
     per_device_token_budget: int
+    gradient_checkpointing: bool = False
+    gradient_accumulation_steps: int = 1
     training_csvs: tuple[str, ...] = (
         "final_csvs/train.csv",
         "final_csvs/synthetic-semi-easy-negatives.csv",
     )  # TODO: Literal
     sample_size_train: int | None = None  # downsample for CPU sanity check runs
-    gradient_checkpointing: bool = False
-    gradient_accumulation_steps: int = 1
     log_of_scale_init: float = math.log(5)
     learning_rate: float = 1e-4
     learning_rate_mapping: dict[str, float] = {
@@ -544,8 +544,8 @@ class TrainingConfig(BaseModel):
 
     # Logging
     wandb_project: str = "grouping-trainer"
-    logging_steps: int = 30
-    save_steps: int = 150
+    num_logs: int = 50
+    num_checkpoints: int = 10
 
 
 def init_bias(frac_positive: float) -> float:
@@ -572,7 +572,17 @@ def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) ->
             f"Packed {len(dataset_dict_train['__packed__'])} pairs from projects w/ fewer than "
             f"{training_config.per_device_train_batch_size} rows into a single dataset."
         )
-    print(f"Training dataset: {len(dataset_dict_train):,} projects, {sum(dataset_dict_train.num_rows.values()):,} rows")
+    num_rows = sum(dataset_dict_train.num_rows.values())
+    print(f"Training dataset: {len(dataset_dict_train):,} projects, {num_rows:,} pairs")
+
+    # Turn num_logs and num_checkpoints into log_steps and save_steps
+    num_devices = max(1, torch.cuda.device_count())
+    rows_per_device = math.ceil(num_rows / num_devices)  # DistributedSampler pads
+    num_batches = math.ceil(rows_per_device / training_config.per_device_train_batch_size)
+    steps_total = math.ceil(num_batches / training_config.gradient_accumulation_steps)
+    logging_steps = max(1, steps_total // training_config.num_logs)
+    save_steps = max(1, steps_total // training_config.num_checkpoints)
+    print(f"Estimated {steps_total:,} optimizer steps, logging every {logging_steps}, saving every {save_steps}")
 
     # Set up model
     gt.utils._cuda_empty_cache()
@@ -617,13 +627,13 @@ def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) ->
             #
             # Logging
             logging_strategy="steps",
-            logging_steps=training_config.logging_steps,
+            logging_steps=logging_steps,
             run_name=run_name,
             report_to="wandb",
             #
             # Checkpointing
             save_strategy="steps",
-            save_steps=training_config.save_steps,
+            save_steps=save_steps,
             save_total_limit=2,
         ),
         #

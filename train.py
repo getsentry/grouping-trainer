@@ -51,16 +51,16 @@ def run(mini_cpu_test: bool = False):
             per_device_token_budget=64,
             gradient_checkpointing=True,
             sample_size_train=30,
-            logging_steps=1,
-            save_steps=10,
+            num_logs=30,
+            num_saves=3,
         )
     else:
         config = gt.train.TrainingConfig(
             run_shortname="gte",
-            per_device_train_batch_size=64,
             # Sample a large-enough batch to capture a good amount of the same query for cache hits in the forward pass.
-            gradient_accumulation_steps=16,
+            per_device_train_batch_size=64,
             # Accumulate over enough batches to get signal from more projects and reduce gradient variance.
+            gradient_accumulation_steps=16,
             per_device_token_budget=8192 * 4,
         )
 

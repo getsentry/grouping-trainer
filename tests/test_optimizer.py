@@ -22,8 +22,8 @@ def config() -> gt.train.TrainingConfig:
         gradient_checkpointing=True,
         sample_size_train=30,
         sample_size_val=20,
-        logging_steps=1,
-        save_steps=10,
+        num_logs=30,
+        num_saves=3,
     )
 
 

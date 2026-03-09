@@ -1,3 +1,10 @@
+# TODO: test real dataloader:
+# - set seed and check good mix across batches
+# - each batch has one project
+# - each batch is sorted by query
+#
+# TODO: test deduplication forward
+#
 from collections.abc import Iterable
 
 import pytest
