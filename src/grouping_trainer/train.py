@@ -528,7 +528,7 @@ class TrainingConfig(BaseModel):
     )  # TODO: Literal
     sample_size_train: int | None = None  # downsample for CPU sanity check runs
     log_of_scale_init: float = math.log(5)
-    learning_rate: float = 1e-4
+    learning_rate: float = 1e-4  # effective batch size should be large b/c more deduplication and more project mixing
     learning_rate_mapping: dict[str, float] = {
         r"^loss\.log_scale$": 2e-4,
         r"^loss\.bias$": 2e-4,

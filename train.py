@@ -29,10 +29,10 @@ def run(mini_cpu_test: bool = False):
     is_cuda = torch.cuda.is_available()
 
     if not mini_cpu_test:
-        assert is_cuda, "CUDA is required for full training"
+        assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    model = gt.utils.SentenceTransformer(
+    model = gt.utils.SentenceTransformer(  # 150M params. small enough we don't need a tiny-random for CPU runs
         "Alibaba-NLP/gte-modernbert-base",
         model_kwargs=(
             dict(
@@ -52,7 +52,7 @@ def run(mini_cpu_test: bool = False):
             gradient_checkpointing=True,
             sample_size_train=30,
             num_logs=30,
-            num_saves=3,
+            num_checkpoints=2,
         )
     else:
         config = gt.train.TrainingConfig(
@@ -80,7 +80,7 @@ def run(mini_cpu_test: bool = False):
             f" --wandb_run_id {wandb.run.id}"
             f" --base_model {base_model}"
         )
-        print(f"\nEval command: {eval_cmd}\n")
+        print(f"\nEval command:\n\n{eval_cmd}\n")
         if not mini_cpu_test:
             gt.train.launch_l4_eval(eval_cmd)
         else:
@@ -97,13 +97,27 @@ def run(mini_cpu_test: bool = False):
     trainer.save_model()  # already rank-gated
 
     if is_main_process:
-        trainer.model.encoder.save_pretrained(os.path.join(trainer.args.output_dir, "inference"))
+        dir_inference = os.path.join(trainer.args.output_dir, "inference")
+        trainer.model.encoder.save_pretrained(dir_inference)
         subprocess.run(
             ["gcloud", "storage", "cp", "-r", "wandb", f"{run_gcs_dir}/wandb"],
             check=True,
         )
         subprocess.run(
-            ["gcloud", "storage", "rsync", "-r", trainer.args.output_dir, f"{run_gcs_dir}/training"],
+            [
+                "gcloud",
+                "storage",
+                "rsync",
+                "-r",
+                "-x",
+                "inference/.*",
+                trainer.args.output_dir,
+                f"{run_gcs_dir}/training",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["gcloud", "storage", "rsync", "-r", dir_inference, f"{run_gcs_dir}/inference"],
             check=True,
         )
         logger.info(f"Uploaded wandb artifacts and model to {run_gcs_dir}")
