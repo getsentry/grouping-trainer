@@ -234,7 +234,7 @@ def main(
     wandb_run_id: str,
     base_model: str = "Alibaba-NLP/gte-modernbert-base",
     wandb_project: str = "grouping-trainer",
-    poll_interval_sec: int = 120,
+    poll_interval_sec: int = 60 * 5,
     sample_val: int | None = 20_000,
     truncate_dims: tuple[int, ...] = (64, 768),
     use_auto_detected_device: bool = False,
