@@ -1,16 +1,20 @@
 from typing import Callable
+import logging
+
 import torch
 import torch.nn.functional as F
 
-from grouping_trainer.utils import SentenceTransformer as SentenceTransformerGT
+import grouping_trainer as gt
 
 torch.set_float32_matmul_precision("high")
 
+logger = logging.getLogger(__name__)
 
-class SentenceTransformer(SentenceTransformerGT):
+
+class SentenceTransformer(gt.utils.SentenceTransformer):
     """
-    Python is too slow for this small model and batch size 1. Need to compile.
-    Cost: warming up the cached graphs can take 120 seconds for our data.
+    Python is too slow for this small model and batch size 1. So compile.
+    Cost: warming up can take 120 seconds for our data.
     """
 
     def __init__(self, *args, **kwargs):
@@ -47,7 +51,6 @@ class SentenceTransformer(SentenceTransformerGT):
 
     def warmup_and_compile(self):
         self._compiled_forward = torch.compile(super().forward, mode="reduce-overhead", dynamic=False)
-        # dynamic=False forces Dynamo to build strictly static graphs for our buckets. Don't let it generalize shapes.
         self.eval()
 
         for target_length in self._buckets:
@@ -67,11 +70,8 @@ class SentenceTransformer(SentenceTransformerGT):
             if self.tokenize([text])["input_ids"].shape[1] != target_length:
                 raise ValueError(f"Tokenization failed for {target_length=}")
 
+            logger.info(f"Warming up for {target_length=}")
             _ = self.encode(text, show_progress_bar=False)
-
-        # TODO: we could also end by encoding a 8192-length sequence to reserve a bunch of memory. Our model isn't that
-        # big. There is very likely enough room left to reserve our max seq length after the cached graphs are filled. I
-        # think this would be a pretty small optimization.
 
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
         """

@@ -15,7 +15,6 @@ from tap import tapify
 
 import grouping_trainer as gt
 
-torch.set_float32_matmul_precision("high")
 logger = logging.getLogger(__name__)
 
 

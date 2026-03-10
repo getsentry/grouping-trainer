@@ -589,7 +589,7 @@ if __name__ == "__main__":
     csv_path = Path("eval/similarities/2026-02-26-16-25-36-val-and-test/similarities.csv")
     thresholds = {
         "prod": 0.99,
-        "gte-finetuned": 0.80,
+        "gte-finetuned": 0.87,
     }
 
     result = compare_models(
