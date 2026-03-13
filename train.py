@@ -77,12 +77,9 @@ def run(mini_cpu_test: bool = False):
         )
     else:
         config = gt.train.TrainingConfig(
-            run_shortname="gte",
-            # Sample a large-enough batch to capture a good amount of the same query for cache hits in the forward pass.
-            per_device_train_batch_size=64,
-            # Accumulate over enough batches to get signal from more projects and reduce gradient variance.
-            gradient_accumulation_steps=16,
-            per_device_token_budget=8192 * 8,
+            run_shortname="gte-replication",
+            per_device_train_batch_size=256,
+            per_device_token_budget=8192 * 6,
         )
 
     trainer = gt.train.make_trainer(model, config)

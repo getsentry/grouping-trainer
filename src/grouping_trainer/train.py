@@ -49,7 +49,10 @@ def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | Non
     Records with the same `query_stacktrace_string` are kept together for cache hits in the forward pass. By default,
     the order of groups is randomized to avoid alphabetical ordering bias during training.
     """
-    query_group_dfs = [group_df for _, group_df in df.group_by("query_stacktrace_string")]
+    query_group_dfs = [
+        group_df.sort(pl.col("candidate_stacktrace_string").str.len_chars())
+        for _, group_df in df.group_by("query_stacktrace_string")
+    ]
     if shuffle_groups:
         rng = random.Random(seed)
         rng.shuffle(query_group_dfs)
@@ -607,7 +610,7 @@ def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) ->
             bf16=torch.cuda.is_bf16_supported(),
             fp16=False,
             dataloader_pin_memory=torch.cuda.is_available(),
-            num_train_epochs=1,
+            num_train_epochs=1,  # data is very large. empirically 1 epoch is plenty
             gradient_checkpointing=training_config.gradient_checkpointing,
             gradient_accumulation_steps=training_config.gradient_accumulation_steps,
             #
