@@ -79,7 +79,7 @@ def encode_timed(
     embeddings: list[np.ndarray] = []
     for text in tqdm(texts, desc=progress_bar_desc):
         start = time.monotonic()
-        emb = model.encode(text, convert_to_numpy=True)
+        emb = model.encode(text, convert_to_numpy=True, show_progress_bar=False)
         end = time.monotonic()
         times.append(end - start)
         embeddings.append(emb)
