@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import subprocess
 from datetime import datetime
 import time
@@ -13,8 +14,9 @@ from tqdm.auto import tqdm
 
 import grouping_trainer as gt
 
+logger = logging.getLogger(__name__)
 
-torch.set_float32_matmul_precision("high")  # no impact it seems?
+gt.logging.configure_logging(process_type="save_embeddings")
 
 
 class ModelConfig(BaseModel):
@@ -51,8 +53,8 @@ DATA_CONFIG = DataConfig(
 MODEL_CONFIGS = ModelConfigs(
     model_configs=[
         ModelConfig(
-            name="gte-finetuned",
-            path="gte-finetuned/training",
+            name="gte-mix",
+            path="gte-mix",
             truncate_dim=64,
             model_kwargs=dict(
                 dtype=torch.bfloat16,
@@ -60,11 +62,11 @@ MODEL_CONFIGS = ModelConfigs(
                 # attn_implementation="flash_attention_2",  # hell
             ),
         ),
-        ModelConfig(
-            name="prod",
-            path="issue_grouping_v1/embeddings",
-            truncate_dim=None,
-        ),
+        # ModelConfig(
+        #     name="prod",
+        #     path="issue_grouping_v1/embeddings",
+        #     truncate_dim=None,
+        # ),
     ]
 )
 OUTPUT_DIR = f"./{timestamp}-{RUN_SHORTNAME}"
@@ -85,20 +87,20 @@ def encode_timed(
 
 
 df = gt.data.load_val_df(path=DATA_CONFIG.df_path, sample_size=DATA_CONFIG.sample_size)
-print(df.shape)
-print(df.columns)
+logger.info(f"df shape: {df.shape}")
+logger.info(f"df columns: {df.columns}")
 
 model_name_to_query_and_candidate_embeddings: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
 for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
-    print(model_config)
+    logger.info(model_config)
 
     if model_config.model_kwargs:
         st_class = gt.danger.SentenceTransformer
     else:
         st_class = gt.utils.SentenceTransformer
 
-    print(f"Loading model {model_config.name} from {model_config.path}")
+    logger.info(f"Loading model {model_config.name} from {model_config.path}")
     start = time.monotonic()
     model = st_class(
         model_config.path,
@@ -108,7 +110,7 @@ for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
     )
     end = time.monotonic()
     load_time = round(end - start, 1)
-    print(f"Model loaded in {load_time} seconds.")
+    logger.info(f"Model loaded in {load_time} seconds.")
 
     if hasattr(model, "warmup_and_compile"):
         model.warmup_and_compile()
@@ -116,7 +118,7 @@ for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
         _ = model.encode("warm up")
     end = time.monotonic()
     warm_up_time = round(end - start, 1)
-    print(f"Warm up took {warm_up_time} seconds.")
+    logger.info(f"Warm up took {warm_up_time} seconds.")
 
     query_texts = df["query_stacktrace_string"].to_list()
     query_embeddings, query_times = encode_timed(model, query_texts, progress_bar_desc="Queries")
@@ -135,7 +137,7 @@ for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
             pl.Series(name=f"candidate_encode_time_{model_config.name}", values=candidate_times),
         ]
     )
-    print()
+    logger.info("")
 
 os.mkdir(OUTPUT_DIR)
 
@@ -146,15 +148,15 @@ with open(f"{OUTPUT_DIR}/data_config.json", "w") as f:
     json.dump(DATA_CONFIG.model_dump(), f, indent=4)
 
 df.write_csv(f"{OUTPUT_DIR}/similarities.csv")
-print(f"Saved similarities to {OUTPUT_DIR}/similarities.csv")
+logger.info(f"Saved similarities to {OUTPUT_DIR}/similarities.csv")
 
 for model_name, (query_embs, candidate_embs) in model_name_to_query_and_candidate_embeddings.items():
     np.save(f"{OUTPUT_DIR}/{model_name}_query_embeddings.npy", query_embs)
     np.save(f"{OUTPUT_DIR}/{model_name}_candidate_embeddings.npy", candidate_embs)
-    print(f"Saved embeddings for {model_name}: query {query_embs.shape}, candidate {candidate_embs.shape}")
+    logger.info(f"Saved embeddings for {model_name}: query {query_embs.shape}, candidate {candidate_embs.shape}")
 
 # Upload to GCS
 GCS_DIR = f"gs://grouping-data/runs/{OUTPUT_DIR.lstrip('./')}"
-print(f"\nUploading to {GCS_DIR}...")
+logger.info(f"Uploading to {GCS_DIR}...")
 subprocess.run(["gcloud", "storage", "rsync", "-r", OUTPUT_DIR, GCS_DIR], check=True)
-print(f"Uploaded to {GCS_DIR}")
+logger.info(f"Uploaded to {GCS_DIR}")
