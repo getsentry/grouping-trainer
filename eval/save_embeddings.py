@@ -70,15 +70,15 @@ def main(
         _ = model.encode("warm up")
         logger.info(f"Warm up done in {time.monotonic() - start:.1f}s")
 
-    logger.info("Encoding queries")
-    texts_query = df["query_stacktrace_string"].to_list()
-    embeddings_query = model.encode(texts_query, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=False)
+        logger.info("Encoding queries")
+        texts_query = df["query_stacktrace_string"].to_list()
+        embeddings_query = model.encode(texts_query, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=False)
 
-    logger.info("Encoding candidates")
-    texts_candidate = df["candidate_stacktrace_string"].to_list()
-    embeddings_candidate = model.encode(
-        texts_candidate, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=False
-    )
+        logger.info("Encoding candidates")
+        texts_candidate = df["candidate_stacktrace_string"].to_list()
+        embeddings_candidate = model.encode(
+            texts_candidate, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=False
+        )
 
     cos_sims = (
         pairwise_cos_sim(embeddings_query[..., :truncate_dim], embeddings_candidate[..., :truncate_dim])
