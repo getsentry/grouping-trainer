@@ -65,7 +65,7 @@ def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | Non
                 "query_stacktrace_string": record["query_stacktrace_string"],
                 "candidate_stacktrace_string": record["candidate_stacktrace_string"],
                 "label": int(record["label"] == "GROUP"),
-                "sample_weight": float(record["sample_weight"]),
+                "sample_weight": float(record.get("sample_weight", 1.0)),
             }
             for query_group_df in query_group_dfs
             for record in query_group_df.rows(named=True)
