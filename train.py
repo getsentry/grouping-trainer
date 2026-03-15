@@ -71,6 +71,12 @@ def run(mini_cpu_test: bool = False):
             run_shortname="cpu-sanity-check",
             per_device_train_batch_size=2,
             per_device_token_budget=64,
+            training_csvs=(
+                "final_csvs/train.csv",
+                "final_csvs/synthetic-semi-easy-negatives.csv",
+                "final_csvs/train_more.csv",
+                "final_csvs/synthetic-hard-negatives-llm.csv",
+            ),
             gradient_checkpointing=True,
             sample_size_train=30,
             num_logs=30,
@@ -78,10 +84,16 @@ def run(mini_cpu_test: bool = False):
         )
     else:
         config = gt.train.TrainingConfig(
-            run_shortname="gte-more",
+            run_shortname="gte-hard",
             per_device_train_batch_size=256,
             per_device_token_budget=8192 * 6,
             log_of_scale_init=math.log(7),  # TODO: wandb this param and bias
+            training_csvs=(
+                "final_csvs/train.csv",
+                "final_csvs/synthetic-semi-easy-negatives.csv",
+                "final_csvs/train_more.csv",
+                "final_csvs/synthetic-hard-negatives-llm.csv",
+            ),
         )
 
     trainer = gt.train.make_trainer(model, config)

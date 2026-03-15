@@ -65,6 +65,7 @@ def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | Non
                 "query_stacktrace_string": record["query_stacktrace_string"],
                 "candidate_stacktrace_string": record["candidate_stacktrace_string"],
                 "label": int(record["label"] == "GROUP"),
+                "sample_weight": float(record["sample_weight"]),
             }
             for query_group_df in query_group_dfs
             for record in query_group_df.rows(named=True)
@@ -107,7 +108,12 @@ def create_project_dataset_dict(
 @dataclass
 class DefaultDataCollator(SentenceTransformerDataCollator):
     def __call__(self, records: list[gt.data.Record]) -> gt.data.Batch:
-        return default_collate(records)
+        batch = default_collate(records)
+        # MPS doesn't support float64, so convert to float32
+        for key, value in batch.items():
+            if isinstance(value, torch.Tensor) and value.dtype == torch.float64:
+                batch[key] = value.float()
+        return batch
 
 
 def batch_pairs_by_token_budget(
@@ -125,6 +131,7 @@ def batch_pairs_by_token_budget(
     queries = batch["query_stacktrace_string"]
     candidates = batch["candidate_stacktrace_string"]
     labels = batch["label"]
+    sample_weights = batch["sample_weight"]
 
     if len(queries) != len(candidates) or len(queries) != len(labels):
         raise ValueError("Batch fields have inconsistent lengths")
@@ -152,6 +159,8 @@ def batch_pairs_by_token_budget(
                 "query_stacktrace_string": queries[start:i],
                 "candidate_stacktrace_string": candidates[start:i],
                 "label": labels[start:i],
+                "sample_weight": sample_weights[start:i],
+                # TODO: might be able to generalize this
             }
             start = i
             curr_max_num_tokens = max(num_tokens_query, num_tokens_candidate)
@@ -167,6 +176,7 @@ def batch_pairs_by_token_budget(
             "query_stacktrace_string": queries[start:],
             "candidate_stacktrace_string": candidates[start:],
             "label": labels[start:],
+            "sample_weight": sample_weights[start:],
         }
 
 
@@ -202,9 +212,11 @@ class ModelForTraining(torch.nn.Module):
 
         return gt.data.Features(query_embeddings=query_embeddings, candidate_embeddings=candidate_embeddings)
 
-    def forward(self, inputs: gt.data.Batch, labels: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, inputs: gt.data.Batch, labels: torch.Tensor, *, sample_weight: torch.Tensor | None = None
+    ) -> torch.Tensor:
         features = self.encode(inputs)
-        return self.loss(features, labels)
+        return self.loss(features, labels, sample_weight=sample_weight)
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None) -> None:
         self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
@@ -262,12 +274,6 @@ class Trainer(SentenceTransformerTrainer):
     def call_model_init(self, trial=None):
         return super(SentenceTransformerTrainer, self).call_model_init(trial=trial)
 
-    def collect_features(self, inputs: gt.data.Batch) -> tuple[gt.data.Batch, torch.Tensor]:
-        """
-        Pass-through. The model encodes and calculates the loss.
-        """
-        return inputs, inputs["label"]
-
     def prepare_loss(self, loss, model):
         """
         Pass-through. The model has the loss module. So it's on the device.
@@ -277,7 +283,7 @@ class Trainer(SentenceTransformerTrainer):
     def compute_loss(
         self, model: ModelForTraining, inputs: gt.data.Batch, return_outputs: bool = False, num_items_in_batch=None
     ):
-        loss = model(inputs, inputs["label"])
+        loss = model(inputs, inputs["label"], sample_weight=inputs["sample_weight"])
         if return_outputs:
             return loss, {}
         return loss
@@ -540,6 +546,12 @@ class TrainingConfig(BaseModel):
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
     resume_from_checkpoint: str | bool | None = None
+    source_to_sample_weight: dict[str, float] = {
+        "synthetic-negative-semi-easy": 1.0,
+        "unmatched": 1.0,
+        "matched": 1.0,
+        "synthetic-hard-negative-llm": 2.0,
+    }  # TODO: typed
 
     # MRL
     matryoshka_dims: tuple[int, ...] = (768, 512, 256, 128, 64)
@@ -570,6 +582,7 @@ def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) ->
         sample_size=training_config.sample_size_train,
         min_dataset_size=training_config.per_device_train_batch_size,
         paths=training_config.training_csvs,
+        source_to_sample_weight=training_config.source_to_sample_weight or None,
     )
     if "__packed__" in dataset_dict_train:
         logger.info(

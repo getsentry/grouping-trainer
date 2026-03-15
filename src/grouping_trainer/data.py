@@ -57,7 +57,7 @@ def _test_df(df: pl.DataFrame):
         )
         .select(pl.all_horizontal(pl.all()))  # reduce over columns
         .item()
-    )
+    ), "Some stacktraces are empty"
     return gt.utils.deduplicate_pairs(df)
 
 
@@ -81,7 +81,7 @@ def _load_train_df(
 ):
     df = gt.utils.concat_vertical_unordered((pl.read_csv(path) for path in paths), how="vertical_relaxed")
     df = _test_df(df)
-    assert (df.filter(pl.col("confidence_score").is_null())["source"] == "synthetic-negative-semi-easy").all()
+    assert df.filter(pl.col("confidence_score").is_null())["source"].str.starts_with("synthetic-").all()
     return df
 
 
@@ -108,11 +108,13 @@ def load_train_dataset_dict(
         "final_csvs/synthetic-semi-easy-negatives.csv",
         "final_csvs/train_more.csv",
     ),
+    source_to_sample_weight: dict[str, float] | None = None,
 ) -> tuple[DatasetDict, float]:
     """
     Args:
         stress_test_min_pair_len: If set, bypasses sample_size and instead keeps only pairs
             where (query + candidate character length) > this threshold. Useful for OOM stress testing.
+        source_to_sample_weight: Maps source column values to sample weights. Sources not in the dict get weight 1.0.
     """
     if stress_test_min_pair_len is not None:
         df = load_train_df(paths=paths, sample_size=None)  # bypass sampling
@@ -122,6 +124,13 @@ def load_train_dataset_dict(
         )
     else:
         df = load_train_df(paths=paths, sample_size=sample_size)
+
+    if source_to_sample_weight:
+        df = df.with_columns(
+            pl.col("source").replace_strict(source_to_sample_weight, default=1.0).alias("sample_weight")
+        )
+    else:
+        df = df.with_columns(pl.lit(1.0).alias("sample_weight"))
 
     dataset_dict_train = gt.train.create_project_dataset_dict(df, min_dataset_size=min_dataset_size)
     frac_positive = (df["label"] == "GROUP").mean()
@@ -135,12 +144,14 @@ class Record(TypedDict):
     query_stacktrace_string: str
     candidate_stacktrace_string: str
     label: int
+    sample_weight: float
 
 
 class Batch(TypedDict):
     query_stacktrace_string: list[str]
     candidate_stacktrace_string: list[str]
     label: torch.Tensor
+    sample_weight: torch.Tensor
 
 
 class Features(TypedDict):
