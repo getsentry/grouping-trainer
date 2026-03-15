@@ -104,15 +104,15 @@ def make_encoder(base_model: str, use_auto_detected_device: Literal[False] = ...
 def make_encoder(
     base_model: str, use_auto_detected_device: bool = False
 ) -> gt.utils.SentenceTransformer | gt.danger.SentenceTransformer:
-    if use_auto_detected_device:
-        return gt.utils.SentenceTransformer(base_model)
-    encoder = gt.danger.SentenceTransformer(
-        base_model,
-        model_kwargs=dict(
+    model_kwargs = dict()
+    if torch.cuda.is_bf16_supported():
+        model_kwargs = dict(
             dtype=torch.bfloat16,
             attn_implementation="sdpa",
-        ),
-    )
+        )
+    if use_auto_detected_device:
+        return gt.utils.SentenceTransformer(base_model, model_kwargs=model_kwargs)
+    encoder = gt.danger.SentenceTransformer(base_model, model_kwargs=model_kwargs)
     encoder.warmup_and_compile()
     return encoder
 
