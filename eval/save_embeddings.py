@@ -1,162 +1,102 @@
-import os
-import json
+"""
+Download a model from GCS, encode val+test data, save embeddings and similarities, and upload results to GCS.
+"""
+
 import logging
+import os.path
 import subprocess
-from datetime import datetime
+import tempfile
 import time
 
 import numpy as np
 import polars as pl
-from pydantic import BaseModel, field_serializer
 from sentence_transformers.util import pairwise_cos_sim
 import torch
-from tqdm.auto import tqdm
+from tap import tapify
 
 import grouping_trainer as gt
 
 logger = logging.getLogger(__name__)
 
-gt.logging.configure_logging(process_type="save_embeddings")
 
+def main(
+    run_gcs_dir: str,
+    df_path: str = "final_csvs/val_and_test.csv",
+    truncate_dim: int | None = 64,
+    batch_size: int = 2,
+    sample_size: int | None = None,
+):
+    """
+    Download a model from GCS, encode val+test pairs, and save embeddings + cosine similarities.
 
-class ModelConfig(BaseModel):
-    name: str
-    path: str
-    truncate_dim: int | None = None
-    batch_size: int = 1
-    model_kwargs: dict | None = None
+    Parameters
+    ----------
+    run_gcs_dir
+        GCS path to the training run directory (e.g. gs://grouping-data/runs/my-run).
+    df_path
+        Path to the validation/test CSV file.
+    truncate_dim
+        Truncate embeddings to this many dimensions. None for full dimensionality.
+    sample_size
+        Number of rows to sample. None uses the full dataset.
+    """
+    gt.logging.configure_logging(process_type="save_embeddings")
 
-    @field_serializer("model_kwargs")
-    def serialize_model_kwargs(self, v: dict | None) -> dict:
-        if v is None:
-            return None
-        return {k: str(val) if isinstance(val, torch.dtype) else val for k, val in v.items()}
+    run_gcs_dir = run_gcs_dir.rstrip("/")
+    path_gcs_inference = f"{run_gcs_dir}/inference"
+    name_dataset = os.path.splitext(os.path.basename(df_path))[0]
+    dir_gcs_output = f"{run_gcs_dir}/similarities/{name_dataset}"
 
+    df = gt.data.load_val_df(path=df_path, sample_size=sample_size)
+    logger.info(f"df shape: {df.shape}")
 
-class ModelConfigs(BaseModel):
-    model_configs: list[ModelConfig]
+    with tempfile.TemporaryDirectory() as dir_tmp:
+        logger.info(f"Downloading model from {path_gcs_inference} ...")
+        subprocess.run(["gcloud", "storage", "rsync", "-r", path_gcs_inference, dir_tmp], check=True)
 
+        kwargs_model = {}
+        if torch.cuda.is_bf16_supported():
+            kwargs_model = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
 
-class DataConfig(BaseModel):
-    df_path: str
-    sample_size: int | None = None
-
-
-timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-
-RUN_SHORTNAME = "val-and-test"
-DATA_CONFIG = DataConfig(
-    df_path="final_csvs/val_and_test.csv",
-    sample_size=None,
-    # sample_size=100,
-)
-MODEL_CONFIGS = ModelConfigs(
-    model_configs=[
-        ModelConfig(
-            name="gte-mix",
-            path="gte-mix",
-            truncate_dim=64,
-            model_kwargs=dict(
-                dtype=torch.bfloat16,
-                attn_implementation="sdpa",
-                # attn_implementation="flash_attention_2",  # hell
-            ),
-        ),
-        # ModelConfig(
-        #     name="prod",
-        #     path="issue_grouping_v1/embeddings",
-        #     truncate_dim=None,
-        # ),
-    ]
-)
-OUTPUT_DIR = f"./{timestamp}-{RUN_SHORTNAME}"
-
-
-def encode_timed(
-    model: gt.utils.SentenceTransformer, texts: list[str], progress_bar_desc: str | None = None
-) -> tuple[np.ndarray, list[float]]:
-    times: list[float] = []
-    embeddings: list[np.ndarray] = []
-    for text in tqdm(texts, desc=progress_bar_desc):
+        logger.info("Loading model...")
         start = time.monotonic()
-        emb = model.encode(text, convert_to_numpy=True, show_progress_bar=False)
-        end = time.monotonic()
-        times.append(end - start)
-        embeddings.append(emb)
-    return np.array(embeddings), times
+        model = gt.utils.SentenceTransformer(
+            dir_tmp,
+            trust_remote_code=True,
+            model_kwargs=kwargs_model,
+        )
+        logger.info(f"Model loaded in {time.monotonic() - start:.1f}s")
 
-
-df = gt.data.load_val_df(path=DATA_CONFIG.df_path, sample_size=DATA_CONFIG.sample_size)
-logger.info(f"df shape: {df.shape}")
-logger.info(f"df columns: {df.columns}")
-
-model_name_to_query_and_candidate_embeddings: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-
-for model_config in tqdm(MODEL_CONFIGS.model_configs, desc="Models"):
-    logger.info(model_config)
-
-    if model_config.model_kwargs:
-        st_class = gt.danger.SentenceTransformer
-    else:
-        st_class = gt.utils.SentenceTransformer
-
-    logger.info(f"Loading model {model_config.name} from {model_config.path}")
-    start = time.monotonic()
-    model = st_class(
-        model_config.path,
-        trust_remote_code=True,
-        truncate_dim=model_config.truncate_dim,
-        model_kwargs=model_config.model_kwargs,
-    )
-    end = time.monotonic()
-    load_time = round(end - start, 1)
-    logger.info(f"Model loaded in {load_time} seconds.")
-
-    if hasattr(model, "warmup_and_compile"):
-        model.warmup_and_compile()
-    else:
         _ = model.encode("warm up")
-    end = time.monotonic()
-    warm_up_time = round(end - start, 1)
-    logger.info(f"Warm up took {warm_up_time} seconds.")
+        logger.info(f"Warm up done in {time.monotonic() - start:.1f}s")
 
-    query_texts = df["query_stacktrace_string"].to_list()
-    query_embeddings, query_times = encode_timed(model, query_texts, progress_bar_desc="Queries")
+    logger.info("Encoding queries")
+    texts_query = df["query_stacktrace_string"].to_list()
+    embeddings_query = model.encode(texts_query, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=False)
 
-    candidate_texts = df["candidate_stacktrace_string"].to_list()
-    candidate_embeddings, candidate_times = encode_timed(model, candidate_texts, progress_bar_desc="Candidates")
-
-    model_name_to_query_and_candidate_embeddings[model_config.name] = (query_embeddings, candidate_embeddings)
-
-    cos_sims = pairwise_cos_sim(query_embeddings, candidate_embeddings).detach().cpu().numpy()
-
-    df = df.with_columns(
-        [
-            pl.Series(name=f"cos_sim_{model_config.name}", values=cos_sims),
-            pl.Series(name=f"query_encode_time_{model_config.name}", values=query_times),
-            pl.Series(name=f"candidate_encode_time_{model_config.name}", values=candidate_times),
-        ]
+    logger.info("Encoding candidates")
+    texts_candidate = df["candidate_stacktrace_string"].to_list()
+    embeddings_candidate = model.encode(
+        texts_candidate, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=False
     )
-    logger.info("")
 
-os.mkdir(OUTPUT_DIR)
+    cos_sims = (
+        pairwise_cos_sim(embeddings_query[..., :truncate_dim], embeddings_candidate[..., :truncate_dim])
+        .detach()
+        .cpu()
+        .numpy()
+    )
+    df = df.with_columns(pl.Series(name="cos_sim", values=cos_sims))
 
-with open(f"{OUTPUT_DIR}/model_configs.json", "w") as f:
-    json.dump(MODEL_CONFIGS.model_dump(), f, indent=4)
+    with tempfile.TemporaryDirectory() as dir_tmp_output:
+        df.write_csv(f"{dir_tmp_output}/similarities.csv")
+        np.save(f"{dir_tmp_output}/query_embeddings.npy", embeddings_query)
+        np.save(f"{dir_tmp_output}/candidate_embeddings.npy", embeddings_candidate)
 
-with open(f"{OUTPUT_DIR}/data_config.json", "w") as f:
-    json.dump(DATA_CONFIG.model_dump(), f, indent=4)
+        logger.info(f"Uploading to {dir_gcs_output}...")
+        subprocess.run(["gcloud", "storage", "rsync", "-r", dir_tmp_output, dir_gcs_output], check=True)
+        logger.info(f"Uploaded to {dir_gcs_output}")
 
-df.write_csv(f"{OUTPUT_DIR}/similarities.csv")
-logger.info(f"Saved similarities to {OUTPUT_DIR}/similarities.csv")
 
-for model_name, (query_embs, candidate_embs) in model_name_to_query_and_candidate_embeddings.items():
-    np.save(f"{OUTPUT_DIR}/{model_name}_query_embeddings.npy", query_embs)
-    np.save(f"{OUTPUT_DIR}/{model_name}_candidate_embeddings.npy", candidate_embs)
-    logger.info(f"Saved embeddings for {model_name}: query {query_embs.shape}, candidate {candidate_embs.shape}")
-
-# Upload to GCS
-GCS_DIR = f"gs://grouping-data/runs/{OUTPUT_DIR.lstrip('./')}"
-logger.info(f"Uploading to {GCS_DIR}...")
-subprocess.run(["gcloud", "storage", "rsync", "-r", OUTPUT_DIR, GCS_DIR], check=True)
-logger.info(f"Uploaded to {GCS_DIR}")
+if __name__ == "__main__":
+    tapify(main, description=__doc__)

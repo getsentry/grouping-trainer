@@ -37,7 +37,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         if target_len > current_len:
             num_padding_tokens = target_len - current_len
-            pad_val = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+            assert self.tokenizer.pad_token_id is not None, "Must be able to pad"
+            pad_val = self.tokenizer.pad_token_id
 
             if extra_keys := (set(encodings.keys()) - {"input_ids", "attention_mask", "token_type_ids"}):
                 raise ValueError(f"Unexpected encoding keys: {extra_keys}")
