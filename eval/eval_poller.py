@@ -9,7 +9,6 @@ import tempfile
 import time
 from typing import Literal, overload
 
-import polars as pl
 from pydantic import BaseModel
 from tap import tapify
 import torch
@@ -120,19 +119,10 @@ def make_encoder(
 
 def _format_metrics(metrics: dict[str, float]) -> str:
     """
-    Format eval metrics as a polars table, parsed from flat key structure.
+    Format eval metrics as plain-text lines for GCP-friendly logging. It doesn't like showing a polars table.
     """
-    rows = []
-    for key, value in metrics.items():
-        parts = key.split("_", 2)  # e.g. ["val", "dim64", "pr85_threshold"]
-        if len(parts) >= 3:
-            rows.append({"dim": parts[1], "metric": parts[2], "value": value})
-        else:
-            rows.append({"dim": "", "metric": key, "value": value})
-
-    df = pl.DataFrame(rows).pivot(on="metric", index="dim", values="value")
-    with pl.Config(tbl_cols=-1, tbl_width_chars=200):
-        return str(df)
+    lines = [f"  {key}: {value:.6f}" for key, value in sorted(metrics.items())]
+    return "\n".join(lines)
 
 
 def log_eval_metrics(step: int, metrics: dict[str, float]):
