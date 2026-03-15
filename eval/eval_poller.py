@@ -209,7 +209,7 @@ def main(
     base_model: str = "Alibaba-NLP/gte-modernbert-base",
     wandb_project: str = "grouping-trainer",
     poll_interval_sec: int = 60 * 2,
-    sample_val: int | None = 20_000,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
+    sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
     truncate_dims: tuple[int, ...] = (64, 768),
     use_simple_precisions: bool = False,
 ):

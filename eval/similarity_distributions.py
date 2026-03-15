@@ -15,11 +15,11 @@ axes: list[plt.Axes] = list(axes)
 
 print(df.select(cos_sim_cols).describe())
 
-# for ax, model_name, col in zip(axes, model_names, cos_sim_cols, strict=True):
-#     sns.histplot(df[col].to_numpy(), bins=50, ax=ax)
-#     ax.set_title(model_name)
-#     ax.set_xlabel("Cosine Similarity")
+for ax, model_name, col in zip(axes, model_names, cos_sim_cols, strict=True):
+    sns.histplot(df[col].to_numpy(), bins=50, ax=ax)
+    ax.set_title(model_name)
+    ax.set_xlabel("Cosine Similarity")
 
-# fig.tight_layout()
-# plt.savefig("similarity_distributions.png", dpi=150)
-# # plt.show()
+fig.tight_layout()
+plt.savefig("similarity_distributions.png", dpi=150)
+# plt.show()
