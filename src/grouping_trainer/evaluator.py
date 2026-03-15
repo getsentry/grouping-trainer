@@ -114,17 +114,14 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         for dim in dims:
             logger.info(f"  dim={dim}:")
             for p in self.target_precisions:
-                threshold = raw_metrics[_metric_name(dim=dim, target_precision=p, metric="threshold")]
                 precision = raw_metrics[_metric_name(dim=dim, target_precision=p, metric="precision")]
                 recall = raw_metrics[_metric_name(dim=dim, target_precision=p, metric="recall")]
-                n_preds = raw_metrics[_metric_name(dim=dim, target_precision=p, metric="n_predictions")]
 
-                if np.isnan(threshold):
+                if np.isnan(precision):
                     logger.info(f"    Precision >= {p:.0%}: Not achievable with >= {self.min_predictions} predictions")
                 else:
                     logger.info(
-                        f"    Precision >= {p:.0%}: threshold={threshold:.4f}, "
-                        f"precision={precision:.2%}, recall={recall:.2%}, n={int(n_preds)}"
+                        f"    Precision >= {p:.0%}: precision={precision:.2%}, recall={recall:.2%}"
                     )
 
         # Build CSV row data
@@ -264,7 +261,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
         # Track the last valid result for each target precision
         # "Last valid" means the lowest threshold we've seen that still meets the target
-        results = {p: None for p in target_precisions}
+        target_precision_to_metric_name_to_value = {p: None for p in target_precisions}
 
         tp = 0
         n_predictions = 0
@@ -286,9 +283,9 @@ class MinPrecisionEvaluator(SentenceEvaluator):
             threshold = score
 
             # For each target, if we meet it, record this as the new "lowest threshold"
-            for target_p in target_precisions:
-                if precision >= target_p:
-                    results[target_p] = {
+            for target_precision in target_precisions:
+                if precision >= target_precision:
+                    target_precision_to_metric_name_to_value[target_precision] = {
                         "threshold": float(threshold),
                         "precision": float(precision),
                         "recall": float(recall),
@@ -296,14 +293,22 @@ class MinPrecisionEvaluator(SentenceEvaluator):
                     }
 
         # Convert to flat dict with metric names
+        metric_names = (
+            # "threshold",
+            # "n_predictions",
+            "precision",
+            "recall",
+        )
         output = {}
-        for p in target_precisions:
-            if results[p] is not None:
-                for metric in ("threshold", "precision", "recall", "n_predictions"):
-                    output[_metric_name(dim=dim, target_precision=p, metric=metric)] = results[p][metric]
+        for target_precision in target_precisions:
+            if target_precision_to_metric_name_to_value[target_precision] is not None:
+                for metric in metric_names:
+                    output[_metric_name(dim=dim, target_precision=target_precision, metric=metric)] = (
+                        target_precision_to_metric_name_to_value[target_precision][metric]
+                    )
             else:
-                for metric in ("threshold", "precision", "recall", "n_predictions"):
-                    output[_metric_name(dim=dim, target_precision=p, metric=metric)] = float("nan")
+                for metric in metric_names:
+                    output[_metric_name(dim=dim, target_precision=target_precision, metric=metric)] = float("nan")
 
         return output
 
