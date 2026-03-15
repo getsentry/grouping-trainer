@@ -78,7 +78,7 @@ def run(mini_cpu_test: bool = False):
         )
     else:
         config = gt.train.TrainingConfig(
-            run_shortname="gte-replication",
+            run_shortname="gte-more",
             per_device_train_batch_size=256,
             per_device_token_budget=8192 * 6,
             log_of_scale_init=math.log(7),  # TODO: wandb this param and bias
