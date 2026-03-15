@@ -84,15 +84,17 @@ def run(mini_cpu_test: bool = False):
         )
     else:
         config = gt.train.TrainingConfig(
-            run_shortname="gte-hard",
-            per_device_train_batch_size=256,
+            run_shortname="gte-mix-more",
+            per_device_train_batch_size=32,
+            gradient_accumulation_steps=8,
+            shuffle_within_dataset=True,
             per_device_token_budget=8192 * 6,
-            log_of_scale_init=math.log(7),  # TODO: wandb this param and bias
+            log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
             training_csvs=(
                 "final_csvs/train.csv",
                 "final_csvs/synthetic-semi-easy-negatives.csv",
                 "final_csvs/train_more.csv",
-                "final_csvs/synthetic-hard-negatives-llm.csv",
+                # "final_csvs/synthetic-hard-negatives-llm.csv",
             ),
         )
 

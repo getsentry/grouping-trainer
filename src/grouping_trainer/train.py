@@ -552,6 +552,7 @@ class TrainingConfig(BaseModel):
         "matched": 1.0,
         "synthetic-hard-negative-llm": 2.0,
     }  # TODO: typed
+    shuffle_within_dataset: bool = False  # False for more cache hits in each forward
 
     # MRL
     matryoshka_dims: tuple[int, ...] = (768, 512, 256, 128, 64)
@@ -657,7 +658,7 @@ def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) ->
         # Training
         data_collator=gt.train.DefaultDataCollator(tokenize_fn=model_for_training.encoder.tokenize),
         train_dataset=dataset_dict_train,
-        shuffle_within_dataset=False,  # more cache hits in each forward
+        shuffle_within_dataset=training_config.shuffle_within_dataset,
         per_device_token_budget=training_config.per_device_token_budget,
         #
         # Eval runs async on a separate machine. See eval_poller.py
