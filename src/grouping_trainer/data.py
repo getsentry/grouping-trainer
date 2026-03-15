@@ -73,7 +73,11 @@ def load_val_df(path: str = "final_csvs/val.csv", sample_size: int | None = None
 
 @lru_cache(maxsize=1)  # data too big for bigger cache, sorry
 def _load_train_df(
-    paths: tuple[str, ...] = ("final_csvs/train.csv", "final_csvs/synthetic-semi-easy-negatives.csv"),
+    paths: tuple[str, ...] = (
+        "final_csvs/train.csv",
+        "final_csvs/synthetic-semi-easy-negatives.csv",
+        "final_csvs/train_more.csv",
+    ),
 ):
     df = gt.utils.concat_vertical_unordered((pl.read_csv(path) for path in paths), how="vertical_relaxed")
     df = _test_df(df)
@@ -82,7 +86,11 @@ def _load_train_df(
 
 
 def load_train_df(
-    paths: tuple[str, ...] = ("final_csvs/train.csv", "final_csvs/synthetic-semi-easy-negatives.csv"),
+    paths: tuple[str, ...] = (
+        "final_csvs/train.csv",
+        "final_csvs/synthetic-semi-easy-negatives.csv",
+        "final_csvs/train_more.csv",
+    ),
     sample_size: int | None = None,
 ):
     df = _load_train_df(paths)
@@ -95,7 +103,11 @@ def load_train_dataset_dict(
     sample_size: int | None = None,
     min_dataset_size: int | None = None,
     stress_test_min_pair_len: int | None = None,
-    paths: tuple[str, ...] = ("final_csvs/train.csv", "final_csvs/synthetic-semi-easy-negatives.csv"),
+    paths: tuple[str, ...] = (
+        "final_csvs/train.csv",
+        "final_csvs/synthetic-semi-easy-negatives.csv",
+        "final_csvs/train_more.csv",
+    ),
 ) -> tuple[DatasetDict, float]:
     """
     Args:

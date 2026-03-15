@@ -4,6 +4,7 @@ Evaluation runs async on a separate machine. See eval/eval_poller.py
 """
 
 import logging
+import math
 import os
 import subprocess
 import warnings
@@ -80,6 +81,7 @@ def run(mini_cpu_test: bool = False):
             run_shortname="gte-replication",
             per_device_train_batch_size=256,
             per_device_token_budget=8192 * 6,
+            log_of_scale_init=math.log(7),  # TODO: wandb this param and bias
         )
 
     trainer = gt.train.make_trainer(model, config)
@@ -100,10 +102,11 @@ def run(mini_cpu_test: bool = False):
         base_model = trainer.model.encoder.model_card_data.base_model
         eval_cmd = f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model}"
         if mini_cpu_test:
-            eval_cmd += " --sample_val 200 --use_auto_detected_device --use_simple_precisions"
+            eval_cmd += " --sample_val 200 --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")
         if not mini_cpu_test:
-            gt.train.launch_l4_eval(eval_cmd)
+            # gt.train.launch_l4_eval(eval_cmd)
+            pass
         else:
             logger.info("Skipping async eval on L4 for mini_cpu_test")
 

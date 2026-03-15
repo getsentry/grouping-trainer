@@ -528,6 +528,7 @@ class TrainingConfig(BaseModel):
     training_csvs: tuple[str, ...] = (
         "final_csvs/train.csv",
         "final_csvs/synthetic-semi-easy-negatives.csv",
+        "final_csvs/train_more.csv",
     )  # TODO: Literal
     sample_size_train: int | None = None  # downsample for CPU sanity check runs
     log_of_scale_init: float = math.log(5)
