@@ -86,7 +86,7 @@ def make_evaluator(
         labels=[int(record["label"]) for record in dataset_val],
         name="val",
         show_progress_bar=True,
-        batch_size=1,  # pls use the CUDA graph-cached model
+        batch_size=2,
         truncate_dims=truncate_dims,
         target_precisions=[0.7, 0.8] if use_simple_precisions else None,
     )
