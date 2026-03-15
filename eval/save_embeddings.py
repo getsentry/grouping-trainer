@@ -72,12 +72,14 @@ def main(
 
         logger.info("Encoding queries")
         texts_query = df["query_stacktrace_string"].to_list()
-        embeddings_query = model.encode(texts_query, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=False)
+        embeddings_query = model.encode(
+            texts_query, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=True
+        )
 
         logger.info("Encoding candidates")
         texts_candidate = df["candidate_stacktrace_string"].to_list()
         embeddings_candidate = model.encode(
-            texts_candidate, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=False
+            texts_candidate, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=True
         )
 
     cos_sims = (

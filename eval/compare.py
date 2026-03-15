@@ -258,8 +258,9 @@ def plot_dumbbell_by_project(
 
 
 def compare_models(
-    csv_path: Path,
+    df: pl.DataFrame,
     thresholds: dict[str, float],
+    output_dir: Path | None = None,
     min_group_rate_increase: float | None = 0.3,
     min_group_rate_decrease: float | None = None,
     write_csvs: bool = True,
@@ -269,22 +270,22 @@ def compare_models(
     Compare two models' grouping decisions and split data by (org_id, project_id).
 
     Args:
-        csv_path: Path to CSV with cos_sim_{model-name} columns.
+        df: DataFrame with cos_sim_{model-name} columns and a label column.
         thresholds: Dict mapping model-name to cos_sim_threshold.
             First key = model1 (baseline), second key = model2 (new model).
+        output_dir: Directory for writing CSVs. Required if write_csvs is True.
         min_group_rate_increase: Track projects where model2 GROUP rate is >= this value higher than model1. None to skip.
         min_group_rate_decrease: Track projects where model2 GROUP rate is >= this value lower than model1 (absolute).
             E.g., 0.10 means model2 has at least 10pp lower GROUP rate. None to skip.
         write_csvs: If True, write new.csv and merged.csv files for each project.
         display_names: Optional mapping from model names to display names for charts/tables.
 
-    Outputs are written to csv_path.parent / org_{org_id} / project_{project_id} /
+    Outputs are written to output_dir / org_{org_id} / project_{project_id} /
     """
     if len(thresholds) != 2:
         raise ValueError(f"Expected exactly 2 models in thresholds, got {len(thresholds)}")
-
-    df = pl.read_csv(csv_path)
-    output_dir = csv_path.parent
+    if write_csvs and output_dir is None:
+        raise ValueError("output_dir is required when write_csvs is True")
 
     print("Thresholds:", ", ".join(f"{model}={thresh}" for model, thresh in thresholds.items()))
     print(df["distance"].describe())
@@ -298,6 +299,7 @@ def compare_models(
             pl.col("project_id").n_unique().alias("n_projects"),
         )
         .sort("platform")
+        .with_columns((pl.col("n_pairs") / pl.col("n_pairs").sum()).round(2).alias("proportion"))
     )
     print("\nPlatform stats:")
     print(platform_stats)
@@ -323,6 +325,14 @@ def compare_models(
 
     # Compute and print overall metrics
     print(_compute_metrics(df, model_names))
+
+    # Conditional probabilities: P(model2 GROUP | model1 prediction)
+    prod_group = df.filter(pl.col(pred1_col) == "GROUP")
+    prod_separate = df.filter(pl.col(pred1_col) == "SEPARATE")
+    p_group_given_group = (prod_group[pred2_col] == "GROUP").mean() if len(prod_group) > 0 else float("nan")
+    p_group_given_separate = (prod_separate[pred2_col] == "GROUP").mean() if len(prod_separate) > 0 else float("nan")
+    print(f"\nP({model2} GROUP | {model1} GROUP)    = {p_group_given_group:.4f}")
+    print(f"P({model2} GROUP | {model1} SEPARATE) = {p_group_given_separate:.4f}")
 
     # Columns to keep in output
     output_cols = [
@@ -503,14 +513,14 @@ def _add_token_columns(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def compute_stacktrace_token_percentiles(csv_path: Path) -> pl.DataFrame:
+def compute_stacktrace_token_percentiles(df: pl.DataFrame) -> pl.DataFrame:
     """
     Compute percentile metrics for stacktrace token counts in the test set.
 
     Uses len(stacktrace) // 4 as a rough token count approximation.
     Computes stats for query, candidate, and combined (max of the two per pair).
     """
-    df = _add_token_columns(pl.read_csv(csv_path))
+    df = _add_token_columns(df)
 
     # Add combined metrics
     df = df.with_columns(
@@ -539,6 +549,112 @@ def compute_stacktrace_token_percentiles(csv_path: Path) -> pl.DataFrame:
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
         print(result)
 
+    return result
+
+
+def sweep_thresholds(
+    df: pl.DataFrame,
+    model_name: str,
+    thresholds: list[float] = [0.80, 0.85, 0.87, 0.90],
+) -> pl.DataFrame:
+    """
+    Show metrics for a single model at multiple similarity thresholds.
+
+    Args:
+        df: DataFrame with a cos_sim_{model_name} column and a label column.
+        model_name: Model name (used to find cos_sim_ column).
+        thresholds: List of similarity thresholds to evaluate.
+
+    Returns:
+        DataFrame with one row per threshold and metric columns.
+    """
+    sim_col = f"cos_sim_{model_name}"
+    rows = []
+    for thresh in thresholds:
+        df_t = df.with_columns(
+            pl.when(pl.col(sim_col) > thresh)
+            .then(pl.lit("GROUP"))
+            .otherwise(pl.lit("SEPARATE"))
+            .alias(f"pred_{model_name}")
+        )
+        metrics = _compute_metrics_for_model(df_t, model_name)
+        rows.append({"threshold": thresh, **metrics})
+
+    result = pl.DataFrame(rows).with_columns(pl.col(pl.Float64).round(2))
+    print(f"\n=== Threshold sweep for {model_name} ===")
+    with pl.Config(tbl_rows=-1, tbl_cols=-1):
+        print(result)
+    return result
+
+
+def sweep_thresholds_by_project(
+    df: pl.DataFrame,
+    model_name: str,
+    thresholds: list[float] = [0.80, 0.85, 0.87, 0.90],
+    precision_floor: float = 0.7,
+    harm_threshold: float = 0.10,
+) -> pl.DataFrame:
+    """
+    Sweep thresholds showing per-project precision_GROUP distribution.
+
+    Uses the highest threshold as the baseline for computing deltas and harm counts.
+
+    Args:
+        df: DataFrame with cos_sim_{model_name}, label, org_id, project_id columns.
+        model_name: Model name (used to find cos_sim_ column).
+        thresholds: List of similarity thresholds to evaluate.
+        precision_floor: Count projects with precision_GROUP below this absolute value.
+        harm_threshold: Count projects where precision_GROUP drops by >= this vs baseline.
+
+    Returns:
+        DataFrame with distribution stats per threshold.
+    """
+    sim_col = f"cos_sim_{model_name}"
+    pred_col = f"pred_{model_name}"
+    thresholds_sorted = sorted(thresholds, reverse=True)
+    threshold_baseline = thresholds_sorted[0]
+
+    # Compute per-project precision_GROUP at each threshold
+    project_precisions: dict[float, pl.DataFrame] = {}
+    for thresh in thresholds_sorted:
+        df_t = df.with_columns(
+            pl.when(pl.col(sim_col) > thresh).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+        )
+        rows_project = []
+        for (org_id, project_id), group_df in df_t.group_by(["org_id", "project_id"]):
+            pred_group = group_df.filter(pl.col(pred_col) == "GROUP")
+            prec = (pred_group["label"] == "GROUP").mean() if len(pred_group) > 0 else None
+            rows_project.append({"org_id": org_id, "project_id": project_id, "precision_GROUP": prec})
+        project_precisions[thresh] = pl.DataFrame(rows_project)
+
+    # Build summary rows
+    baseline_df = project_precisions[threshold_baseline].rename({"precision_GROUP": "baseline_prec"})
+    rows_summary = []
+    for thresh in thresholds_sorted:
+        prec_col = project_precisions[thresh]["precision_GROUP"].drop_nulls().drop_nans()
+        row = {
+            "threshold": thresh,
+            "n_projects": len(prec_col),
+            "mean": prec_col.mean(),
+            "p5": prec_col.quantile(0.05),
+            "p10": prec_col.quantile(0.10),
+            "p25": prec_col.quantile(0.25),
+            "median": prec_col.quantile(0.50),
+            f"below_{precision_floor}": (prec_col < precision_floor).sum(),
+        }
+        # Compute harm vs baseline
+        merged = project_precisions[thresh].join(baseline_df, on=["org_id", "project_id"])
+        delta = (merged["precision_GROUP"] - merged["baseline_prec"]).drop_nulls().drop_nans()
+        row[f"harmed_{harm_threshold:.0%}"] = (delta <= -harm_threshold).sum()
+        row["delta_mean"] = delta.mean()
+        row["delta_p5"] = delta.quantile(0.05)
+        row["delta_p10"] = delta.quantile(0.10)
+        rows_summary.append(row)
+
+    result = pl.DataFrame(rows_summary).with_columns(pl.col(pl.Float64).round(2))
+    print(f"\n=== Per-project precision_GROUP distribution (baseline={threshold_baseline}) ===")
+    with pl.Config(tbl_rows=-1, tbl_cols=-1):
+        print(result)
     return result
 
 
@@ -587,30 +703,39 @@ if __name__ == "__main__":
     # max_model1_group_rate = None
 
     csv_path = Path("eval/similarities/2026-02-26-16-25-36-val-and-test/similarities.csv")
+    model_name = "gte-finetuned"
+    df = pl.read_csv(csv_path)
+    output_dir = csv_path.parent
     thresholds = {
         "prod": 0.99,
-        "gte-finetuned": 0.87,
+        model_name: 0.92,
     }
 
     result = compare_models(
-        csv_path=csv_path,
+        df=df,
         thresholds=thresholds,
+        output_dir=output_dir,
         min_group_rate_increase=0.3,
         min_group_rate_decrease=0.15,
         write_csvs=True,
-        display_names={"gte-finetuned": "new"},
+        display_names={model_name: "new"},
     )
+
+    # Threshold sweep for gte-finetuned
+    thresholds_sweep = [0.80, 0.85, 0.87, 0.90, 0.92, 0.93]
+    sweep_thresholds(df, model_name, thresholds_sweep)
+    sweep_thresholds_by_project(df, model_name, thresholds_sweep)
 
     # Compare metrics by stacktrace length
     compare_metrics_by_stacktrace_length(result.df, result.model_names)
 
     fig = plot_metrics_by_platform(result.df, result.model_names)
-    fig.savefig(csv_path.parent / "metrics_by_platform.png", dpi=150, bbox_inches="tight")
-    print(f"Saved plot to {csv_path.parent / 'metrics_by_platform.png'}")
+    fig.savefig(output_dir / "metrics_by_platform.png", dpi=150, bbox_inches="tight")
+    print(f"Saved plot to {output_dir / 'metrics_by_platform.png'}")
 
     fig = plot_dumbbell_by_project(result.project_metrics, result.model_names)
-    fig.savefig(csv_path.parent / "dumbbell_by_project.png", dpi=150, bbox_inches="tight")
-    print(f"Saved plot to {csv_path.parent / 'dumbbell_by_project.png'}")
+    fig.savefig(output_dir / "dumbbell_by_project.png", dpi=150, bbox_inches="tight")
+    print(f"Saved plot to {output_dir / 'dumbbell_by_project.png'}")
 
     # Upload to Google Sheets (slowest step, do last)
     # spreadsheet_id = "1-aHK2-ZO8WwmuHyP4gRRCtiPWQtYyZr4qcWkVa4Ptjw"
