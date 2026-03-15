@@ -7,7 +7,6 @@ import re
 import subprocess
 import tempfile
 import time
-from typing import Literal, overload
 
 from pydantic import BaseModel
 from tap import tapify
@@ -93,28 +92,14 @@ def make_evaluator(
     )
 
 
-@overload
-def make_encoder(base_model: str, use_auto_detected_device: Literal[True]) -> gt.utils.SentenceTransformer: ...
-
-
-@overload
-def make_encoder(base_model: str, use_auto_detected_device: Literal[False] = ...) -> gt.danger.SentenceTransformer: ...
-
-
-def make_encoder(
-    base_model: str, use_auto_detected_device: bool = False
-) -> gt.utils.SentenceTransformer | gt.danger.SentenceTransformer:
+def make_encoder(base_model: str) -> gt.utils.SentenceTransformer:
     model_kwargs = dict()
     if torch.cuda.is_bf16_supported():
         model_kwargs = dict(
             dtype=torch.bfloat16,
             attn_implementation="sdpa",
         )
-    if use_auto_detected_device:
-        return gt.utils.SentenceTransformer(base_model, model_kwargs=model_kwargs)
-    encoder = gt.danger.SentenceTransformer(base_model, model_kwargs=model_kwargs)
-    encoder.warmup_and_compile()
-    return encoder
+    return gt.utils.SentenceTransformer(base_model, model_kwargs=model_kwargs)
 
 
 def _format_metrics(metrics: dict[str, float]) -> str:
@@ -133,7 +118,7 @@ def log_eval_metrics(step: int, metrics: dict[str, float]):
 def evaluate_checkpoint(
     step: int,
     checkpoint_gcs_path: str,
-    encoder: gt.danger.SentenceTransformer,
+    encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
 ):
     """
@@ -156,7 +141,7 @@ def evaluate_checkpoint(
 
 def evaluate_baseline(
     run_gcs_dir: str,
-    encoder: gt.danger.SentenceTransformer,
+    encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
 ):
     """
@@ -175,7 +160,7 @@ def evaluate_baseline(
     subprocess.run(["gcloud", "storage", "cp", "-", sentinel_path], input=b"", check=True)
 
 
-def backfill(run_gcs_dir: str, encoder: gt.danger.SentenceTransformer, evaluator: gt.evaluator.MinPrecisionEvaluator):
+def backfill(run_gcs_dir: str, encoder: gt.utils.SentenceTransformer, evaluator: gt.evaluator.MinPrecisionEvaluator):
     """
     Evaluate all unevaluated checkpoints.
     """
@@ -189,7 +174,7 @@ def backfill(run_gcs_dir: str, encoder: gt.danger.SentenceTransformer, evaluator
 def poll(
     run_gcs_dir: str,
     poll_interval_sec: int,
-    encoder: gt.danger.SentenceTransformer,
+    encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
 ):
     """
@@ -224,9 +209,8 @@ def main(
     base_model: str = "Alibaba-NLP/gte-modernbert-base",
     wandb_project: str = "grouping-trainer",
     poll_interval_sec: int = 60 * 2,
-    sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
+    sample_val: int | None = 20_000,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
     truncate_dims: tuple[int, ...] = (64, 768),
-    use_auto_detected_device: bool = False,
     use_simple_precisions: bool = False,
 ):
     """
@@ -246,8 +230,6 @@ def main(
         Number of validation examples to sample. None uses the full val set.
     truncate_dims
         Matryoshka dimensions to evaluate at.
-    use_auto_detected_device
-        Leave the model on its auto-detected device and use a plain SentenceTransformer w/o compilation.
     use_simple_precisions
         Use a simpler set of target precisions—[0.7, 0.8]—for faster eval.
     """
@@ -257,9 +239,6 @@ def main(
         process_type="eval_poller",
     )
 
-    if not use_auto_detected_device:
-        assert torch.cuda.is_available(), "Run this on a GPU or pass --use_auto_detected_device"
-
     wandb.login()
     wandb.init(project=wandb_project, name=f"{run_name}-eval", group=run_name)
     wandb.define_metric("eval/step")
@@ -267,7 +246,7 @@ def main(
 
     try:
         evaluator = make_evaluator(sample_val, truncate_dims, use_simple_precisions=use_simple_precisions)
-        encoder = make_encoder(base_model, use_auto_detected_device=use_auto_detected_device)
+        encoder = make_encoder(base_model)
 
         evaluate_baseline(run_gcs_dir, encoder, evaluator)
         poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
