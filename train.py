@@ -54,16 +54,23 @@ def run(mini_cpu_test: bool = False):
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    model = gt.utils.SentenceTransformer(  # 150M params. small enough we don't need a tiny-random for CPU runs
-        "Alibaba-NLP/gte-modernbert-base",
-        model_kwargs=(
-            dict(
-                dtype=torch.bfloat16,
-                attn_implementation="sdpa",
-            )
-            if is_cuda
-            else None
-        ),
+    # model = gt.utils.SentenceTransformer(  # 150M params. small enough we don't need a tiny-random for CPU runs
+    #     "Alibaba-NLP/gte-modernbert-base",
+    #     model_kwargs=(
+    #         dict(
+    #             dtype=torch.bfloat16,
+    #             attn_implementation="sdpa",
+    #         )
+    #         if is_cuda
+    #         else None
+    #     ),
+    # )
+
+    model = gt.utils.SentenceTransformer(  # 210M params
+        "jinaai/jina-embeddings-v5-text-nano-text-matching",
+        trust_remote_code=True,
+        model_kwargs={"dtype": torch.bfloat16},
+        config_kwargs={"_attn_implementation": "sdpa"},
     )
 
     if mini_cpu_test:
@@ -75,7 +82,6 @@ def run(mini_cpu_test: bool = False):
                 "final_csvs/train.csv",
                 "final_csvs/synthetic-semi-easy-negatives.csv",
                 "final_csvs/train_more.csv",
-                "final_csvs/synthetic-hard-negatives-llm.csv",
             ),
             gradient_checkpointing=True,
             sample_size_train=30,
@@ -84,16 +90,14 @@ def run(mini_cpu_test: bool = False):
         )
     else:
         config = gt.train.TrainingConfig(
-            run_shortname="gte-hard-neg-pos",
+            run_shortname="jina-v5",
             per_device_train_batch_size=256,
-            per_device_token_budget=8192 * 6,
+            per_device_token_budget=8192 * 5,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
             training_csvs=(
                 "final_csvs/train.csv",
                 "final_csvs/synthetic-semi-easy-negatives.csv",
                 "final_csvs/train_more.csv",
-                "final_csvs/synthetic-hard-negatives-llm.csv",
-                "final_csvs/synthetic-hard-positives-llm.csv",
             ),
         )
 
