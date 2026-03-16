@@ -93,6 +93,13 @@ def make_evaluator(
 
 
 def make_encoder(base_model: str) -> gt.utils.SentenceTransformer:
+    if base_model == "jinaai/jina-embeddings-v5-text-nano-text-matching":
+        return gt.utils.SentenceTransformer(
+            base_model,
+            trust_remote_code=True,
+            model_kwargs={"dtype": torch.bfloat16},
+            config_kwargs={"_attn_implementation": "sdpa"},
+        )
     model_kwargs = dict()
     if torch.cuda.is_bf16_supported():
         model_kwargs = dict(

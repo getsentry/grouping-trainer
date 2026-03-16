@@ -66,7 +66,7 @@ def run(mini_cpu_test: bool = False):
     #     ),
     # )
 
-    model = gt.utils.SentenceTransformer(  # 210M params
+    model = gt.utils.SentenceTransformer(  # 239M params
         "jinaai/jina-embeddings-v5-text-nano-text-matching",
         trust_remote_code=True,
         model_kwargs={"dtype": torch.bfloat16},
