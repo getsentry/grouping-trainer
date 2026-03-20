@@ -704,11 +704,14 @@ if __name__ == "__main__":
 
     csv_path = Path("eval/similarities/2026-02-26-16-25-36-val-and-test/similarities.csv")
     model_name = "gte-finetuned"
+    threshold = 0.92
+    thresholds_sweep = [0.80, 0.85, 0.87, 0.90, 0.92, 0.93]
+
     df = pl.read_csv(csv_path)
     output_dir = csv_path.parent
     thresholds = {
         "prod": 0.99,
-        model_name: 0.92,
+        model_name: threshold,
     }
 
     result = compare_models(
@@ -722,7 +725,6 @@ if __name__ == "__main__":
     )
 
     # Threshold sweep for gte-finetuned
-    thresholds_sweep = [0.80, 0.85, 0.87, 0.90, 0.92, 0.93]
     sweep_thresholds(df, model_name, thresholds_sweep)
     sweep_thresholds_by_project(df, model_name, thresholds_sweep)
 
