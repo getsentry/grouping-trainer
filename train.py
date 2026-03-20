@@ -54,24 +54,24 @@ def run(mini_cpu_test: bool = False):
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    # model = gt.utils.SentenceTransformer(  # 150M params. small enough we don't need a tiny-random for CPU runs
-    #     "Alibaba-NLP/gte-modernbert-base",
-    #     model_kwargs=(
-    #         dict(
-    #             dtype=torch.bfloat16,
-    #             attn_implementation="sdpa",
-    #         )
-    #         if is_cuda
-    #         else None
-    #     ),
-    # )
-
-    model = gt.utils.SentenceTransformer(  # 239M params
-        "jinaai/jina-embeddings-v5-text-nano-text-matching",
-        trust_remote_code=True,
-        model_kwargs={"dtype": torch.bfloat16},
-        config_kwargs={"_attn_implementation": "sdpa"},
+    model = gt.utils.SentenceTransformer(  # 150M params. small enough we don't need a tiny-random for CPU runs
+        "Alibaba-NLP/gte-modernbert-base",
+        model_kwargs=(
+            dict(
+                dtype=torch.bfloat16,
+                attn_implementation="sdpa",
+            )
+            if is_cuda
+            else None
+        ),
     )
+
+    # model = gt.utils.SentenceTransformer(  # 239M params
+    #     "jinaai/jina-embeddings-v5-text-nano-text-matching",
+    #     trust_remote_code=True,
+    #     model_kwargs={"dtype": torch.bfloat16},
+    #     config_kwargs={"_attn_implementation": "sdpa"},
+    # )
 
     if mini_cpu_test:
         config = gt.train.TrainingConfig(
@@ -90,9 +90,9 @@ def run(mini_cpu_test: bool = False):
         )
     else:
         config = gt.train.TrainingConfig(
-            run_shortname="jina-v5",
+            run_shortname="gte-2",
             per_device_train_batch_size=256,
-            per_device_token_budget=8192 * 5,
+            per_device_token_budget=8192 * 6,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
             training_csvs=(
                 "final_csvs/train.csv",
