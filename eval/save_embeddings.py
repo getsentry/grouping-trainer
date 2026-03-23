@@ -21,13 +21,27 @@ logger = logging.getLogger(__name__)
 
 def main(
     run_gcs_dir: str,
-    df_path: str = "final_csvs/val_and_test.csv",
-    truncate_dim: int | None = 64,
+    # df_path: str = "final_csvs/val_and_test.csv",
+    df_path: str = "final_csvs/test_more.csv",  # TEMP
+    truncate_dim: int | None = None,
     batch_size: int = 2,
     sample_size: int | None = None,
+    does_not_support_sdpa: bool = False,
 ):
     """
     Download a model from GCS, encode val+test pairs, and save embeddings + cosine similarities.
+
+    For example to evaluate the baseline/prod model:
+
+    python eval/save_embeddings.py \
+        --run_gcs_dir gs://grouping-data/runs/issue_grouping_v1 \
+        --does_not_support_sdpa
+
+    To evaluate the finetuned model:
+
+    python eval/save_embeddings.py \
+        --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
+        --truncate_dim 64
 
     Parameters
     ----------
@@ -39,6 +53,8 @@ def main(
         Truncate embeddings to this many dimensions. None for full dimensionality.
     sample_size
         Number of rows to sample. None uses the full dataset.
+    does_not_support_sdpa
+        If True, skip bfloat16 and SDPA attention for models that don't support it.
     """
     gt.logging.configure_logging(process_type="save_embeddings")
 
@@ -55,7 +71,7 @@ def main(
         subprocess.run(["gcloud", "storage", "rsync", "-r", path_gcs_inference, dir_tmp], check=True)
 
         kwargs_model = {}
-        if torch.cuda.is_bf16_supported():
+        if not does_not_support_sdpa and torch.cuda.is_bf16_supported():
             kwargs_model = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
 
         logger.info("Loading model...")
