@@ -1,7 +1,17 @@
 """
-gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive
+Head-to-head comparison b/t 2 models on held out data.
+
+Example usage:
+
+python eval/compare.py \
+    --name_model1 v1 \
+    --name_model2 v2 \
+    --path_model1 eval/similarities/issue_grouping_v1/test_full/similarities.csv \
+    --path_model2 eval/similarities/issue_grouping_v2/test_full/similarities.csv
 """
 
+from itertools import zip_longest
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +20,9 @@ import gspread
 import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
+import yaml
 from google.auth import default as google_auth_default
+from tap import tapify
 from tqdm.auto import tqdm
 
 sns.set_theme(style="darkgrid")
@@ -29,7 +41,7 @@ class CompareResult:
     project_metrics: pl.DataFrame
     """Per-project metrics with columns: org_id, project_id, {model}_{metric}."""
 
-    high_delta_projects: list[dict]
+    projects: list[dict]
     """Projects with group_rate_increase >= threshold, sorted descending."""
 
     more_issues_projects: list[dict]
@@ -41,6 +53,30 @@ pl.Config.set_tbl_hide_column_data_types(True)
 
 # Consistent colors: model1 (prod) = blue, model2 (gte-finetuned) = orange
 MODEL_COLORS = ["#1f77b4", "#ff7f0e"]  # matplotlib default blue and orange
+
+
+def stratify_round_robin(df: pl.DataFrame, group_name: str, target_num_rows: int) -> pl.DataFrame:
+    groups = (list(df_group.rows(named=True)) for _, df_group in df.group_by(group_name, maintain_order=True))
+    records = []
+    for records_across_groups in zip_longest(*groups, fillvalue=None):
+        for record in records_across_groups:
+            if record is not None:
+                records.append(record)
+                if len(records) == target_num_rows:
+                    break
+        else:
+            continue
+        break
+
+    return pl.DataFrame(records)
+
+
+def _projects_to_display_df(projects: list[dict]) -> pl.DataFrame:
+    """Convert project dicts to a display DataFrame, excluding internal _-prefixed keys."""
+    display_cols = [k for k in projects[0] if not k.startswith("_")]
+    return pl.DataFrame([{k: v for k, v in p.items() if k in display_cols} for p in projects]).with_columns(
+        pl.col(pl.Float64).round(2)
+    )
 
 
 def _upload_df_to_sheet(spreadsheet: gspread.Spreadsheet, sheet_name: str, df: pl.DataFrame) -> None:
@@ -100,23 +136,84 @@ def _upload_df_to_sheet(spreadsheet: gspread.Spreadsheet, sheet_name: str, df: p
     time.sleep(8)
 
 
-def _upload_high_delta_projects_to_sheets(spreadsheet_id: str, high_delta_projects: list[dict]) -> None:
-    """Upload merged/new data for high-delta projects to Google Sheets."""
-    creds, _ = google_auth_default(scopes=["https://www.googleapis.com/auth/spreadsheets"])
+def print_projects(
+    projects: list[dict],
+    description: str,
+    max_projects: int | None = None,
+    stratify_by: str | None = None,
+) -> list[dict]:
+    """Print a table of filtered projects, optionally stratified and limited.
+
+    Args:
+        projects: Project dicts to display.
+        description: Label for the print header.
+        max_projects: If set, limit to this many projects (after stratification).
+        stratify_by: Column to stratify by when limiting projects (e.g. "platform").
+
+    Returns:
+        The (possibly filtered) list of projects that were printed.
+    """
+    if max_projects is not None and len(projects) > max_projects:
+        projects_df = _projects_to_display_df(projects)
+        if stratify_by:
+            projects_df = stratify_round_robin(projects_df, stratify_by, max_projects)
+        else:
+            projects_df = projects_df.head(max_projects)
+        selected_keys = set((row["org_id"], row["project_id"]) for row in projects_df.iter_rows(named=True))
+        projects = [p for p in projects if (p["org_id"], p["project_id"]) in selected_keys]
+
+    stratify_msg = f", stratified by {stratify_by}" if stratify_by else ""
+    print(f"\n=== {description}:{stratify_msg} ===")
+    with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
+        print(_projects_to_display_df(projects))
+
+    return projects
+
+
+def _upload_projects_to_sheets(
+    projects: list[dict],
+    description: str,
+    sort_by: list[tuple[str, bool]] | None = None,
+) -> None:
+    """Upload merged/new data for projects to a new Google Sheet.
+
+    Creates a new spreadsheet named with the description and current timestamp.
+    Call print_projects() first to filter/display projects before uploading.
+
+    Args:
+        projects: Project dicts to upload (already filtered by print_projects if desired).
+        description: Used for the spreadsheet title.
+        sort_by: Optional list of (column, descending) tuples to sort each sheet by before uploading.
+    """
+    creds, _ = google_auth_default(
+        scopes=["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    )
     client = gspread.authorize(creds)
-    spreadsheet = client.open_by_key(spreadsheet_id)
+    title = f"{description} ({time.strftime('%Y-%m-%d %H:%M')})"
+    spreadsheet = client.create(title)
 
     # Build list of (sheet_name, df) to upload
     uploads = []
-    for project in high_delta_projects:
+    for project in projects:
         prefix = f"org_{project['org_id']}|project_{project['project_id']}"
         if project["_new_df"] is not None:
             uploads.append((f"{prefix}|new", project["_new_df"]))
         if project["_merged_df"] is not None:
             uploads.append((f"{prefix}|merged", project["_merged_df"]))
 
+    if sort_by:
+        cols = [s[0] for s in sort_by]
+        descending = [s[1] for s in sort_by]
+        uploads = [(name, df.sort(cols, descending=descending)) for name, df in uploads]
+
     for sheet_name, df in tqdm(uploads, desc="Uploading to Google Sheets"):
         _upload_df_to_sheet(spreadsheet, sheet_name, df)
+
+    # Remove the default "Sheet1" now that other sheets exist
+    try:
+        spreadsheet.del_worksheet(spreadsheet.worksheet("Sheet1"))
+    except gspread.WorksheetNotFound:
+        pass
 
     print(f"Done! View at: {spreadsheet.url}")
 
@@ -130,7 +227,6 @@ def _compute_metrics_for_model(df: pl.DataFrame, model_name: str) -> dict:
     label_separate = df.filter(pl.col("label") == "SEPARATE")
     return {
         "pred_GROUP_rate": (df[pred_col] == "GROUP").mean(),
-        "accuracy": (df[pred_col] == df["label"]).mean(),
         "precision_GROUP": (pred_group["label"] == "GROUP").mean() if len(pred_group) > 0 else float("nan"),
         "precision_SEPARATE": (pred_separate["label"] == "SEPARATE").mean() if len(pred_separate) > 0 else float("nan"),
         "recall_GROUP": (label_group[pred_col] == "GROUP").mean() if len(label_group) > 0 else float("nan"),
@@ -156,19 +252,26 @@ def plot_metrics_by_platform(df: pl.DataFrame, model_names: list[str]) -> plt.Fi
         model_names: List of model names (expects exactly 2).
 
     Returns:
-        Figure with 3 subplots: precision_GROUP, recall_GROUP, accuracy.
+        Figure with one subplot per metric.
     """
-    # Compute metrics per platform for each model
+    # Compute metrics per platform for each model, averaged over projects
     metrics_rows = []
     metrics_to_plot = None
     for (platform,), platform_df in df.group_by("platform"):
         for model_name in model_names:
-            metrics = _compute_metrics_for_model(platform_df, model_name)
+            project_metrics_list = []
+            for _, proj_df in platform_df.group_by("project_id"):
+                project_metrics_list.append(_compute_metrics_for_model(proj_df, model_name))
             if metrics_to_plot is None:
-                metrics_to_plot = list(metrics.keys())
-            metrics["platform"] = platform
-            metrics["model"] = model_name
-            metrics_rows.append(metrics)
+                metrics_to_plot = list(project_metrics_list[0].keys())
+            avg_metrics = {
+                k: sum(m[k] for m in project_metrics_list if m[k] == m[k])
+                / sum(1 for m in project_metrics_list if m[k] == m[k])
+                for k in project_metrics_list[0]
+            }
+            avg_metrics["platform"] = platform
+            avg_metrics["model"] = model_name
+            metrics_rows.append(avg_metrics)
 
     metrics_df = pl.DataFrame(metrics_rows)
 
@@ -189,6 +292,42 @@ def plot_metrics_by_platform(df: pl.DataFrame, model_names: list[str]) -> plt.Fi
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncol=len(model_names), bbox_to_anchor=(0.5, 1.02))
     plt.tight_layout(rect=[0, 0, 1, 0.95])  # make room for legend on top
+    return fig
+
+
+def plot_similarity_distribution(
+    df: pl.DataFrame,
+    model_name: str,
+    bins: int = 50,
+) -> plt.Figure:
+    """
+    Plot histograms of cosine similarity distribution, one subplot per platform.
+
+    Args:
+        df: DataFrame with cos_sim_{model_name} and platform columns.
+        model_name: Model name (used to find cos_sim_ column).
+        bins: Number of histogram bins.
+
+    Returns:
+        Figure with vertically stacked subplots.
+    """
+    sim_col = f"cos_sim_{model_name}"
+    platforms = sorted(df["platform"].unique().to_list())
+    n = len(platforms)
+
+    fig, axes = plt.subplots(n, 1, figsize=(10, 2 * n), sharex=True)
+    if n == 1:
+        axes = [axes]
+
+    for ax, platform in zip(axes, platforms):
+        data = df.filter(pl.col("platform") == platform)[sim_col].to_numpy()
+        ax.hist(data, bins=bins, edgecolor="none", alpha=0.8)
+        ax.set_ylabel(platform, rotation=0, labelpad=60, ha="right")
+        ax.tick_params(left=False, labelleft=False)
+
+    axes[-1].set_xlabel(f"Cosine Similarity ({model_name})")
+    fig.suptitle(f"Similarity Distribution by Platform ({model_name})", fontsize=14)
+    plt.tight_layout()
     return fig
 
 
@@ -259,7 +398,7 @@ def plot_dumbbell_by_project(
 
 def compare_models(
     df: pl.DataFrame,
-    thresholds: dict[str, float],
+    thresholds: dict[str, float | dict[str, float]],
     output_dir: Path | None = None,
     min_group_rate_increase: float | None = 0.3,
     min_group_rate_decrease: float | None = None,
@@ -271,7 +410,10 @@ def compare_models(
 
     Args:
         df: DataFrame with cos_sim_{model-name} columns and a label column.
-        thresholds: Dict mapping model-name to cos_sim_threshold.
+        thresholds: Dict mapping model-name to threshold. Value can be:
+            - float: single threshold for all platforms.
+            - dict[str, float]: per-platform thresholds. Must include a "default" key
+              used for platforms not explicitly listed.
             First key = model1 (baseline), second key = model2 (new model).
         output_dir: Directory for writing CSVs. Required if write_csvs is True.
         min_group_rate_increase: Track projects where model2 GROUP rate is >= this value higher than model1. None to skip.
@@ -287,7 +429,7 @@ def compare_models(
     if write_csvs and output_dir is None:
         raise ValueError("output_dir is required when write_csvs is True")
 
-    print("Thresholds:", ", ".join(f"{model}={thresh}" for model, thresh in thresholds.items()))
+    print("Thresholds:", json.dumps(thresholds, indent=2))
     print(df["distance"].describe())
     print(f"GROUP rate: {(df['label'] == 'GROUP').mean():.2%}")
 
@@ -297,6 +439,7 @@ def compare_models(
         .agg(
             pl.len().alias("n_pairs"),
             pl.col("project_id").n_unique().alias("n_projects"),
+            (pl.col("label") == "GROUP").mean().round(2).alias("label_GROUP_rate"),
         )
         .sort("platform")
         .with_columns((pl.col("n_pairs") / pl.col("n_pairs").sum()).round(2).alias("proportion"))
@@ -316,9 +459,21 @@ def compare_models(
         if sim_col not in df.columns:
             raise ValueError(f"Column {sim_col} not found in dataframe. Available: {df.columns}")
 
-        df = df.with_columns(
-            pl.when(pl.col(sim_col) > threshold).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
-        )
+        if isinstance(threshold, dict):
+            # Per-platform thresholds: build a when/then chain
+            threshold_default = threshold["default"]
+            expr = pl.lit(threshold_default)
+            for platform, thresh in threshold.items():
+                if platform == "default":
+                    continue
+                expr = pl.when(pl.col("platform") == platform).then(pl.lit(thresh)).otherwise(expr)
+            df = df.with_columns(
+                pl.when(pl.col(sim_col) > expr).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+            )
+        else:
+            df = df.with_columns(
+                pl.when(pl.col(sim_col) > threshold).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+            )
 
     pred1_col = f"pred_{model1}"
     pred2_col = f"pred_{model2}"
@@ -353,7 +508,7 @@ def compare_models(
     if not write_csvs:
         print("\n(Skipping CSV writes)")
 
-    high_delta_projects = []
+    projects = []
     more_issues_projects = []
     all_project_metrics = []  # for computing project-averaged metrics
     total_projects = 0
@@ -396,7 +551,7 @@ def compare_models(
         }
 
         if min_group_rate_increase is not None and delta >= min_group_rate_increase:
-            high_delta_projects.append({**base_project_info, "group_rate_increase": delta})
+            projects.append({**base_project_info, "group_rate_increase": delta})
 
         # Track projects where model2 creates more issues (groups less)
         if min_group_rate_decrease is not None:
@@ -450,57 +605,17 @@ def compare_models(
         df = df.rename(df_rename_map)
     display_model_names = [display_names.get(n, n) for n in model_names]
 
-    # Helper to rename columns for display
-    def _apply_display_names(df: pl.DataFrame) -> pl.DataFrame:
-        if not display_names:
-            return df
-        rename_map = {}
-        for col in df.columns:
-            for old, new in display_names.items():
-                if old in col:
-                    rename_map[col] = col.replace(old, new)
-        return df.rename(rename_map)
-
-    # Print projects with increased grouping
-    if high_delta_projects:
-        # Sort by group_rate_increase descending
-        high_delta_projects.sort(key=lambda p: p["group_rate_increase"], reverse=True)
-
-        # Exclude internal dataframe columns for display
-        display_cols = [k for k in high_delta_projects[0] if not k.startswith("_")]
-        high_delta_df = _apply_display_names(
-            pl.DataFrame([{k: v for k, v in p.items() if k in display_cols} for p in high_delta_projects]).with_columns(
-                pl.col(pl.Float64).round(2)
-            )
-        )
-        print(
-            f"\n=== Projects with >= {min_group_rate_increase:.0%} increase in grouping ({len(high_delta_projects)}/{total_projects} projects) ==="
-        )
-        with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
-            print(high_delta_df)
-
-    # Print projects where model2 creates more issues
+    # Sort filtered project lists (printing deferred to upload step)
+    if projects:
+        projects.sort(key=lambda p: p["group_rate_increase"], reverse=True)
     if more_issues_projects:
         more_issues_projects.sort(key=lambda p: p["group_rate_decrease"], reverse=True)
-
-        display_cols = [k for k in more_issues_projects[0] if not k.startswith("_")]
-        more_issues_df = _apply_display_names(
-            pl.DataFrame(
-                [{k: v for k, v in p.items() if k in display_cols} for p in more_issues_projects]
-            ).with_columns(pl.col(pl.Float64).round(2))
-        )
-        print(
-            f"\n=== Projects with >= {min_group_rate_decrease:.0%} decrease in grouping "
-            f"({len(more_issues_projects)}/{total_projects} projects) ==="
-        )
-        with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
-            print(more_issues_df)
 
     return CompareResult(
         df=df,
         model_names=display_model_names,
         project_metrics=project_metrics_df,
-        high_delta_projects=high_delta_projects,
+        projects=projects,
         more_issues_projects=more_issues_projects,
     )
 
@@ -591,70 +706,275 @@ def sweep_thresholds_by_project(
     df: pl.DataFrame,
     model_name: str,
     thresholds: list[float] = [0.80, 0.85, 0.87, 0.90],
-    precision_floor: float = 0.7,
-    harm_threshold: float = 0.10,
-) -> pl.DataFrame:
+    precision_floor: float = 0.8,
+    harm_threshold: float = 0.05,
+    thresholds_platform: dict[str, float] | None = None,
+    baseline_model: str | None = None,
+    baseline_threshold: float | None = None,
+) -> None:
     """
-    Sweep thresholds showing per-project precision_GROUP distribution.
-
-    Uses the highest threshold as the baseline for computing deltas and harm counts.
+    Show per-platform precision stats for platform-specific thresholds vs a baseline.
 
     Args:
         df: DataFrame with cos_sim_{model_name}, label, org_id, project_id columns.
         model_name: Model name (used to find cos_sim_ column).
-        thresholds: List of similarity thresholds to evaluate.
+        thresholds: List of similarity thresholds (unused when thresholds_platform is provided).
         precision_floor: Count projects with precision_GROUP below this absolute value.
         harm_threshold: Count projects where precision_GROUP drops by >= this vs baseline.
-
-    Returns:
-        DataFrame with distribution stats per threshold.
+        thresholds_platform: Per-platform thresholds (platform -> threshold).
+            Must include a "default" key for platforms not explicitly listed.
+        baseline_model: If set, use this model at baseline_threshold as the baseline
+            for computing deltas. Otherwise uses the highest threshold in the sweep.
+        baseline_threshold: Threshold for the baseline model.
     """
     sim_col = f"cos_sim_{model_name}"
     pred_col = f"pred_{model_name}"
     thresholds_sorted = sorted(thresholds, reverse=True)
-    threshold_baseline = thresholds_sorted[0]
 
-    # Compute per-project precision_GROUP at each threshold
-    project_precisions: dict[float, pl.DataFrame] = {}
-    for thresh in thresholds_sorted:
+    def _compute_project_precisions(model: str, threshold: float) -> pl.DataFrame:
+        """Compute per-project precision_GROUP for a model at a single flat threshold."""
+        sc = f"cos_sim_{model}"
+        pc = f"pred_{model}"
         df_t = df.with_columns(
-            pl.when(pl.col(sim_col) > thresh).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+            pl.when(pl.col(sc) > threshold).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pc)
         )
         rows_project = []
         for (org_id, project_id), group_df in df_t.group_by(["org_id", "project_id"]):
-            pred_group = group_df.filter(pl.col(pred_col) == "GROUP")
+            pred_group = group_df.filter(pl.col(pc) == "GROUP")
             prec = (pred_group["label"] == "GROUP").mean() if len(pred_group) > 0 else None
-            rows_project.append({"org_id": org_id, "project_id": project_id, "precision_GROUP": prec})
-        project_precisions[thresh] = pl.DataFrame(rows_project)
+            rows_project.append(
+                {
+                    "org_id": org_id,
+                    "project_id": project_id,
+                    "platform": group_df["platform"][0],
+                    "precision_GROUP": prec,
+                }
+            )
+        return pl.DataFrame(rows_project)
 
-    # Build summary rows
-    baseline_df = project_precisions[threshold_baseline].rename({"precision_GROUP": "baseline_prec"})
-    rows_summary = []
+    def _compute_project_precisions_per_platform(thresholds_platform: dict[str, float]) -> pl.DataFrame:
+        """Compute per-project precision_GROUP using each platform's own threshold."""
+        rows_project = []
+        for (org_id, project_id), group_df in df.group_by(["org_id", "project_id"]):
+            platform = group_df["platform"][0]
+            thresh = thresholds_platform.get(platform, thresholds_platform["default"])
+            df_t = group_df.with_columns(
+                pl.when(pl.col(sim_col) > thresh).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+            )
+            pred_group = df_t.filter(pl.col(pred_col) == "GROUP")
+            prec = (pred_group["label"] == "GROUP").mean() if len(pred_group) > 0 else None
+            rows_project.append(
+                {"org_id": org_id, "project_id": project_id, "platform": platform, "precision_GROUP": prec}
+            )
+        return pl.DataFrame(rows_project)
+
+    # Compute per-project precision_GROUP at each threshold
+    project_precisions: dict[str, pl.DataFrame] = {}
+    if thresholds_platform is not None:
+        project_precisions["platform-specific"] = _compute_project_precisions_per_platform(thresholds_platform)
     for thresh in thresholds_sorted:
-        prec_col = project_precisions[thresh]["precision_GROUP"].drop_nulls().drop_nans()
-        row = {
-            "threshold": thresh,
-            "n_projects": len(prec_col),
-            "mean": prec_col.mean(),
-            "p5": prec_col.quantile(0.05),
-            "p10": prec_col.quantile(0.10),
-            "p25": prec_col.quantile(0.25),
-            "median": prec_col.quantile(0.50),
-            f"below_{precision_floor}": (prec_col < precision_floor).sum(),
-        }
-        # Compute harm vs baseline
-        merged = project_precisions[thresh].join(baseline_df, on=["org_id", "project_id"])
-        delta = (merged["precision_GROUP"] - merged["baseline_prec"]).drop_nulls().drop_nans()
-        row[f"harmed_{harm_threshold:.0%}"] = (delta <= -harm_threshold).sum()
-        row["delta_mean"] = delta.mean()
-        row["delta_p5"] = delta.quantile(0.05)
-        row["delta_p10"] = delta.quantile(0.10)
-        rows_summary.append(row)
+        project_precisions[str(thresh)] = _compute_project_precisions(model_name, thresh)
 
-    result = pl.DataFrame(rows_summary).with_columns(pl.col(pl.Float64).round(2))
-    print(f"\n=== Per-project precision_GROUP distribution (baseline={threshold_baseline}) ===")
+    # Baseline: external model if provided, else highest flat threshold
+    if baseline_model is not None:
+        baseline_key = f"{baseline_model}@{baseline_threshold}"
+        project_precisions[baseline_key] = _compute_project_precisions(baseline_model, baseline_threshold)
+    else:
+        baseline_key = str(thresholds_sorted[0])
+    baseline_df = project_precisions[baseline_key].rename({"precision_GROUP": "baseline_prec"})
+
+    # Show per-platform stats: compare platform-specific thresholds vs baseline
+    if thresholds_platform is not None and "platform-specific" in project_precisions:
+        merged = project_precisions["platform-specific"].join(baseline_df, on=["org_id", "project_id"])
+        merged = merged.with_columns((pl.col("precision_GROUP") - pl.col("baseline_prec")).alias("delta"))
+        # Add per-project pair counts
+        pairs_per_project = df.group_by(["org_id", "project_id"]).agg(pl.len().alias("n_pairs"))
+        merged = merged.join(pairs_per_project, on=["org_id", "project_id"])
+        rows_by_platform = []
+        for (platform,), platform_df in merged.group_by("platform"):
+            prec = platform_df["precision_GROUP"].drop_nulls().drop_nans()
+            delta = platform_df["delta"].drop_nulls().drop_nans()
+            rows_by_platform.append(
+                {
+                    "platform": platform,
+                    "n_projects": len(prec),
+                    "median_pairs": int(platform_df["n_pairs"].median()),
+                    "mean": prec.mean(),
+                    "p5": prec.quantile(0.05),
+                    "p10": prec.quantile(0.10),
+                    "p25": prec.quantile(0.25),
+                    "median": prec.quantile(0.50),
+                    f"below_{precision_floor}": (prec < precision_floor).mean(),
+                    f"harmed_{harm_threshold:.0%}": (delta <= -harm_threshold).mean(),
+                    "delta_mean": delta.mean(),
+                    "delta_p5": delta.quantile(0.05),
+                    "delta_p10": delta.quantile(0.10),
+                }
+            )
+        by_platform = pl.DataFrame(rows_by_platform).sort("platform").with_columns(pl.col(pl.Float64).round(2))
+        print(f"\n=== Per-project precision_GROUP: platform-specific vs {baseline_key} by platform ===")
+        with pl.Config(tbl_rows=-1, tbl_cols=-1):
+            print(by_platform)
+
+
+def metrics_by_platform(
+    df: pl.DataFrame,
+    model_name: str,
+    threshold: float | dict[str, float] = 0.99,
+) -> pl.DataFrame:
+    """
+    Show metrics per platform at a given threshold.
+
+    Args:
+        df: DataFrame with cos_sim_{model_name}, label, and platform columns.
+        model_name: Model name (used to find cos_sim_ column).
+        threshold: Similarity threshold. Either a single float or a dict mapping
+            platform -> threshold (with a "default" key for unlisted platforms).
+
+    Returns:
+        DataFrame with one row per platform and metric columns.
+    """
+    sim_col = f"cos_sim_{model_name}"
+    pred_col = f"pred_{model_name}"
+
+    if isinstance(threshold, dict):
+        threshold_default = threshold["default"]
+        expr = pl.lit(threshold_default)
+        for platform, thresh in threshold.items():
+            if platform == "default":
+                continue
+            expr = pl.when(pl.col("platform") == platform).then(pl.lit(thresh)).otherwise(expr)
+        df_t = df.with_columns(
+            pl.when(pl.col(sim_col) > expr).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+        )
+    else:
+        df_t = df.with_columns(
+            pl.when(pl.col(sim_col) > threshold).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+        )
+
+    rows = []
+    for (platform,), platform_df in df_t.group_by("platform"):
+        # Average metrics over projects to avoid large projects dominating
+        project_metrics_list = []
+        for _, proj_df in platform_df.group_by("project_id"):
+            project_metrics_list.append(_compute_metrics_for_model(proj_df, model_name))
+        avg_metrics = {
+            k: sum(m[k] for m in project_metrics_list if m[k] == m[k])
+            / sum(1 for m in project_metrics_list if m[k] == m[k])
+            for k in project_metrics_list[0]
+        }
+        platform_threshold = threshold.get(platform, threshold["default"]) if isinstance(threshold, dict) else threshold
+        rows.append(
+            {
+                "platform": platform,
+                "n_pairs": len(platform_df),
+                "n_projects": platform_df["project_id"].n_unique(),
+                "label_GROUP_rate": (platform_df["label"] == "GROUP").mean(),
+                "min_threshold": platform_threshold,
+                **avg_metrics,
+            }
+        )
+
+    result = pl.DataFrame(rows).sort("platform").with_columns(pl.col(pl.Float64).round(3))
+
+    threshold_label = "platform-specific" if isinstance(threshold, dict) else str(threshold)
+    print(f"\n=== Metrics by platform, avg over projects ({model_name} @ {threshold_label}) ===")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
         print(result)
+
+    return result
+
+
+def find_threshold_by_platform(
+    df: pl.DataFrame,
+    model_name: str,
+    min_precision: float | dict[str, float] = 0.95,
+    thresholds: list[float] | None = None,
+) -> pl.DataFrame:
+    """
+    Find the minimum threshold that achieves >= min_precision per platform.
+
+    Args:
+        df: DataFrame with cos_sim_{model_name}, label, and platform columns.
+        model_name: Model name (used to find cos_sim_ column).
+        min_precision: Minimum precision_GROUP required. Can be a single float
+            or a dict mapping platform -> precision target.
+        thresholds: Thresholds to sweep. Defaults to 0.50 to 0.99 in steps of 0.01.
+
+    Returns:
+        DataFrame with one row per platform showing the minimum threshold,
+        plus metrics at that threshold.
+    """
+    if thresholds is None:
+        thresholds = [round(x * 0.01, 2) for x in range(50, 100)]
+
+    sim_col = f"cos_sim_{model_name}"
+    pred_col = f"pred_{model_name}"
+    thresholds_sorted = sorted(thresholds)
+
+    precision_by_platform = min_precision if isinstance(min_precision, dict) else None
+
+    rows = []
+    for (platform,), platform_df in df.group_by("platform"):
+        n_pairs = len(platform_df)
+        n_projects = platform_df["project_id"].n_unique()
+        label_group_rate = (platform_df["label"] == "GROUP").mean()
+        threshold_found = None
+        target_precision = precision_by_platform[platform] if precision_by_platform else min_precision
+
+        # Walk thresholds from low to high; first one meeting precision is the minimum
+        # Precision is averaged over projects to avoid large projects dominating
+        for thresh in thresholds_sorted:
+            df_t = platform_df.with_columns(
+                pl.when(pl.col(sim_col) > thresh).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+            )
+            # Compute per-project precision, then average
+            project_precisions = []
+            for _, proj_df in df_t.group_by("project_id"):
+                pred_group = proj_df.filter(pl.col(pred_col) == "GROUP")
+                if len(pred_group) > 0:
+                    project_precisions.append((pred_group["label"] == "GROUP").mean())
+            if not project_precisions:
+                continue
+            precision = sum(project_precisions) / len(project_precisions)
+            if precision >= target_precision:
+                metrics = _compute_metrics_for_model(df_t, model_name)
+                threshold_found = thresh
+                rows.append(
+                    {
+                        "platform": platform,
+                        "n_pairs": n_pairs,
+                        "n_projects": n_projects,
+                        "label_GROUP_rate": label_group_rate,
+                        "min_threshold": thresh,
+                        **metrics,
+                    }
+                )
+                break
+
+        if threshold_found is None:
+            rows.append(
+                {
+                    "platform": platform,
+                    "n_pairs": n_pairs,
+                    "n_projects": n_projects,
+                    "label_GROUP_rate": label_group_rate,
+                    "min_threshold": None,
+                    "pred_GROUP_rate": None,
+                    "precision_GROUP": None,
+                    "precision_SEPARATE": None,
+                    "recall_GROUP": None,
+                    "recall_SEPARATE": None,
+                }
+            )
+
+    result = pl.DataFrame(rows).sort("platform").with_columns(pl.col(pl.Float64).round(3))
+
+    precision_label = "per-platform" if precision_by_platform else f"{min_precision:.0%}"
+    print(f"\n=== Min threshold for >= {precision_label} avg project precision_GROUP by platform ({model_name}) ===")
+    with pl.Config(tbl_rows=-1, tbl_cols=-1):
+        print(result)
+
     return result
 
 
@@ -693,57 +1013,222 @@ def compare_metrics_by_stacktrace_length(
     print(_compute_metrics(long_df, model_names))
 
 
-if __name__ == "__main__":
-    # csv_path = Path("eval/similarities/2026-01-08-13-28-41-sentry/similarities.csv")
-    # thresholds = {
-    #     "prod": 0.99,
-    #     "gte-finetuned": 0.60,
-    # }
-    # min_project_size = None
-    # max_model1_group_rate = None
+COLS_JOIN = ["query_stacktrace_string", "candidate_stacktrace_string"]
 
-    csv_path = Path("eval/similarities/2026-02-26-16-25-36-val-and-test/similarities.csv")
-    model_name = "gte-finetuned"
-    threshold = 0.92
-    thresholds_sweep = [0.80, 0.85, 0.87, 0.90, 0.92, 0.93]
 
-    df = pl.read_csv(csv_path)
-    output_dir = csv_path.parent
+def _load_thresholds(path_model: Path, threshold_default: float) -> float | dict[str, float]:
+    """Load platform-specific thresholds from a YAML file next to the similarities CSV.
+
+    If thresholds.yaml exists, returns a dict with platform keys and a "default" key.
+    Otherwise returns threshold_default as a flat float.
+    """
+    path_yaml = path_model.parent / "thresholds.yaml"
+    if not path_yaml.exists():
+        return threshold_default
+    with open(path_yaml) as f:
+        thresholds = yaml.safe_load(f)
+    thresholds.setdefault("default", threshold_default)
+    print(f"Loaded thresholds from {path_yaml}")
+    return thresholds
+
+
+def _resolve_cos_sim(df: pl.DataFrame, dim: int) -> tuple[str, str]:
+    """Find the cos_sim_{dim} column and return (column_name, dim_label)."""
+    col = f"cos_sim_{dim}"
+    if col not in df.columns:
+        cols_cos_sim = [c for c in df.columns if c.startswith("cos_sim")]
+        raise ValueError(f"Column {col} not found. Available: {cols_cos_sim}")
+    return col, str(dim)
+
+
+def _load_and_join(
+    path_model1: Path,
+    path_model2: Path,
+    dim_model1: int,
+    dim_model2: int,
+    name_model1: str,
+    name_model2: str,
+) -> tuple[pl.DataFrame, str, str]:
+    """Load similarity CSVs, select cos_sim columns, join into a single DataFrame.
+
+    Returns (joined_df, dim_label1, dim_label2).
+    """
+    df1 = pl.read_csv(path_model1)
+    col1, label_dim1 = _resolve_cos_sim(df1, dim_model1)
+
+    if path_model1.resolve() == path_model2.resolve():
+        col2, label_dim2 = _resolve_cos_sim(df1, dim_model2)
+        if col1 == col2:
+            raise ValueError(f"Both models resolve to the same column: {col1}")
+        df = df1.rename({col1: f"cos_sim_{name_model1}", col2: f"cos_sim_{name_model2}"})
+    else:
+        df2 = pl.read_csv(path_model2)
+        col2, label_dim2 = _resolve_cos_sim(df2, dim_model2)
+
+        # Validate pair sets match
+        pairs1 = df1.select(COLS_JOIN)
+        pairs2 = df2.select(COLS_JOIN)
+        if not pairs1.equals(pairs2):
+            only1 = pairs1.join(pairs2, on=COLS_JOIN, how="anti")
+            only2 = pairs2.join(pairs1, on=COLS_JOIN, how="anti")
+            raise ValueError(
+                f"Pair mismatch: model1 has {len(df1)} rows, model2 has {len(df2)}. "
+                f"{len(only1)} only in model1, {len(only2)} only in model2."
+            )
+        # Rename before join to avoid suffix collision when both use the same dim
+        df2_subset = df2.select([*COLS_JOIN, col2]).rename({col2: f"cos_sim_{name_model2}"})
+        df = df1.join(df2_subset, on=COLS_JOIN)
+
+    # Rename model1's cos_sim column
+    if col1 in df.columns:
+        df = df.rename({col1: f"cos_sim_{name_model1}"})
+
+    # Drop any remaining cos_sim columns that aren't the two we care about
+    cols_keep = {f"cos_sim_{name_model1}", f"cos_sim_{name_model2}"}
+    cols_drop = [c for c in df.columns if c.startswith("cos_sim") and c not in cols_keep]
+    df = df.drop(cols_drop)
+    return df, label_dim1, label_dim2
+
+
+def main(
+    path_model1: str,
+    path_model2: str,
+    name_model1: str,
+    name_model2: str,
+    dim_model1: int = 768,
+    dim_model2: int = 768,
+    threshold_model1: float = 0.99,
+    threshold_model2: float = 0.90,
+    min_group_rate_increase: float = 0.15,
+    min_group_rate_decrease: float = 0.15,
+    max_display_projects: int = 30,
+    upload_sheets: bool = False,
+):
+    """
+    Compare two models' grouping decisions on held-out data.
+
+    Loads two similarity CSVs, joins them on stacktrace pairs, and runs a
+    head-to-head comparison.
+
+    Parameters
+    ----------
+    path_model1
+        Path to model 1's similarities CSV.
+    path_model2
+        Path to model 2's similarities CSV.
+    dim_model1
+        Which cos_sim_{dim} column to use from model 1's CSV.
+    dim_model2
+        Which cos_sim_{dim} column to use from model 2's CSV.
+    name_model1
+        Short alias for model 1 used in output columns and file names.
+    name_model2
+        Short alias for model 2 used in output columns and file names.
+    threshold_model1
+        Default cosine similarity threshold for model 1. Overridden per-platform
+        if a thresholds.yaml exists next to the CSV.
+    threshold_model2
+        Default cosine similarity threshold for model 2. Overridden per-platform
+        if a thresholds.yaml exists next to the CSV.
+    min_group_rate_increase
+        Flag projects where model2 GROUP rate exceeds model1 by at least this amount.
+    min_group_rate_decrease
+        Flag projects where model2 GROUP rate is lower than model1 by at least this amount.
+    max_display_projects
+        Maximum number of flagged projects to display.
+    upload_sheets
+        If True, upload flagged projects to Google Sheets. Requires
+        ``gcloud auth application-default login`` with spreadsheets+drive scopes.
+    """
+    path1 = Path(path_model1)
+    path2 = Path(path_model2)
+
+    df, label_dim1, label_dim2 = _load_and_join(
+        path1, path2, dim_model1, dim_model2, name_model1, name_model2,
+    )
+    print(f"Loaded {len(df)} pairs: {name_model1} (dim={label_dim1}) vs {name_model2} (dim={label_dim2})")
+
+    dir_output = Path("eval/comparisons") / f"{name_model1}_vs_{name_model2}" / f"{label_dim1}_vs_{label_dim2}"
+    dir_output.mkdir(parents=True, exist_ok=True)
+
     thresholds = {
-        "prod": 0.99,
-        model_name: threshold,
+        name_model1: _load_thresholds(path1, threshold_model1),
+        name_model2: _load_thresholds(path2, threshold_model2),
     }
 
     result = compare_models(
         df=df,
         thresholds=thresholds,
-        output_dir=output_dir,
-        min_group_rate_increase=0.3,
-        min_group_rate_decrease=0.15,
-        write_csvs=True,
-        display_names={model_name: "new"},
+        output_dir=dir_output,
+        min_group_rate_increase=min_group_rate_increase,
+        min_group_rate_decrease=min_group_rate_decrease,
     )
 
-    # Threshold sweep for gte-finetuned
-    sweep_thresholds(df, model_name, thresholds_sweep)
-    sweep_thresholds_by_project(df, model_name, thresholds_sweep)
+    # Per-platform metrics for each model
+    for name in [name_model1, name_model2]:
+        metrics_by_platform(df, name, thresholds[name])
 
-    # Compare metrics by stacktrace length
+    # Find minimum threshold per platform for each model
+    for name in [name_model1, name_model2]:
+        find_threshold_by_platform(df, name)
+
+    # Threshold sweep for model2
+    sweep_thresholds(df, name_model2)
+    threshold2 = thresholds[name_model2]
+    sweep_thresholds_by_project(
+        df,
+        name_model2,
+        thresholds_platform=threshold2 if isinstance(threshold2, dict) else None,
+        baseline_model=name_model1,
+        baseline_threshold=threshold_model1,
+    )
+
+    # Metrics by stacktrace length
     compare_metrics_by_stacktrace_length(result.df, result.model_names)
 
+    # Plots
     fig = plot_metrics_by_platform(result.df, result.model_names)
-    fig.savefig(output_dir / "metrics_by_platform.png", dpi=150, bbox_inches="tight")
-    print(f"Saved plot to {output_dir / 'metrics_by_platform.png'}")
+    fig.savefig(dir_output / "metrics_by_platform.png", dpi=150, bbox_inches="tight")
+    print(f"Saved {dir_output / 'metrics_by_platform.png'}")
 
     fig = plot_dumbbell_by_project(result.project_metrics, result.model_names)
-    fig.savefig(output_dir / "dumbbell_by_project.png", dpi=150, bbox_inches="tight")
-    print(f"Saved plot to {output_dir / 'dumbbell_by_project.png'}")
+    fig.savefig(dir_output / "dumbbell_by_project.png", dpi=150, bbox_inches="tight")
+    print(f"Saved {dir_output / 'dumbbell_by_project.png'}")
 
-    # Upload to Google Sheets (slowest step, do last)
-    # spreadsheet_id = "1-aHK2-ZO8WwmuHyP4gRRCtiPWQtYyZr4qcWkVa4Ptjw"
-    # if spreadsheet_id and result.high_delta_projects:
-    #     _upload_high_delta_projects_to_sheets(spreadsheet_id, result.high_delta_projects)
+    for name in result.model_names:
+        fig = plot_similarity_distribution(result.df, name)
+        path_plot = dir_output / f"similarity_distribution_{name}.png"
+        fig.savefig(path_plot, dpi=150, bbox_inches="tight")
+        print(f"Saved {path_plot}")
 
-    # spreadsheet_id_more_issues = "1u59V6D0G8WSidg9Jc43KcE22bLRrRs4B0twCINS7IbA"
-    # if spreadsheet_id_more_issues and result.more_issues_projects:
-    #     _upload_high_delta_projects_to_sheets(spreadsheet_id_more_issues, result.more_issues_projects)
+    if result.projects:
+        print_projects(
+            result.projects,
+            description=f">= {min_group_rate_increase:.0%} group rate increase",
+            max_projects=max_display_projects,
+            stratify_by="platform",
+        )
+
+    if result.more_issues_projects:
+        print_projects(
+            result.more_issues_projects,
+            description=f">= {min_group_rate_decrease:.0%} group rate decrease",
+        )
+
+    if upload_sheets:
+        if result.projects:
+            _upload_projects_to_sheets(
+                result.projects,
+                description=f"{name_model1} vs {name_model2} — group rate increase >= {min_group_rate_increase:.0%}",
+            )
+        if result.more_issues_projects:
+            _upload_projects_to_sheets(
+                result.more_issues_projects,
+                description=f"{name_model1} vs {name_model2} — group rate decrease >= {min_group_rate_decrease:.0%}",
+            )
+
+    print(f"\nResults written to {dir_output}")
+
+
+if __name__ == "__main__":
+    tapify(main, description=__doc__)

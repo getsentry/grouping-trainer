@@ -5,7 +5,8 @@ For example to evaluate the baseline/prod model:
 
 python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/issue_grouping_v1 \
-    --does_not_support_sdpa
+    --does_not_support_sdpa \
+    --truncate_dims 64 128 256 512 768
 
 To evaluate the finetuned model:
 
