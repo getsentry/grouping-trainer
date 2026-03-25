@@ -1,5 +1,17 @@
 """
 Download a model from GCS, encode val+test data, save embeddings and similarities, and upload results to GCS.
+
+For example to evaluate the baseline/prod model:
+
+python eval/save_embeddings.py \
+    --run_gcs_dir gs://grouping-data/runs/issue_grouping_v1 \
+    --does_not_support_sdpa
+
+To evaluate the finetuned model:
+
+python eval/save_embeddings.py \
+    --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
+    --truncate_dims 64 128 256 512 768
 """
 
 import logging
@@ -21,9 +33,8 @@ logger = logging.getLogger(__name__)
 
 def main(
     run_gcs_dir: str,
-    # df_path: str = "final_csvs/val_and_test.csv",
-    df_path: str = "final_csvs/test_more.csv",  # TEMP
-    truncate_dim: int | None = None,
+    df_path: str = "final_csvs/test_full.csv",
+    truncate_dims: tuple[int, ...] | None = None,
     batch_size: int = 2,
     sample_size: int | None = None,
     does_not_support_sdpa: bool = False,
@@ -31,26 +42,15 @@ def main(
     """
     Download a model from GCS, encode val+test pairs, and save embeddings + cosine similarities.
 
-    For example to evaluate the baseline/prod model:
-
-    python eval/save_embeddings.py \
-        --run_gcs_dir gs://grouping-data/runs/issue_grouping_v1 \
-        --does_not_support_sdpa
-
-    To evaluate the finetuned model:
-
-    python eval/save_embeddings.py \
-        --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
-        --truncate_dim 64
-
     Parameters
     ----------
     run_gcs_dir
         GCS path to the training run directory (e.g. gs://grouping-data/runs/my-run).
     df_path
         Path to the validation/test CSV file.
-    truncate_dim
-        Truncate embeddings to this many dimensions. None for full dimensionality.
+    truncate_dims
+        Grid of dimensions to truncate embeddings to. A cos_sim_{dim} column is added for each.
+        None computes a single cos_sim column using the full dimensionality.
     sample_size
         Number of rows to sample. None uses the full dataset.
     does_not_support_sdpa
@@ -88,23 +88,22 @@ def main(
 
         logger.info("Encoding queries")
         texts_query = df["query_stacktrace_string"].to_list()
-        embeddings_query = model.encode(
+        embeddings_query: np.ndarray = model.encode(
             texts_query, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=True
         )
 
         logger.info("Encoding candidates")
         texts_candidate = df["candidate_stacktrace_string"].to_list()
-        embeddings_candidate = model.encode(
+        embeddings_candidate: np.ndarray = model.encode(
             texts_candidate, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=True
         )
 
-    cos_sims = (
-        pairwise_cos_sim(embeddings_query[..., :truncate_dim], embeddings_candidate[..., :truncate_dim])
-        .detach()
-        .cpu()
-        .numpy()
-    )
-    df = df.with_columns(pl.Series(name="cos_sim", values=cos_sims))
+    if truncate_dims is None:
+        truncate_dims = (embeddings_query.shape[-1],)
+
+    for dim in truncate_dims:
+        cos_sims = pairwise_cos_sim(embeddings_query[..., :dim], embeddings_candidate[..., :dim]).detach().cpu().numpy()
+        df = df.with_columns(pl.Series(name=f"cos_sim_{dim}", values=cos_sims))
 
     with tempfile.TemporaryDirectory() as dir_tmp_output:
         df.write_csv(f"{dir_tmp_output}/similarities.csv")
