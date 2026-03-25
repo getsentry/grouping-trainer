@@ -3,11 +3,20 @@ Head-to-head comparison b/t 2 models on held out data.
 
 Example usage:
 
+mkdir -p eval/similarities/issue_grouping_v1/test_full && gcloud storage rsync -r \
+  gs://grouping-data/runs/issue_grouping_v1/similarities/test_full \
+  eval/similarities/issue_grouping_v1/test_full
+
+mkdir -p eval/similarities/issue_grouping_v2/test_full && gcloud storage rsync -r \
+    gs://grouping-data/runs/issue_grouping_v2/similarities/test_full \
+    eval/similarities/issue_grouping_v2/test_full
+
 python eval/compare.py \
     --name_model1 v1 \
     --name_model2 v2 \
     --path_model1 eval/similarities/issue_grouping_v1/test_full/similarities.csv \
-    --path_model2 eval/similarities/issue_grouping_v2/test_full/similarities.csv
+    --path_model2 eval/similarities/issue_grouping_v2/test_full/similarities.csv \
+    --dim_model2 64
 """
 
 from itertools import zip_longest
@@ -1144,7 +1153,12 @@ def main(
     path2 = Path(path_model2)
 
     df, label_dim1, label_dim2 = _load_and_join(
-        path1, path2, dim_model1, dim_model2, name_model1, name_model2,
+        path1,
+        path2,
+        dim_model1,
+        dim_model2,
+        name_model1,
+        name_model2,
     )
     print(f"Loaded {len(df)} pairs: {name_model1} (dim={label_dim1}) vs {name_model2} (dim={label_dim2})")
 
