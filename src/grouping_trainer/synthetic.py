@@ -1,15 +1,25 @@
 """
 Boue Pour Un Bébé Robot
+
+The sampling and labeling intentionally samples somewhat around the border to get the biggest bang for our buck.
+
+This bias may not be good b/c:
+- The model won't see easy negatives during training that it will see while crawling the index
+- Positive pairs whose v1 distance is in [0.001, 0.01) can only change from GROUP to SEPARATE, which might cause the
+  trained model to over-emphasize subtle differences. Seeing easy negatives should counteract this bias.
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
 from dataclasses import asdict, dataclass
 
+import subprocess
+
 import numpy as np
 import polars as pl
 from sentence_transformers import SentenceTransformer
-import torch
+from tap import tapify
 from tqdm.auto import tqdm
 
 from grouping_trainer import utils
@@ -31,9 +41,11 @@ def top_combos(
     min_distance: float,
     max_distance: float,
     num_combos: int | None = None,
+    sort_ascending: bool = False,
 ) -> list[tuple[int, ...]]:
     """
-    Return at most `num_combos` indices with distance at least `min_distance`, sorted by distance descending.
+    Return at most `num_combos` indices with distance in [`min_distance`, `max_distance`],
+    sorted by distance descending (default) or ascending.
     `distances` can have any shape.
 
     The output of this function isn't too useful w/ a symmetric distance matrix.
@@ -50,8 +62,8 @@ def top_combos(
         return []
 
     indices = np.where(mask)[0]  # in raveled space
-    indices_desc_by_distance = np.argsort(flat[indices])[::-1]  # in sub-raveled space
-    indices_selected = indices[indices_desc_by_distance]  # back to raveled space
+    indices_sorted = np.argsort(flat[indices]) if sort_ascending else np.argsort(flat[indices])[::-1]
+    indices_selected = indices[indices_sorted]  # back to raveled space
     top_indices = indices_selected[:num_combos]  # still in raveled space
     unraveled = np.unravel_index(top_indices, distances.shape)  # finally unravel
     return list(zip(*unraveled))  # :-]
@@ -169,10 +181,7 @@ def synthetic_df(
 def encode_deduplicated(
     model: SentenceTransformer, queries: list[str], candidates: list[str]
 ) -> tuple[np.ndarray, np.ndarray]:
-    # Map texts to idxs
     texts_unique, inverse_indices = np.unique(queries + candidates, return_inverse=True)
-
-    # Call model
     embeddings_unique = model.encode(
         cast(list[str], texts_unique.tolist()),
         batch_size=4,
@@ -180,28 +189,65 @@ def encode_deduplicated(
         normalize_embeddings=True,
         show_progress_bar=True,
     )
-
-    # Map embeddings back to queries and candidates
     all_embeddings = embeddings_unique[inverse_indices]
     num_queries = len(queries)
     query_embeddings = all_embeddings[:num_queries]
     candidate_embeddings = all_embeddings[num_queries:]
-
     return query_embeddings, candidate_embeddings
 
 
-def mine_semi_easy_negatives(model: SentenceTransformer, df_project: pl.DataFrame) -> pl.DataFrame:
-    df_project = df_project.sort("query_stacktrace_string")
-    # Compute distances b/t all pairs
-    query_embeddings, candidate_embeddings = encode_deduplicated(
-        model,
-        df_project["query_stacktrace_string"].to_list(),
-        df_project["candidate_stacktrace_string"].to_list(),
+def mine_easy_positives_from_distance_matrix(
+    query_candidate_distances: np.ndarray,
+    min_distance: float = 0.0001,  # exclude near-duplicates
+    max_distance: float = 0.0025,  # well within SEER_THRESHOLD (0.01)
+    num_candidates_per_query: int = 5,
+):
+    """
+    Returns the closest `num_candidates_per_query` candidate indices per query matching the distance filters.
+    The selection is stratified across queries to avoid overrepresenting universally close candidates.
+    """
+    if query_candidate_distances.ndim != 2:
+        raise ValueError("query_candidate_distances must be a 2-D array")
+
+    closest_candidate_indices_per_query = [
+        top_combos(
+            query_distances,
+            min_distance=min_distance,
+            max_distance=max_distance,
+            num_combos=num_candidates_per_query,
+            sort_ascending=True,
+        )
+        for query_distances in query_candidate_distances
+    ]
+
+    for candidate_indices in closest_candidate_indices_per_query:
+        for candidate_index in candidate_indices:
+            assert len(candidate_index) == 1
+
+    return [
+        [int(candidate_index[0]) for candidate_index in candidate_indices]
+        for candidate_indices in closest_candidate_indices_per_query
+    ]
+
+
+def mine_easy_positives(df_project: pl.DataFrame, distances: np.ndarray) -> pl.DataFrame:
+    closest_candidate_indices_per_query = mine_easy_positives_from_distance_matrix(distances)
+    close_query_candidate_index_pairs = [
+        (query_idx, candidate_idx)
+        for query_idx, closest_candidate_indices in enumerate(closest_candidate_indices_per_query)
+        for candidate_idx in closest_candidate_indices
+    ]
+    return synthetic_df(
+        df_project,
+        close_query_candidate_index_pairs,
+        distances,
+        source="synthetic-positive-easy",
+        synthetic_label="GROUP",
     )
-    query_candidate_cosine_distances = 1 - (query_embeddings @ candidate_embeddings.T)
-    farthest_candidate_indices_per_query = mine_semi_easy_negatives_from_distance_matrix(
-        query_candidate_cosine_distances
-    )
+
+
+def mine_semi_easy_negatives(df_project: pl.DataFrame, distances: np.ndarray) -> pl.DataFrame:
+    farthest_candidate_indices_per_query = mine_semi_easy_negatives_from_distance_matrix(distances)
     far_query_candidate_index_pairs = [
         (query_idx, candidate_idx)
         for query_idx, farthest_candidate_indices in enumerate(farthest_candidate_indices_per_query)
@@ -210,26 +256,56 @@ def mine_semi_easy_negatives(model: SentenceTransformer, df_project: pl.DataFram
     return synthetic_df(
         df_project,
         far_query_candidate_index_pairs,
-        query_candidate_cosine_distances,
+        distances,
         source="synthetic-negative-semi-easy",
         synthetic_label="SEPARATE",
     )
 
 
-if __name__ == "__main__":
-    model_path = Path("/Users/kdubey/projects/seer") / "models/issue_grouping_v1/embeddings"
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SentenceTransformer(str(model_path), trust_remote_code=True)
+def main(model_path: str, csv_paths: tuple[str, ...]):
+    """
+    Mine synthetic positives and negatives from labeled pair CSVs.
 
-    df = pl.read_csv("train.csv")
+    Parameters
+    ----------
+    model_path
+        Path to a SentenceTransformer model directory.
+    csv_paths
+        Paths to labeled pair CSVs to mine from.
+    """
+    model = SentenceTransformer(model_path, trust_remote_code=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
+    df = pl.concat([pl.read_csv(path) for path in csv_paths])
     df = df.sort(pl.col("query_stacktrace_string").str.len_chars().mean().over("org_id", "project_id"))
     for (org_id, project_id), df_project in tqdm(
         df.group_by("org_id", "project_id"), total=len(df["project_id"].unique())
     ):
-        path_dir = Path("dataset_augmented") / f"org_{org_id}" / f"project_{project_id}" / "synthetic" / "negatives"
-        output_path = path_dir / "semi-easy.csv"
-        if output_path.exists():
-            continue
-        df_negatives = mine_semi_easy_negatives(model, df_project)
-        path_dir.mkdir(parents=True, exist_ok=True)
-        df_negatives.write_csv(output_path)
+        path_synthetic = Path("dataset_augmented") / f"org_{org_id}" / f"project_{project_id}" / "synthetic" / timestamp
+        path_negatives = path_synthetic / "negatives" / "semi-easy.csv"
+        path_positives = path_synthetic / "positives" / "easy.csv"
+
+        df_project = df_project.sort("query_stacktrace_string")
+        query_embeddings, candidate_embeddings = encode_deduplicated(
+            model,
+            df_project["query_stacktrace_string"].to_list(),
+            df_project["candidate_stacktrace_string"].to_list(),
+        )
+        distances = 1 - (query_embeddings @ candidate_embeddings.T)
+
+        df_negatives = mine_semi_easy_negatives(df_project, distances)
+        path_negatives.parent.mkdir(parents=True, exist_ok=True)
+        df_negatives.write_csv(path_negatives)
+
+        df_positives = mine_easy_positives(df_project, distances)
+        path_positives.parent.mkdir(parents=True, exist_ok=True)
+        df_positives.write_csv(path_positives)
+
+    subprocess.run(
+        ["gcloud", "storage", "rsync", "-r", "dataset_augmented", "gs://grouping-data/dataset_augmented"],
+        check=True,
+    )
+
+
+if __name__ == "__main__":
+    tapify(main)
