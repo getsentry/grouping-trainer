@@ -285,7 +285,7 @@ def main(gcs_model_folder: str, csv_paths: tuple[str, ...]):
     model = gt.utils.SentenceTransformer(dir_model, trust_remote_code=True)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
-    df = pl.concat([pl.read_csv(path) for path in csv_paths])
+    df = gt.data.load_train_df(paths=csv_paths)
     df = df.sort(pl.col("query_stacktrace_string").str.len_chars().mean().over("org_id", "project_id"))
     for (org_id, project_id), df_project in tqdm(
         df.group_by("org_id", "project_id"), total=len(df["project_id"].unique())
