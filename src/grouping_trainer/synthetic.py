@@ -1,5 +1,11 @@
 """
-Boue Pour Un Bébé Robot
+Mine synthetic positives and negatives from labeled pair CSVs.
+
+For example:
+
+python -m grouping_trainer.synthetic \
+    --model_path /path/to/seer/models/issue_grouping_v1/embeddings \
+    --csv_paths train_more.csv train_more2.csv
 
 The sampling and labeling intentionally samples somewhat around the border to get the biggest bang for our buck.
 
@@ -308,4 +314,4 @@ def main(model_path: str, csv_paths: tuple[str, ...]):
 
 
 if __name__ == "__main__":
-    tapify(main)
+    tapify(main, description=__doc__)
