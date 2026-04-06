@@ -4,8 +4,8 @@ Mine synthetic positives and negatives from labeled pair CSVs.
 For example:
 
 python -m grouping_trainer.synthetic \
-    --model_path /path/to/seer/models/issue_grouping_v1/embeddings \
-    --csv_paths train_more.csv train_more2.csv
+    --gcs_model_folder gs://grouping-data/runs/issue_grouping_v1/inference \
+    --csv_paths final_csvs/train_more.csv final_csvs/train_more2.csv
 
 The sampling and labeling intentionally samples somewhat around the border to get the biggest bang for our buck.
 
@@ -21,14 +21,14 @@ from typing import Any, Literal, cast
 from dataclasses import asdict, dataclass
 
 import subprocess
+import tempfile
 
 import numpy as np
 import polars as pl
-from sentence_transformers import SentenceTransformer
 from tap import tapify
 from tqdm.auto import tqdm
 
-from grouping_trainer import utils
+import grouping_trainer as gt
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -127,7 +127,7 @@ def record_from_pair(
     distance: float,
     source: str,
     synthetic_label: Literal["GROUP", "SEPARATE"],
-    seer_threshold: float = utils.SEER_THRESHOLD,
+    seer_threshold: float = gt.utils.SEER_THRESHOLD,
 ):
     # GroupHash-specific info
     query_kv = {k: v for k, v in record_query.items() if k.startswith("query_")}
@@ -181,16 +181,16 @@ def synthetic_df(
         ],
         infer_schema_length=None,
     )
-    return utils.deduplicate_pairs(df)
+    return gt.utils.deduplicate_pairs(df)
 
 
 def encode_deduplicated(
-    model: SentenceTransformer, queries: list[str], candidates: list[str]
+    model: gt.utils.SentenceTransformer, queries: list[str], candidates: list[str]
 ) -> tuple[np.ndarray, np.ndarray]:
     texts_unique, inverse_indices = np.unique(queries + candidates, return_inverse=True)
     embeddings_unique = model.encode(
         cast(list[str], texts_unique.tolist()),
-        batch_size=4,
+        batch_size=2,
         convert_to_numpy=True,
         normalize_embeddings=True,
         show_progress_bar=True,
@@ -268,18 +268,21 @@ def mine_semi_easy_negatives(df_project: pl.DataFrame, distances: np.ndarray) ->
     )
 
 
-def main(model_path: str, csv_paths: tuple[str, ...]):
+def main(gcs_model_folder: str, csv_paths: tuple[str, ...]):
     """
     Mine synthetic positives and negatives from labeled pair CSVs.
 
     Parameters
     ----------
-    model_path
-        Path to a SentenceTransformer model directory.
+    gcs_model_folder
+        GCS path to a SentenceTransformer model directory
+        (e.g. gs://grouping-data/runs/issue_grouping_v1/inference).
     csv_paths
         Paths to labeled pair CSVs to mine from.
     """
-    model = SentenceTransformer(model_path, trust_remote_code=True)
+    dir_model = tempfile.mkdtemp()
+    subprocess.run(["gcloud", "storage", "rsync", "-r", gcs_model_folder, dir_model], check=True)
+    model = gt.utils.SentenceTransformer(dir_model, trust_remote_code=True)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
     df = pl.concat([pl.read_csv(path) for path in csv_paths])
