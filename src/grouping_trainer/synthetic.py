@@ -288,7 +288,7 @@ def main(gcs_model_folder: str, csv_paths: tuple[str, ...]):
     df = gt.data.load_train_df(paths=csv_paths)
     df = df.sort(pl.col("query_stacktrace_string").str.len_chars().mean().over("org_id", "project_id"))
     for (org_id, project_id), df_project in tqdm(
-        df.group_by("org_id", "project_id"), total=len(df["project_id"].unique())
+        df.group_by("org_id", "project_id"), total=len(df["project_id"].unique()), desc="Projects"
     ):
         path_synthetic = Path("dataset_augmented") / f"org_{org_id}" / f"project_{project_id}" / "synthetic" / timestamp
         path_negatives = path_synthetic / "negatives" / "semi-easy.csv"
