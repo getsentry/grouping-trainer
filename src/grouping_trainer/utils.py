@@ -460,6 +460,18 @@ class SentenceTransformer(SentenceTransformerOriginal):
 
     # The getter and setter above are just for type hints. SentenceTransformer annotates it as Any
 
+    def tokenize(self, texts: list[str] | list[dict] | list[tuple[str, str]], **kwargs) -> dict[str, torch.Tensor]:
+        # Overriding here b/c all training and inference paths go through this function.
+        # Setting prompts and default_prompt_name on init doesn't affect training.
+        # TODO: add a prompt_prefix kwarg to init and use it here. For now keeping init unchanged.
+        if self.model_card_data.base_model == "lightonai/modernbert-embed-large":
+            # https://huggingface.co/lightonai/modernbert-embed-large#usage
+            if isinstance(texts, list) and all(isinstance(text, str) for text in texts):
+                texts = ["clustering: " + text for text in texts]
+            else:
+                raise ValueError(f"Not sure how to add the prefix for the input text type: {type(texts)}")
+        return super().tokenize(texts, **kwargs)
+
     @_retry_cuda_errors_once
     def encode(self, texts: str | list[str], **kwargs):
         if isinstance(texts, str):
@@ -469,3 +481,33 @@ class SentenceTransformer(SentenceTransformerOriginal):
         text_to_idx = {text: idx for idx, text in enumerate(unique)}
         embeddings = super().encode(unique, **kwargs)
         return embeddings[[text_to_idx[text] for text in texts]]  # assume numpy or torch
+
+
+def encoder_from_base(base_model: str) -> SentenceTransformer:
+    """
+    Build a SentenceTransformer encoder with standard dtype/attention settings.
+
+    Handles model-specific quirks (e.g. jina v5's config_kwargs, modernbert's trust_remote_code) and enables bfloat16 +
+    SDPA when CUDA supports it.
+    """
+    if base_model == "jinaai/jina-embeddings-v5-text-nano-text-matching":
+        return SentenceTransformer(
+            base_model,
+            trust_remote_code=True,
+            model_kwargs={"dtype": torch.bfloat16},
+            config_kwargs={"_attn_implementation": "sdpa"},
+        )
+
+    model_kwargs = None
+    trust_remote_code = False
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
+
+    if base_model == "lightonai/modernbert-embed-large":
+        trust_remote_code = True
+
+    return SentenceTransformer(
+        base_model,
+        trust_remote_code=trust_remote_code,
+        model_kwargs=model_kwargs,
+    )

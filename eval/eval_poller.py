@@ -10,7 +10,6 @@ import time
 
 from pydantic import BaseModel
 from tap import tapify
-import torch
 import wandb
 
 import grouping_trainer as gt
@@ -90,23 +89,6 @@ def make_evaluator(
         truncate_dims=truncate_dims,
         target_precisions=[0.7, 0.8] if use_simple_precisions else None,
     )
-
-
-def make_encoder(base_model: str) -> gt.utils.SentenceTransformer:
-    if base_model == "jinaai/jina-embeddings-v5-text-nano-text-matching":
-        return gt.utils.SentenceTransformer(
-            base_model,
-            trust_remote_code=True,
-            model_kwargs={"dtype": torch.bfloat16},
-            config_kwargs={"_attn_implementation": "sdpa"},
-        )
-    model_kwargs = dict()
-    if torch.cuda.is_bf16_supported():
-        model_kwargs = dict(
-            dtype=torch.bfloat16,
-            attn_implementation="sdpa",
-        )
-    return gt.utils.SentenceTransformer(base_model, model_kwargs=model_kwargs)
 
 
 def _format_metrics(metrics: dict[str, float]) -> str:
@@ -213,7 +195,8 @@ def poll(
 
 def main(
     run_gcs_dir: str,
-    base_model: str = "Alibaba-NLP/gte-modernbert-base",
+    # base_model: str = "Alibaba-NLP/gte-modernbert-base",
+    base_model: str = "lightonai/modernbert-embed-large",
     wandb_project: str = "grouping-trainer",
     poll_interval_sec: int = 60 * 2,
     sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
@@ -253,8 +236,7 @@ def main(
 
     try:
         evaluator = make_evaluator(sample_val, truncate_dims, use_simple_precisions=use_simple_precisions)
-        encoder = make_encoder(base_model)
-
+        encoder = gt.utils.encoder_from_base(base_model)
         evaluate_baseline(run_gcs_dir, encoder, evaluator)
         poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
     finally:

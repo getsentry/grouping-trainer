@@ -54,18 +54,8 @@ def run(mini_cpu_test: bool = False):
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    model = gt.utils.SentenceTransformer(  # 150M params. small enough we don't need a tiny-random for CPU runs
-        "Alibaba-NLP/gte-modernbert-base",
-        model_kwargs=(
-            dict(
-                dtype=torch.bfloat16,
-                attn_implementation="sdpa",
-            )
-            if is_cuda
-            else None
-        ),
-    )
-
+    model = gt.utils.encoder_from_base("lightonai/modernbert-embed-large")
+    # model = gt.utils.encoder_from_base("Alibaba-NLP/gte-modernbert-base")
     # model = gt.utils.SentenceTransformer(  # 239M params
     #     "jinaai/jina-embeddings-v5-text-nano-text-matching",
     #     trust_remote_code=True,

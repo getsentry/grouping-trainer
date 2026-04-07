@@ -71,16 +71,16 @@ def main(
         logger.info(f"Downloading model from {path_gcs_inference} ...")
         subprocess.run(["gcloud", "storage", "rsync", "-r", path_gcs_inference, dir_tmp], check=True)
 
-        kwargs_model = {}
+        model_kwargs = {}
         if not does_not_support_sdpa and torch.cuda.is_bf16_supported():
-            kwargs_model = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
+            model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
 
         logger.info("Loading model...")
         start = time.monotonic()
-        model = gt.utils.SentenceTransformer(
+        model = gt.utils.SentenceTransformer(  # TODO: check that base model name is stil in the model card
             dir_tmp,
             trust_remote_code=True,
-            model_kwargs=kwargs_model,
+            model_kwargs=model_kwargs,
         )
         logger.info(f"Model loaded in {time.monotonic() - start:.1f}s")
 

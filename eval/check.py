@@ -1,10 +1,13 @@
 import torch
 import torch.nn.functional as F
 
-from eval_poller import make_encoder
+import grouping_trainer as gt
 
-encoder = make_encoder("Alibaba-NLP/gte-modernbert-base", use_auto_detected_device=True)
-encoder_danger = make_encoder("Alibaba-NLP/gte-modernbert-base", use_auto_detected_device=False)
+model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
+base_model = "Alibaba-NLP/gte-modernbert-base"
+
+encoder = gt.utils.SentenceTransformer(base_model, model_kwargs=model_kwargs)
+encoder_danger = gt.danger.SentenceTransformer(base_model, model_kwargs=model_kwargs)
 encoder_danger.warmup_and_compile()
 
 for n, p in encoder.named_parameters():
@@ -61,13 +64,3 @@ if not torch.allclose(x_padded, x_danger):
     print("x_danger[:20]:", x_danger[:20])
 assert torch.allclose(x_padded, x)
 # No not caused by padding. x_padded is the same as x
-
-# with tempfile.TemporaryDirectory() as tmp_dir:
-#     eval_poller.download_checkpoint(checkpoint_gcs_path, tmp_dir)
-#     model = gt.train.ModelForTraining.from_checkpoint(checkpoint_dir=tmp_dir, encoder=encoder)
-#     model_danger = gt.train.ModelForTraining.from_checkpoint(checkpoint_dir=tmp_dir, encoder=encoder_danger)
-
-# for n, p in model.encoder.named_parameters():
-#     p_danger = model_danger.encoder.get_parameter(n)
-#     if not torch.allclose(p, p_danger):
-#         print(f"{n} is different")

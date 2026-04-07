@@ -10,14 +10,14 @@ import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
 from contextlib import nullcontext
-from typing import Callable
+from typing import Any, Callable
 
 from accelerate import DistributedType
 from safetensors.torch import load_model as safetensors_load_model
 import numpy as np
 import polars as pl
 from pydantic import BaseModel, ConfigDict
-from sentence_transformers import SentenceTransformer, SentenceTransformerTrainingArguments
+from sentence_transformers import SentenceTransformerTrainingArguments
 from sentence_transformers.data_collator import SentenceTransformerDataCollator
 from sentence_transformers.models import Pooling
 from sentence_transformers.training_args import MultiDatasetBatchSamplers
@@ -108,7 +108,7 @@ def create_project_dataset_dict(
 @dataclass
 class DefaultDataCollator(SentenceTransformerDataCollator):
     def __call__(self, records: list[gt.data.Record]) -> gt.data.Batch:
-        batch = default_collate(records)
+        batch: dict[str, Any] = default_collate(records)
         # MPS doesn't support float64, so convert to float32
         for key, value in batch.items():
             if isinstance(value, torch.Tensor) and value.dtype == torch.float64:
@@ -181,7 +181,7 @@ def batch_pairs_by_token_budget(
 
 
 class ModelForTraining(torch.nn.Module):
-    def __init__(self, encoder: SentenceTransformer, loss: torch.nn.Module):
+    def __init__(self, encoder: gt.utils.SentenceTransformer, loss: torch.nn.Module):
         super().__init__()
         self.encoder = encoder
         # TODO: torch.compile(encoder[0].auto_model, dynamic=True) b/c variable batch sizes when calling the model, and
@@ -222,7 +222,7 @@ class ModelForTraining(torch.nn.Module):
         self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
 
     @classmethod
-    def from_checkpoint(cls, checkpoint_dir: str, encoder: SentenceTransformer) -> "ModelForTraining":
+    def from_checkpoint(cls, checkpoint_dir: str, encoder: gt.utils.SentenceTransformer) -> "ModelForTraining":
         loss = gt.loss.SigmoidPairwiseLoss()
         model = cls(encoder=encoder, loss=loss)
         safetensors_load_model(model, os.path.join(checkpoint_dir, "model.safetensors"))
@@ -567,7 +567,7 @@ def init_bias(frac_positive: float) -> float:
     return bias_init
 
 
-def make_trainer(model: SentenceTransformer, training_config: TrainingConfig) -> Trainer:
+def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingConfig) -> Trainer:
     if model.model_card_data.base_model is None:
         raise ValueError("Base model is not set in the model card. Please set it in the model card data.")
 
