@@ -5,7 +5,8 @@ For example:
 
 python -m grouping_trainer.synthetic \
     --gcs_model_folder gs://grouping-data/runs/issue_grouping_v1/inference \
-    --csv_paths final_csvs/train_more.csv final_csvs/train_more2.csv
+    --csv_paths final_csvs/train_more.csv final_csvs/train_more2.csv \
+    --positives --negatives
 
 The sampling and labeling intentionally samples somewhat around the border to get the biggest bang for our buck.
 
@@ -268,7 +269,12 @@ def mine_semi_easy_negatives(df_project: pl.DataFrame, distances: np.ndarray) ->
     )
 
 
-def main(gcs_model_folder: str, csv_paths: tuple[str, ...]):
+def main(
+    gcs_model_folder: str,
+    csv_paths: tuple[str, ...],
+    positives: bool = False,
+    negatives: bool = False,
+):
     """
     Mine synthetic positives and negatives from labeled pair CSVs.
 
@@ -279,7 +285,14 @@ def main(gcs_model_folder: str, csv_paths: tuple[str, ...]):
         (e.g. gs://grouping-data/runs/issue_grouping_v1/inference).
     csv_paths
         Paths to labeled pair CSVs to mine from.
+    positives
+        Mine easy positives.
+    negatives
+        Mine semi-easy negatives.
     """
+    if not positives and not negatives:
+        raise SystemExit("At least one of --positives or --negatives must be provided.")
+
     dir_model = tempfile.mkdtemp()
     subprocess.run(["gcloud", "storage", "rsync", "-r", gcs_model_folder, dir_model], check=True)
     model = gt.utils.SentenceTransformer(dir_model, trust_remote_code=True)
@@ -302,13 +315,15 @@ def main(gcs_model_folder: str, csv_paths: tuple[str, ...]):
         )
         distances = 1 - (query_embeddings @ candidate_embeddings.T)
 
-        df_negatives = mine_semi_easy_negatives(df_project, distances)
-        path_negatives.parent.mkdir(parents=True, exist_ok=True)
-        df_negatives.write_csv(path_negatives)
+        if negatives:
+            df_negatives = mine_semi_easy_negatives(df_project, distances)
+            path_negatives.parent.mkdir(parents=True, exist_ok=True)
+            df_negatives.write_csv(path_negatives)
 
-        df_positives = mine_easy_positives(df_project, distances)
-        path_positives.parent.mkdir(parents=True, exist_ok=True)
-        df_positives.write_csv(path_positives)
+        if positives:
+            df_positives = mine_easy_positives(df_project, distances)
+            path_positives.parent.mkdir(parents=True, exist_ok=True)
+            df_positives.write_csv(path_positives)
 
     subprocess.run(
         ["gcloud", "storage", "rsync", "-r", "dataset_augmented", "gs://grouping-data/dataset_augmented"],
