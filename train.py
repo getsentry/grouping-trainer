@@ -75,6 +75,8 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
             sample_size_train=30,
             num_logs=30,
             num_checkpoints=2,
+            loss_type="contrastive",
+            contrastive_margin=0.5,
         )
     else:
         config = gt.train.TrainingConfig(
@@ -82,6 +84,8 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
             per_device_train_batch_size=256,
             per_device_token_budget=8192 * 4,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
+            loss_type="contrastive",
+            contrastive_margin=0.5,  # TODO: tune
         )
 
     trainer = gt.train.make_trainer(model, config)
@@ -100,7 +104,7 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         wandb.init(project=config.wandb_project, name=trainer.args.run_name, group=trainer.args.run_name)
 
         base_model = trainer.model.encoder.model_card_data.base_model
-        eval_cmd = f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model}"
+        eval_cmd = f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} --loss_type {config.loss_type} --contrastive_margin {config.contrastive_margin}"
         if mini_cpu_test:
             eval_cmd += " --sample_val 200 --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")

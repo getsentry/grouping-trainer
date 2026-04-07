@@ -7,6 +7,7 @@ import re
 import subprocess
 import tempfile
 import time
+from typing import Literal
 
 from pydantic import BaseModel
 from tap import tapify
@@ -109,6 +110,8 @@ def evaluate_checkpoint(
     checkpoint_gcs_path: str,
     encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
+    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    contrastive_margin: float = 0.5,
 ):
     """
     Download the checkpoint to a temp dir, evaluate it, log to wandb, and write the eval done sentinel to GCS.
@@ -117,7 +120,9 @@ def evaluate_checkpoint(
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         download_checkpoint(checkpoint_gcs_path, tmp_dir)
-        model = gt.train.ModelForTraining.from_checkpoint(checkpoint_dir=tmp_dir, encoder=encoder)
+        model = gt.train.ModelForTraining.from_checkpoint(
+            checkpoint_dir=tmp_dir, encoder=encoder, loss_type=loss_type, contrastive_margin=contrastive_margin
+        )
         metrics = evaluator(model)
 
     log_eval_metrics(step, metrics)
@@ -132,6 +137,8 @@ def evaluate_baseline(
     run_gcs_dir: str,
     encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
+    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    contrastive_margin: float = 0.5,
 ):
     """
     Evaluate the base model (before any fine-tuning) and log metrics at step 0.
@@ -143,13 +150,25 @@ def evaluate_baseline(
         return
 
     logger.info("Evaluating base model.")
-    model_baseline = gt.train.ModelForTraining(encoder=encoder, loss=gt.loss.SigmoidPairwiseLoss())
+    if loss_type == "sigmoid":
+        loss = gt.loss.SigmoidPairwiseLoss()
+    elif loss_type == "contrastive":
+        loss = gt.loss.ContrastiveLoss(margin=contrastive_margin)
+    else:
+        raise ValueError(f"Unknown loss_type: {loss_type}")
+    model_baseline = gt.train.ModelForTraining(encoder=encoder, loss=loss)
     metrics_baseline = evaluator(model_baseline)
     log_eval_metrics(step=0, metrics=metrics_baseline)
     subprocess.run(["gcloud", "storage", "cp", "-", sentinel_path], input=b"", check=True)
 
 
-def backfill(run_gcs_dir: str, encoder: gt.utils.SentenceTransformer, evaluator: gt.evaluator.MinPrecisionEvaluator):
+def backfill(
+    run_gcs_dir: str,
+    encoder: gt.utils.SentenceTransformer,
+    evaluator: gt.evaluator.MinPrecisionEvaluator,
+    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    contrastive_margin: float = 0.5,
+):
     """
     Evaluate all unevaluated checkpoints.
     """
@@ -157,7 +176,14 @@ def backfill(run_gcs_dir: str, encoder: gt.utils.SentenceTransformer, evaluator:
     unevaluated = [checkpoint_info for checkpoint_info in checkpoints if not checkpoint_info.is_eval_done]
     logger.info(f"Backfill: {len(unevaluated)} out of {len(checkpoints)} checkpoints are unevaluated")
     for checkpoint_info in unevaluated:
-        evaluate_checkpoint(checkpoint_info.step, checkpoint_info.gcs_path, encoder, evaluator)
+        evaluate_checkpoint(
+            checkpoint_info.step,
+            checkpoint_info.gcs_path,
+            encoder,
+            evaluator,
+            loss_type=loss_type,
+            contrastive_margin=contrastive_margin,
+        )
 
 
 def poll(
@@ -165,6 +191,8 @@ def poll(
     poll_interval_sec: int,
     encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
+    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    contrastive_margin: float = 0.5,
 ):
     """
     Poll for new checkpoints until training is done, then do a final backfill pass.
@@ -180,12 +208,19 @@ def poll(
         ]
 
         for checkpoint_info in new_checkpoints:
-            evaluate_checkpoint(checkpoint_info.step, checkpoint_info.gcs_path, encoder, evaluator)
+            evaluate_checkpoint(
+                checkpoint_info.step,
+                checkpoint_info.gcs_path,
+                encoder,
+                evaluator,
+                loss_type=loss_type,
+                contrastive_margin=contrastive_margin,
+            )
             evaluated_steps.add(checkpoint_info.step)
 
         if gcloud_storage_ls(f"{run_gcs_dir}/{gt.sentinels.TRAINING_DONE}") is not None:
             logger.info("Training done. Running final backfill pass.")
-            backfill(run_gcs_dir, encoder, evaluator)
+            backfill(run_gcs_dir, encoder, evaluator, loss_type=loss_type, contrastive_margin=contrastive_margin)
             break
 
         if not new_checkpoints:
@@ -202,6 +237,8 @@ def main(
     sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
     truncate_dims: tuple[int, ...] = (64, 768),
     use_simple_precisions: bool = False,
+    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    contrastive_margin: float = 0.5,
 ):
     """
     Poll GCS for new training checkpoints and evaluate each one.
@@ -222,6 +259,10 @@ def main(
         Matryoshka dimensions to evaluate at.
     use_simple_precisions
         Use a simpler set of target precisions—[0.7, 0.8]—for faster eval.
+    loss_type
+        Which loss function was used for training. Must match so checkpoint weights load correctly.
+    contrastive_margin
+        Margin for contrastive loss. Only used when loss_type is "contrastive".
     """
     run_name = run_gcs_dir.rstrip("/").rsplit("/", 1)[-1]
     gt.logging.configure_logging(
@@ -237,8 +278,15 @@ def main(
     try:
         evaluator = make_evaluator(sample_val, truncate_dims, use_simple_precisions=use_simple_precisions)
         encoder = gt.utils.encoder_from_base(base_model)
-        evaluate_baseline(run_gcs_dir, encoder, evaluator)
-        poll(run_gcs_dir, poll_interval_sec, encoder, evaluator)
+        evaluate_baseline(run_gcs_dir, encoder, evaluator, loss_type=loss_type, contrastive_margin=contrastive_margin)
+        poll(
+            run_gcs_dir,
+            poll_interval_sec,
+            encoder,
+            evaluator,
+            loss_type=loss_type,
+            contrastive_margin=contrastive_margin,
+        )
     finally:
         wandb.finish()
 

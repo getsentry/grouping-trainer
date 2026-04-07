@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass
 from collections.abc import Iterator
 from contextlib import nullcontext
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from accelerate import DistributedType
 from safetensors.torch import load_model as safetensors_load_model
@@ -222,8 +222,19 @@ class ModelForTraining(torch.nn.Module):
         self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
 
     @classmethod
-    def from_checkpoint(cls, checkpoint_dir: str, encoder: gt.utils.SentenceTransformer) -> "ModelForTraining":
-        loss = gt.loss.SigmoidPairwiseLoss()
+    def from_checkpoint(
+        cls,
+        checkpoint_dir: str,
+        encoder: gt.utils.SentenceTransformer,
+        loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+        contrastive_margin: float = 0.5,
+    ) -> "ModelForTraining":
+        if loss_type == "sigmoid":
+            loss = gt.loss.SigmoidPairwiseLoss()
+        elif loss_type == "contrastive":
+            loss = gt.loss.ContrastiveLoss(margin=contrastive_margin)
+        else:
+            raise ValueError(f"Unknown loss_type: {loss_type}")
         model = cls(encoder=encoder, loss=loss)
         safetensors_load_model(model, os.path.join(checkpoint_dir, "model.safetensors"))
         return model
@@ -550,6 +561,10 @@ class TrainingConfig(BaseModel):
     }  # TODO: typed
     shuffle_within_dataset: bool = False  # False for more cache hits in each forward
 
+    # Loss
+    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid"
+    contrastive_margin: float = 0.5  # idk, need to tune
+
     # MRL
     matryoshka_dims: tuple[int, ...] = (768, 512, 256, 128, 64)
     matryoshka_weights: tuple[float, ...] = (2.0, 1.0, 1.0, 0.5, 0.25)
@@ -603,16 +618,29 @@ def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingC
     assert "batch" not in repr(model[0].auto_model).lower(), (
         "Batch transformations like batch norm mess up deduplication"
     )
-    model_for_training = ModelForTraining(
-        encoder=model,
-        loss=gt.loss.SigmoidPairwiseLoss(
+    kwargs_mrl = dict(
+        matryoshka_dims=list(training_config.matryoshka_dims),
+        matryoshka_weights=list(training_config.matryoshka_weights),
+        n_dims_per_step=training_config.n_dims_per_step,
+    )
+    if training_config.loss_type == "sigmoid":
+        loss = gt.loss.SigmoidPairwiseLoss(
             bias_init=init_bias(frac_positive),
             log_of_scale_init=torch.tensor(training_config.log_of_scale_init),
-            matryoshka_dims=list(training_config.matryoshka_dims),
-            matryoshka_weights=list(training_config.matryoshka_weights),
-            n_dims_per_step=training_config.n_dims_per_step,
-        ),
-    )
+            **kwargs_mrl,
+        )
+    elif training_config.loss_type == "contrastive":
+        loss = gt.loss.ContrastiveLoss(
+            margin=training_config.contrastive_margin,
+            **kwargs_mrl,
+        )
+    else:
+        raise ValueError(f"Unknown loss_type: {training_config.loss_type}")
+
+    # Sigmoid loss has learnable params (log_scale, bias) with custom LRs; contrastive has none.
+    learning_rate_mapping = training_config.learning_rate_mapping if training_config.loss_type == "sigmoid" else {}
+
+    model_for_training = ModelForTraining(encoder=model, loss=loss)
 
     return gt.train.Trainer(
         model=model_for_training,
@@ -635,7 +663,7 @@ def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingC
             #
             # Optimizer
             learning_rate=training_config.learning_rate,
-            learning_rate_mapping=training_config.learning_rate_mapping,
+            learning_rate_mapping=learning_rate_mapping,
             weight_decay=training_config.weight_decay,
             warmup_ratio=training_config.warmup_ratio,
             #
