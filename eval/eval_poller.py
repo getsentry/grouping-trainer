@@ -79,7 +79,7 @@ def download_checkpoint(checkpoint_gcs_path: str, local_dir: str):
 def make_evaluator(
     sample_val: int | None, truncate_dims: tuple[int, ...], use_simple_precisions: bool = False
 ) -> gt.evaluator.MinPrecisionEvaluator:
-    dataset_val = gt.train.df_to_dataset(gt.data.load_val_df(sample_size=sample_val))
+    dataset_val = gt.train.df_to_dataset(gt.data.load_val_df(paths=("final_csvs/val.csv",), sample_size=sample_val))
     return gt.evaluator.MinPrecisionEvaluator(
         sentences1=list(dataset_val["query_stacktrace_string"]),
         sentences2=list(dataset_val["candidate_stacktrace_string"]),

@@ -1,4 +1,3 @@
-from functools import lru_cache
 from typing import TypedDict
 from datasets import DatasetDict
 import polars as pl
@@ -46,8 +45,16 @@ COLUMNS_REQUIRED = (
 
 # Loading functions
 
+DEFAULT_TRAIN_PATHS = (
+    "final_csvs/train.csv",
+    "final_csvs/train_more.csv",
+    "final_csvs/train_more2.csv",
+    "final_csvs/synthetic-easy.csv",
+)
 
-def _test_df(df: pl.DataFrame):
+
+def _concat_check_dedupe(paths: tuple[str, ...], sample_size: int | None = None):
+    df = gt.utils.concat_vertical_unordered((pl.read_csv(path) for path in paths), how="vertical_relaxed")
     assert set(COLUMNS_REQUIRED).issubset(df.columns)
     assert df["label"].is_in(["GROUP", "SEPARATE"]).mean() == 1
     assert df["project_id"].is_null().sum() == 0
@@ -58,44 +65,19 @@ def _test_df(df: pl.DataFrame):
         .select(pl.all_horizontal(pl.all()))  # reduce over columns
         .item()
     ), "Some stacktraces are empty"
-    return gt.utils.deduplicate_pairs(df)
-
-
-def load_val_df(path: str = "final_csvs/val.csv", sample_size: int | None = None):
-    df = pl.read_csv(path)
-    df = _test_df(df)
-
+    df = gt.utils.deduplicate_pairs(df)
     if sample_size is not None:
         df = df.sample(n=sample_size, seed=42)
-
     return df
 
 
-@lru_cache(maxsize=1)  # data too big for bigger cache, sorry
-def _load_train_df(
-    paths: tuple[str, ...] = (
-        "final_csvs/train.csv",
-        "final_csvs/synthetic-semi-easy-negatives.csv",
-        "final_csvs/train_more.csv",
-    ),
-):
-    df = gt.utils.concat_vertical_unordered((pl.read_csv(path) for path in paths), how="vertical_relaxed")
-    df = _test_df(df)
+def load_val_df(paths: tuple[str, ...] = ("final_csvs/val.csv",), sample_size: int | None = None):
+    return _concat_check_dedupe(paths, sample_size=sample_size)
+
+
+def load_train_df(paths: tuple[str, ...] = DEFAULT_TRAIN_PATHS, sample_size: int | None = None):
+    df = _concat_check_dedupe(paths, sample_size=sample_size)
     assert df.filter(pl.col("confidence_score").is_null())["source"].str.starts_with("synthetic-").all()
-    return df
-
-
-def load_train_df(
-    paths: tuple[str, ...] = (
-        "final_csvs/train.csv",
-        "final_csvs/synthetic-semi-easy-negatives.csv",
-        "final_csvs/train_more.csv",
-    ),
-    sample_size: int | None = None,
-):
-    df = _load_train_df(paths)
-    if sample_size is not None:
-        df = df.sample(n=sample_size, seed=42)
     return df
 
 
@@ -103,11 +85,7 @@ def load_train_dataset_dict(
     sample_size: int | None = None,
     min_dataset_size: int | None = None,
     stress_test_min_pair_len: int | None = None,
-    paths: tuple[str, ...] = (
-        "final_csvs/train.csv",
-        "final_csvs/synthetic-semi-easy-negatives.csv",
-        "final_csvs/train_more.csv",
-    ),
+    paths: tuple[str, ...] = DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
 ) -> tuple[DatasetDict, float]:
     """

@@ -531,11 +531,7 @@ class TrainingConfig(BaseModel):
     per_device_token_budget: int
     gradient_checkpointing: bool = False
     gradient_accumulation_steps: int = 1
-    training_csvs: tuple[str, ...] = (
-        "final_csvs/train.csv",
-        "final_csvs/synthetic-semi-easy-negatives.csv",
-        "final_csvs/train_more.csv",
-    )  # TODO: Literal
+    training_csvs: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS
     sample_size_train: int | None = None  # downsample for CPU sanity check runs
     log_of_scale_init: float = math.log(5)
     learning_rate: float = 1e-4  # effective batch size should be large b/c more deduplication and more project mixing

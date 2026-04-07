@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def main(
     run_gcs_dir: str,
-    df_path: str = "final_csvs/test_full.csv",
+    df_path: str = "final_csvs/test_full2.csv",
     truncate_dims: tuple[int, ...] | None = None,
     batch_size: int = 2,
     sample_size: int | None = None,
@@ -64,7 +64,7 @@ def main(
     name_dataset = os.path.splitext(os.path.basename(df_path))[0]
     dir_gcs_output = f"{run_gcs_dir}/similarities/{name_dataset}"
 
-    df = gt.data.load_val_df(path=df_path, sample_size=sample_size)
+    df = gt.data.load_val_df(paths=(df_path,), sample_size=sample_size)
     logger.info(f"df shape: {df.shape}")
 
     with tempfile.TemporaryDirectory() as dir_tmp:
