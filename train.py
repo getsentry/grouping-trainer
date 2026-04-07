@@ -39,18 +39,21 @@ def upload_run_metadata(run_gcs_dir: str, config: gt.train.TrainingConfig) -> No
     logger.info(f"Uploaded run metadata (git: {git_commit}) to {run_gcs_dir}/metadata")
 
 
-def run(mini_cpu_test: bool = False):
+def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
     """
     Train a grouping model.
 
     Parameters
     ----------
+    run_shortname
+        Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp.
     mini_cpu_test
         Run a mini training run on CPU to sanity check plumbing.
     """
     is_cuda = torch.cuda.is_available()
 
     if not mini_cpu_test:
+        assert run_shortname is not None, "run_shortname is required for full training runs"
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
@@ -65,7 +68,7 @@ def run(mini_cpu_test: bool = False):
 
     if mini_cpu_test:
         config = gt.train.TrainingConfig(
-            run_shortname="cpu-sanity-check",
+            run_shortname=run_shortname or "cpu-sanity-check",
             per_device_train_batch_size=2,
             per_device_token_budget=64,
             gradient_checkpointing=True,
@@ -75,7 +78,7 @@ def run(mini_cpu_test: bool = False):
         )
     else:
         config = gt.train.TrainingConfig(
-            run_shortname="gte-2",
+            run_shortname=run_shortname,
             per_device_train_batch_size=256,
             per_device_token_budget=8192 * 6,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
