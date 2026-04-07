@@ -226,7 +226,7 @@ class ModelForTraining(torch.nn.Module):
         cls,
         checkpoint_dir: str,
         encoder: gt.utils.SentenceTransformer,
-        loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+        loss_type: Literal["sigmoid", "contrastive"] = "contrastive",
         contrastive_margin: float = 0.5,
     ) -> "ModelForTraining":
         if loss_type == "sigmoid":
@@ -562,7 +562,7 @@ class TrainingConfig(BaseModel):
     shuffle_within_dataset: bool = False  # False for more cache hits in each forward
 
     # Loss
-    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid"
+    loss_type: Literal["sigmoid", "contrastive"] = "contrastive"
     contrastive_margin: float = 0.5  # idk, need to tune
 
     # MRL

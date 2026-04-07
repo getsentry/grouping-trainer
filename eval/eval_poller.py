@@ -110,7 +110,7 @@ def evaluate_checkpoint(
     checkpoint_gcs_path: str,
     encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
-    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    loss_type: Literal["sigmoid", "contrastive"] = "contrastive",
     contrastive_margin: float = 0.5,
 ):
     """
@@ -137,7 +137,7 @@ def evaluate_baseline(
     run_gcs_dir: str,
     encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
-    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    loss_type: Literal["sigmoid", "contrastive"] = "contrastive",
     contrastive_margin: float = 0.5,
 ):
     """
@@ -166,7 +166,7 @@ def backfill(
     run_gcs_dir: str,
     encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
-    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    loss_type: Literal["sigmoid", "contrastive"] = "contrastive",
     contrastive_margin: float = 0.5,
 ):
     """
@@ -191,7 +191,7 @@ def poll(
     poll_interval_sec: int,
     encoder: gt.utils.SentenceTransformer,
     evaluator: gt.evaluator.MinPrecisionEvaluator,
-    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    loss_type: Literal["sigmoid", "contrastive"] = "contrastive",
     contrastive_margin: float = 0.5,
 ):
     """
@@ -237,7 +237,7 @@ def main(
     sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
     truncate_dims: tuple[int, ...] = (64, 768),
     use_simple_precisions: bool = False,
-    loss_type: Literal["sigmoid", "contrastive"] = "sigmoid",
+    loss_type: Literal["sigmoid", "contrastive"] = "contrastive",
     contrastive_margin: float = 0.5,
 ):
     """
