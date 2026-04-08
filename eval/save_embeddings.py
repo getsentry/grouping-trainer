@@ -77,11 +77,12 @@ def main(
 
         logger.info("Loading model...")
         start = time.monotonic()
-        model = gt.utils.SentenceTransformer(  # TODO: check that base model name is stil in the model card
+        model = gt.utils.SentenceTransformer(
             dir_tmp,
             trust_remote_code=True,
             model_kwargs=model_kwargs,
         )
+        model.model_card_data.try_to_set_base_model()
         logger.info(f"Model loaded in {time.monotonic() - start:.1f}s")
 
         _ = model.encode("warm up")
