@@ -17,7 +17,7 @@ dependencies = [
     "sentence-transformers==5.1.0",
     "torch==2.8.0",
     "torchvision==0.23.0",
-    "transformers==4.56.2",
+    "transformers==5.0.0rc3",
     "typed-argument-parser==1.11.0",
     "wandb==0.23.1",
 ]
