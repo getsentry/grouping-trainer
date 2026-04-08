@@ -461,6 +461,9 @@ class SentenceTransformer(SentenceTransformerOriginal):
     # The getter and setter above are just for type hints. SentenceTransformer annotates it as Any
 
     def tokenize(self, texts: list[str] | list[dict] | list[tuple[str, str]], **kwargs) -> dict[str, torch.Tensor]:
+        if not self.model_card_data.base_model:
+            raise ValueError("Base model is not set in the model card. Please set it in the model card data.")
+
         # Overriding here b/c all training and inference paths go through this function.
         # Setting prompts and default_prompt_name on init doesn't affect training.
         # TODO: add a prompt_prefix kwarg to init and use it here. For now keeping init unchanged.
