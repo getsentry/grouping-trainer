@@ -19,14 +19,14 @@ import grouping_trainer as gt
 logger = logging.getLogger(__name__)
 
 
-def upload_run_metadata(run_gcs_dir: str, config: gt.train.TrainingConfig) -> None:
+def upload_run_metadata(run_gcs_dir: str, training_config: gt.train.TrainingConfig) -> None:
     """
-    Save training config and git commit to a local temp dir, then upload to GCS as metadata/.
+    Save training training_config and git commit to a local temp dir, then upload to GCS as metadata/.
     """
 
     with tempfile.TemporaryDirectory() as dir_metadata:
         with open(os.path.join(dir_metadata, "training_config.json"), "w") as f:
-            f.write(config.model_dump_json(indent=2))
+            f.write(training_config.model_dump_json(indent=2))
         git_commit = subprocess.run(
             ["git", "describe", "--always", "--dirty", "--long"], capture_output=True, text=True
         ).stdout.strip()
@@ -68,7 +68,7 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
     # )
 
     if mini_cpu_test:
-        config = gt.train.TrainingConfig(
+        training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname or "cpu-sanity-check",
             per_device_train_batch_size=2,
             per_device_token_budget=64,
@@ -77,22 +77,20 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
             num_logs=30,
             num_checkpoints=2,
             loss_type="contrastive",
-            contrastive_margin=0.5,
+            contrastive_margin=0.25,
         )
     else:
-        config = gt.train.TrainingConfig(
+        training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
-            # per_device_train_batch_size=256,
-            per_device_train_batch_size=32,
-            gradient_accumulation_steps=8,
+            per_device_train_batch_size=256,
             shuffle_within_dataset=True,
             per_device_token_budget=8192 * 4,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
             loss_type="contrastive",
-            contrastive_margin=0.5,  # TODO: tune
+            contrastive_margin=0.25,  # TODO: tune
         )
 
-    trainer = gt.train.make_trainer(model, config)
+    trainer = gt.train.make_trainer(model, training_config)
     gt.logging.configure_logging(
         run_name=trainer.args.run_name,
         process_type="training",
@@ -102,11 +100,11 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
     run_gcs_dir = f"gs://grouping-data/runs/{trainer.args.run_name}"
 
     if is_main_process:
-        upload_run_metadata(run_gcs_dir, config)
+        upload_run_metadata(run_gcs_dir, training_config)
 
         wandb.login()
         wandb.init(
-            project=config.wandb_project,
+            project=training_config.wandb_project,
             name=trainer.args.run_name,
             group=trainer.args.run_name,
             settings=wandb.Settings(mode="shared", x_primary=True, x_label="train"),
@@ -114,8 +112,8 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         base_model = trainer.model.encoder.model_card_data.base_model
         eval_cmd = (
             f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} "
-            f"--wandb_run_id {wandb.run.id} --wandb_project {config.wandb_project} "
-            f"--loss_type {config.loss_type} --contrastive_margin {config.contrastive_margin}"
+            f"--wandb_run_id {wandb.run.id} --wandb_project {training_config.wandb_project} "
+            f"--loss_type {training_config.loss_type} --contrastive_margin {training_config.contrastive_margin}"
         )
         if mini_cpu_test:
             eval_cmd += " --sample_val 200 --use_simple_precisions"
@@ -134,7 +132,7 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         category=UserWarning,
     )
     logger.info("Training - start")
-    trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
+    trainer.train(resume_from_checkpoint=training_config.resume_from_checkpoint)
     logger.info("Training - complete")
 
     if is_main_process:

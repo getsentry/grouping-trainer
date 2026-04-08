@@ -21,7 +21,7 @@ dependencies = [
     "typed-argument-parser==1.11.0",
     "wandb==0.23.1",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     { name = "Kush Dubey", email = "kushdubey63@gmail.com" },
 ]

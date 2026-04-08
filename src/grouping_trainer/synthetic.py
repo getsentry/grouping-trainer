@@ -205,8 +205,8 @@ def encode_deduplicated(
 
 def mine_easy_positives_from_distance_matrix(
     query_candidate_distances: np.ndarray,
-    min_distance: float = 0.0001,  # exclude near-duplicates
-    max_distance: float = 0.0025,  # well within SEER_THRESHOLD (0.01)
+    min_distance: float = 0.0001,  # exclude near-duplicates. v1 distance percentile is < 10%
+    max_distance: float = 0.0025,  # 3% label noise, but these are so subtle that this label noise should be negligible
     num_candidates_per_query: int = 5,
 ):
     """

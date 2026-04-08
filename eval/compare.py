@@ -5,15 +5,6 @@ Example usage:
 
 python eval/compare.py \
     --name_model1 v1 \
-    --name_model2 v2 \
-    --gcs_model1 gs://grouping-data/runs/issue_grouping_v1/similarities/test_full \
-    --gcs_model2 gs://grouping-data/runs/issue_grouping_v2/similarities/test_full \
-    --threshold_model1 0.99 \
-    --threshold_model2 0.90 \
-    --dim_model2 64
-
-python eval/compare.py \
-    --name_model1 v1 \
     --name_model2 large-con \
     --gcs_model1 gs://grouping-data/runs/issue_grouping_v1/similarities/test_full2 \
     --gcs_model2 gs://grouping-data/runs/2026-04-07-11-56-28-large-con/similarities/test_full2 \
@@ -73,7 +64,7 @@ class CompareResult:
 pl.Config.set_tbl_hide_dataframe_shape(True)
 pl.Config.set_tbl_hide_column_data_types(True)
 
-# Consistent colors: model1 (prod) = blue, model2 (gte-finetuned) = orange
+# Consistent colors: model1 = blue, model2 = orange
 MODEL_COLORS = ["#1f77b4", "#ff7f0e"]  # matplotlib default blue and orange
 
 _report_lines: list[str] = []
@@ -525,6 +516,12 @@ def compare_models(
     p_group_given_separate = (prod_separate[pred2_col] == "GROUP").mean() if len(prod_separate) > 0 else float("nan")
     report(f"\nP({model2} GROUP | {model1} GROUP)    = {p_group_given_group:.4f}")
     report(f"P({model2} GROUP | {model1} SEPARATE) = {p_group_given_separate:.4f}")
+
+    # Conditional probability for close pairs (distance < 0.005)
+    df_close = df.filter(pl.col("distance") < 0.005)
+    close_group = df_close.filter(pl.col(pred1_col) == "GROUP")
+    p_close = (close_group[pred2_col] == "GROUP").mean() if len(close_group) > 0 else float("nan")
+    report(f"\nP({model2} GROUP | {model1} GROUP, distance < 0.005) = {p_close:.4f}  (n={len(close_group)})")
 
     # Columns to keep in output
     output_cols = [
