@@ -3,24 +3,37 @@ Head-to-head comparison b/t 2 models on held out data.
 
 Example usage:
 
-mkdir -p eval/similarities/issue_grouping_v1/test_full && gcloud storage rsync -r \
-  gs://grouping-data/runs/issue_grouping_v1/similarities/test_full \
-  eval/similarities/issue_grouping_v1/test_full
-
-mkdir -p eval/similarities/issue_grouping_v2/test_full && gcloud storage rsync -r \
-    gs://grouping-data/runs/issue_grouping_v2/similarities/test_full \
-    eval/similarities/issue_grouping_v2/test_full
-
 python eval/compare.py \
     --name_model1 v1 \
     --name_model2 v2 \
-    --path_model1 eval/similarities/issue_grouping_v1/test_full/similarities.csv \
-    --path_model2 eval/similarities/issue_grouping_v2/test_full/similarities.csv \
+    --gcs_model1 gs://grouping-data/runs/issue_grouping_v1/similarities/test_full \
+    --gcs_model2 gs://grouping-data/runs/issue_grouping_v2/similarities/test_full \
+    --threshold_model1 0.99 \
+    --threshold_model2 0.90 \
+    --dim_model2 64
+
+python eval/compare.py \
+    --name_model1 v1 \
+    --name_model2 large-con \
+    --gcs_model1 gs://grouping-data/runs/issue_grouping_v1/similarities/test_full2 \
+    --gcs_model2 gs://grouping-data/runs/2026-04-07-11-56-28-large-con/similarities/test_full2 \
+    --threshold_model1 0.99 \
+    --threshold_model2 0.90 \
+    --dim_model2 64
+
+python eval/compare.py \
+    --name_model1 v2 \
+    --name_model2 large-con \
+    --gcs_model1 gs://grouping-data/runs/issue_grouping_v2/similarities/test_full2 \
+    --gcs_model2 gs://grouping-data/runs/2026-04-07-11-56-28-large-con/similarities/test_full2 \
+    --threshold_model1 0.90 \
+    --threshold_model2 0.90 \
     --dim_model2 64
 """
 
 from itertools import zip_longest
 import json
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,6 +75,21 @@ pl.Config.set_tbl_hide_column_data_types(True)
 
 # Consistent colors: model1 (prod) = blue, model2 (gte-finetuned) = orange
 MODEL_COLORS = ["#1f77b4", "#ff7f0e"]  # matplotlib default blue and orange
+
+_report_lines: list[str] = []
+
+
+def report(*args, **kwargs):
+    """Print to console AND buffer for the report file."""
+    output = " ".join(str(a) for a in args)
+    _report_lines.append(output)
+    print(*args, **kwargs)
+
+
+def save_report(path: Path) -> None:
+    """Write buffered report lines to a text file."""
+    path.write_text("\n".join(_report_lines) + "\n")
+    print(f"Report saved to {path}")
 
 
 def stratify_round_robin(df: pl.DataFrame, group_name: str, target_num_rows: int) -> pl.DataFrame:
@@ -172,9 +200,9 @@ def print_projects(
         projects = [p for p in projects if (p["org_id"], p["project_id"]) in selected_keys]
 
     stratify_msg = f", stratified by {stratify_by}" if stratify_by else ""
-    print(f"\n=== {description}:{stratify_msg} ===")
+    report(f"\n=== {description}:{stratify_msg} ===")
     with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
-        print(_projects_to_display_df(projects))
+        report(_projects_to_display_df(projects))
 
     return projects
 
@@ -438,9 +466,9 @@ def compare_models(
     if write_csvs and output_dir is None:
         raise ValueError("output_dir is required when write_csvs is True")
 
-    print("Thresholds:", json.dumps(thresholds, indent=2))
-    print(df["distance"].describe())
-    print(f"GROUP rate: {(df['label'] == 'GROUP').mean():.2%}")
+    report("Thresholds:", json.dumps(thresholds, indent=2))
+    report(df["distance"].describe())
+    report(f"GROUP rate: {(df['label'] == 'GROUP').mean():.2%}")
 
     # Print platform stats
     platform_stats = (
@@ -453,8 +481,8 @@ def compare_models(
         .sort("platform")
         .with_columns((pl.col("n_pairs") / pl.col("n_pairs").sum()).round(2).alias("proportion"))
     )
-    print("\nPlatform stats:")
-    print(platform_stats)
+    report("\nPlatform stats:")
+    report(platform_stats)
 
     # Get model names in order
     model_names = list(thresholds.keys())
@@ -488,15 +516,15 @@ def compare_models(
     pred2_col = f"pred_{model2}"
 
     # Compute and print overall metrics
-    print(_compute_metrics(df, model_names))
+    report(_compute_metrics(df, model_names))
 
     # Conditional probabilities: P(model2 GROUP | model1 prediction)
     prod_group = df.filter(pl.col(pred1_col) == "GROUP")
     prod_separate = df.filter(pl.col(pred1_col) == "SEPARATE")
     p_group_given_group = (prod_group[pred2_col] == "GROUP").mean() if len(prod_group) > 0 else float("nan")
     p_group_given_separate = (prod_separate[pred2_col] == "GROUP").mean() if len(prod_separate) > 0 else float("nan")
-    print(f"\nP({model2} GROUP | {model1} GROUP)    = {p_group_given_group:.4f}")
-    print(f"P({model2} GROUP | {model1} SEPARATE) = {p_group_given_separate:.4f}")
+    report(f"\nP({model2} GROUP | {model1} GROUP)    = {p_group_given_group:.4f}")
+    report(f"P({model2} GROUP | {model1} SEPARATE) = {p_group_given_separate:.4f}")
 
     # Columns to keep in output
     output_cols = [
@@ -587,13 +615,13 @@ def compare_models(
 
     # Print project-averaged metrics (skip NaNs when averaging)
     project_metrics_df = pl.DataFrame(all_project_metrics)
-    print(f"\n=== Project-averaged metrics ({total_projects} projects) ===")
+    report(f"\n=== Project-averaged metrics ({total_projects} projects) ===")
     avg_metrics = []
     for model_name in model_names:
         model_cols = [c for c in project_metrics_df.columns if c.startswith(f"{model_name}_")]
         avg = {c.replace(f"{model_name}_", ""): project_metrics_df[c].drop_nans().mean() for c in model_cols}
         avg_metrics.append({"model": model_name, **avg})
-    print(pl.DataFrame(avg_metrics).with_columns(pl.col(pl.Float64).round(2)))
+    report(pl.DataFrame(avg_metrics).with_columns(pl.col(pl.Float64).round(2)))
 
     # Apply display names for charts
     display_names = display_names or {}
@@ -668,10 +696,10 @@ def compute_stacktrace_token_percentiles(df: pl.DataFrame) -> pl.DataFrame:
 
     result = pl.DataFrame(rows).with_columns(pl.col(pl.Float64).cast(pl.Int64))
 
-    print(f"\n=== Stacktrace Token Percentiles ({len(df)} pairs) ===")
-    print("(Using len(stacktrace) // 4 as token approximation)")
+    report(f"\n=== Stacktrace Token Percentiles ({len(df)} pairs) ===")
+    report("(Using len(stacktrace) // 4 as token approximation)")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
-        print(result)
+        report(result)
 
     return result
 
@@ -705,9 +733,9 @@ def sweep_thresholds(
         rows.append({"threshold": thresh, **metrics})
 
     result = pl.DataFrame(rows).with_columns(pl.col(pl.Float64).round(2))
-    print(f"\n=== Threshold sweep for {model_name} ===")
+    report(f"\n=== Threshold sweep for {model_name} ===")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
-        print(result)
+        report(result)
     return result
 
 
@@ -821,9 +849,9 @@ def sweep_thresholds_by_project(
                 }
             )
         by_platform = pl.DataFrame(rows_by_platform).sort("platform").with_columns(pl.col(pl.Float64).round(2))
-        print(f"\n=== Per-project precision_GROUP: platform-specific vs {baseline_key} by platform ===")
+        report(f"\n=== Per-project precision_GROUP: platform-specific vs {baseline_key} by platform ===")
         with pl.Config(tbl_rows=-1, tbl_cols=-1):
-            print(by_platform)
+            report(by_platform)
 
 
 def metrics_by_platform(
@@ -887,9 +915,9 @@ def metrics_by_platform(
     result = pl.DataFrame(rows).sort("platform").with_columns(pl.col(pl.Float64).round(3))
 
     threshold_label = "platform-specific" if isinstance(threshold, dict) else str(threshold)
-    print(f"\n=== Metrics by platform, avg over projects ({model_name} @ {threshold_label}) ===")
+    report(f"\n=== Metrics by platform, avg over projects ({model_name} @ {threshold_label}) ===")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
-        print(result)
+        report(result)
 
     return result
 
@@ -980,9 +1008,9 @@ def find_threshold_by_platform(
     result = pl.DataFrame(rows).sort("platform").with_columns(pl.col(pl.Float64).round(3))
 
     precision_label = "per-platform" if precision_by_platform else f"{min_precision:.0%}"
-    print(f"\n=== Min threshold for >= {precision_label} avg project precision_GROUP by platform ({model_name}) ===")
+    report(f"\n=== Min threshold for >= {precision_label} avg project precision_GROUP by platform ({model_name}) ===")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
-        print(result)
+        report(result)
 
     return result
 
@@ -1013,13 +1041,13 @@ def compare_metrics_by_stacktrace_length(
     long_df = df.filter(pl.col(token_col) >= p90)
 
     # Print metrics for each bucket
-    print(f"\n=== Short stacktraces ({token_col} <= p10 = {p10:.0f} tokens, {len(short_df)} pairs) ===")
-    print(f"label GROUP rate: {(short_df['label'] == 'GROUP').mean():.2%}")
-    print(_compute_metrics(short_df, model_names))
+    report(f"\n=== Short stacktraces ({token_col} <= p10 = {p10:.0f} tokens, {len(short_df)} pairs) ===")
+    report(f"label GROUP rate: {(short_df['label'] == 'GROUP').mean():.2%}")
+    report(_compute_metrics(short_df, model_names))
 
-    print(f"\n=== Long stacktraces ({token_col} >= p90 = {p90:.0f} tokens, {len(long_df)} pairs) ===")
-    print(f"label GROUP rate: {(long_df['label'] == 'GROUP').mean():.2%}")
-    print(_compute_metrics(long_df, model_names))
+    report(f"\n=== Long stacktraces ({token_col} >= p90 = {p90:.0f} tokens, {len(long_df)} pairs) ===")
+    report(f"label GROUP rate: {(long_df['label'] == 'GROUP').mean():.2%}")
+    report(_compute_metrics(long_df, model_names))
 
 
 COLS_JOIN = ["query_stacktrace_string", "candidate_stacktrace_string"]
@@ -1099,9 +1127,28 @@ def _load_and_join(
     return df, label_dim1, label_dim2
 
 
+def _sync_gcs(gcs_dir: str) -> Path:
+    """Sync a GCS similarities directory to a local cache and return the local similarities.csv path.
+
+    Maps e.g. ``gs://grouping-data/runs/issue_grouping_v1/similarities/test_full``
+    to ``eval/similarities/issue_grouping_v1/test_full/``.
+    """
+    gcs_dir = gcs_dir.rstrip("/")
+    # Expected structure: gs://bucket/runs/{run_name}/similarities/{dataset}
+    parts = gcs_dir.split("/")
+    idx_similarities = parts.index("similarities")
+    name_run = parts[idx_similarities - 1]
+    name_dataset = parts[idx_similarities + 1]
+    dir_local = Path("eval/similarities") / name_run / name_dataset
+    dir_local.mkdir(parents=True, exist_ok=True)
+    print(f"Syncing {gcs_dir} → {dir_local}")
+    subprocess.run(["gcloud", "storage", "rsync", "-r", gcs_dir, str(dir_local)], check=True)
+    return dir_local / "similarities.csv"
+
+
 def main(
-    path_model1: str,
-    path_model2: str,
+    gcs_model1: str,
+    gcs_model2: str,
     name_model1: str,
     name_model2: str,
     dim_model1: int = 768,
@@ -1112,19 +1159,22 @@ def main(
     min_group_rate_decrease: float = 0.15,
     max_display_projects: int = 30,
     upload_sheets: bool = False,
+    overwrite: bool = False,
 ):
     """
     Compare two models' grouping decisions on held-out data.
 
-    Loads two similarity CSVs, joins them on stacktrace pairs, and runs a
-    head-to-head comparison.
+    Downloads similarity CSVs from GCS, joins them on stacktrace pairs, and runs
+    a head-to-head comparison.
 
     Parameters
     ----------
-    path_model1
-        Path to model 1's similarities CSV.
-    path_model2
-        Path to model 2's similarities CSV.
+    gcs_model1
+        GCS path to model 1's similarities directory
+        (e.g. gs://grouping-data/runs/issue_grouping_v1/similarities/test_full).
+    gcs_model2
+        GCS path to model 2's similarities directory
+        (e.g. gs://grouping-data/runs/issue_grouping_v2/similarities/test_full).
     dim_model1
         Which cos_sim_{dim} column to use from model 1's CSV.
     dim_model2
@@ -1148,9 +1198,12 @@ def main(
     upload_sheets
         If True, upload flagged projects to Google Sheets. Requires
         ``gcloud auth application-default login`` with spreadsheets+drive scopes.
+    overwrite
+        Allow overwriting an existing output directory. Without this flag the
+        script exits with an error if the output directory already exists.
     """
-    path1 = Path(path_model1)
-    path2 = Path(path_model2)
+    path1 = _sync_gcs(gcs_model1)
+    path2 = _sync_gcs(gcs_model2)
 
     df, label_dim1, label_dim2 = _load_and_join(
         path1,
@@ -1162,7 +1215,16 @@ def main(
     )
     print(f"Loaded {len(df)} pairs: {name_model1} (dim={label_dim1}) vs {name_model2} (dim={label_dim2})")
 
-    dir_output = Path("eval/comparisons") / f"{name_model1}_vs_{name_model2}" / f"{label_dim1}_vs_{label_dim2}"
+    name_dataset = path1.parent.name
+    dir_output = (
+        Path("eval/comparisons") / name_dataset / f"{name_model1}_dim{label_dim1}_vs_{name_model2}_dim{label_dim2}"
+    )
+    if dir_output.exists() and not overwrite:
+        raise SystemExit(
+            f"Output directory already exists: {dir_output}\n"
+            "You're using the same dim_model1, dim_model2, name_model1, name_model2 values as a previous run."
+            "Pass --overwrite to replace it, or use a different name."
+        )
     dir_output.mkdir(parents=True, exist_ok=True)
 
     thresholds = {
@@ -1241,6 +1303,7 @@ def main(
                 description=f"{name_model1} vs {name_model2} — group rate decrease >= {min_group_rate_decrease:.0%}",
             )
 
+    save_report(dir_output / "report.txt")
     print(f"\nResults written to {dir_output}")
 
 

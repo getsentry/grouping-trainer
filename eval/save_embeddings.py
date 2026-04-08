@@ -1,5 +1,5 @@
 """
-Download a model from GCS, encode val+test data, save embeddings and similarities, and upload results to GCS.
+Download a model from GCS, encode test data, save embeddings and similarities, and upload results to GCS.
 
 For example to evaluate the baseline/prod model:
 
@@ -22,6 +22,7 @@ python eval/save_embeddings.py \
     --truncate_dims 64 128 256 512 768
 """
 
+import json
 import logging
 import os.path
 import subprocess
@@ -37,6 +38,54 @@ from tap import tapify
 import grouping_trainer as gt
 
 logger = logging.getLogger(__name__)
+
+_COLUMNS_PAIR = ("query_stacktrace_string", "candidate_stacktrace_string")
+
+
+def _check_no_train_test_overlap(run_gcs_dir: str, df_test: pl.DataFrame) -> None:
+    """
+    Download training_config.json from GCS, load training data, and assert there is no overlap in projects or stacktrace
+    pairs between training and test data.
+    """
+    path_gcs_config = f"{run_gcs_dir}/metadata/training_config.json"
+    with tempfile.TemporaryDirectory() as dir_tmp:
+        path_local_config = f"{dir_tmp}/training_config.json"
+        result = subprocess.run(
+            ["gcloud", "storage", "cp", path_gcs_config, path_local_config],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            logger.warning(f"No training_config.json found at {path_gcs_config}, skipping overlap check")
+            return
+        with open(path_local_config) as f:
+            config = json.load(f)
+
+    paths_train = tuple(config["training_csvs"])
+    logger.info(f"Loading training data from {paths_train} to check for overlap...")
+    df_train = gt.data.load_train_df(paths=paths_train)
+
+    # Check project overlap
+    projects_train = set(df_train["project_id"].unique().to_list())
+    projects_test = set(df_test["project_id"].unique().to_list())
+    projects_overlap = projects_train & projects_test
+    assert not projects_overlap, (
+        f"Train/test project overlap: {len(projects_overlap)} projects in common: {sorted(projects_overlap)[:10]}"
+    )
+
+    # Check pair overlap (canonicalize order since grouping is symmetric)
+    cols_canonical = [
+        pl.min_horizontal(_COLUMNS_PAIR).alias("_pair_first"),
+        pl.max_horizontal(_COLUMNS_PAIR).alias("_pair_second"),
+    ]
+    pairs_train = set(df_train.select(cols_canonical).iter_rows())
+    pairs_test = set(df_test.select(cols_canonical).iter_rows())
+    pairs_overlap = pairs_train & pairs_test
+    assert not pairs_overlap, f"Train/test pair overlap: {len(pairs_overlap)} pairs in common"
+
+    logger.info(
+        f"No overlap: {len(projects_train)} train projects, {len(projects_test)} test projects, "
+        f"{len(pairs_train)} train pairs, {len(pairs_test)} test pairs"
+    )
 
 
 def main(
@@ -76,6 +125,8 @@ def main(
 
     df = gt.data.load_val_df(paths=(df_path,), sample_size=sample_size)
     logger.info(f"df shape: {df.shape}")
+
+    _check_no_train_test_overlap(run_gcs_dir, df)
 
     with tempfile.TemporaryDirectory() as dir_tmp:
         logger.info(f"Downloading model from {path_gcs_inference} ...")
