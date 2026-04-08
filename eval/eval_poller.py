@@ -230,8 +230,7 @@ def poll(
 
 def main(
     run_gcs_dir: str,
-    # base_model: str = "Alibaba-NLP/gte-modernbert-base",
-    base_model: str = "lightonai/modernbert-embed-large",
+    base_model: str,
     wandb_project: str = "grouping-trainer",
     poll_interval_sec: int = 60 * 2,
     sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
@@ -249,6 +248,7 @@ def main(
         GCS path to the training run directory (e.g. gs://grouping-data/runs/...).
     base_model
         HuggingFace model ID for the base encoder. Used to load architecture before applying checkpoint weights.
+        Example: "Qwen/Qwen3-Embedding-0.6B"
     wandb_project
         W&B project name.
     poll_interval_sec
