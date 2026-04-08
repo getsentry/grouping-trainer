@@ -82,12 +82,14 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
     else:
         config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
-            per_device_train_batch_size=256,
-            per_device_token_budget=8192 * 3,
+            # per_device_train_batch_size=256,
+            per_device_train_batch_size=32,
+            gradient_accumulation_steps=8,
+            shuffle_within_dataset=True,
+            per_device_token_budget=8192 * 4,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
             loss_type="contrastive",
             contrastive_margin=0.5,  # TODO: tune
-            shuffle_within_dataset=True,
         )
 
     trainer = gt.train.make_trainer(model, config)
