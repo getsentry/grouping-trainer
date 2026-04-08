@@ -12,7 +12,7 @@ python eval/save_embeddings.py \
 To evaluate the finetuned model:
 
 python eval/save_embeddings.py \
-    --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
+    --run_gcs_dir gs://grouping-data/runs/2026-04-07-11-56-28-large-con \
     --base_model "lightonai/modernbert-embed-large" \
     --truncate_dims 64 128 256 512 768
 
