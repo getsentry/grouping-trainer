@@ -7,3 +7,4 @@ final_csvs/
 gte-finetuned/
 eval/similarities/
 eval/comparisons/
+client_secret.json

@@ -28,7 +28,7 @@ COLUMNS_REQUIRED = (
     "source",
     # - One of 'matched', 'unmatched', 'synthetic-negative-semi-easy'. See query_bq.ipynb in data-analysis for 'matched'
     #   and 'unmatched'. See synthetic.py for 'synthetic-negative-semi-easy'. I have a colab notebook for actually
-    #   uploading and generating these. TODO(kddubey): put that in this repo
+    #   uploading and generating these. TODO: put that in this repo
     "path",
     # - Path to the CSV file containing the pairs in the grouping-data bucket, e.g., Seer pairs which were not grouped
     #   by the current grouping model: 'dataset/org_1/project_6178942/2025-08-13-18-22-03/unmatched.csv'

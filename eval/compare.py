@@ -1156,7 +1156,7 @@ def main(
     threshold_model1: float = 0.99,
     threshold_model2: float = 0.90,
     min_group_rate_increase: float = 0.15,
-    min_group_rate_decrease: float = 0.15,
+    min_group_rate_decrease: float = 0.10,
     max_display_projects: int = 30,
     upload_sheets: bool = False,
     overwrite: bool = False,
@@ -1196,12 +1196,25 @@ def main(
     max_display_projects
         Maximum number of flagged projects to display.
     upload_sheets
-        If True, upload flagged projects to Google Sheets. Requires
-        ``gcloud auth application-default login`` with spreadsheets+drive scopes.
+        If True, upload flagged projects to Google Sheets. Prompts you to authenticate using a secret JSON. Ask Kush for
+        it or just make on yourself. TODO: put it in a secret or something easy.
     overwrite
         Allow overwriting an existing output directory. Without this flag the
         script exits with an error if the output directory already exists.
     """
+    if upload_sheets:
+        subprocess.run(
+            [
+                "gcloud",
+                "auth",
+                "application-default",
+                "login",
+                "--client-id-file=client_secret.json",
+                "--scopes=https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive",
+            ],
+            check=True,
+        )
+
     path1 = _sync_gcs(gcs_model1)
     path2 = _sync_gcs(gcs_model2)
 

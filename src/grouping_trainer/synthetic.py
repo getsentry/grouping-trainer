@@ -78,9 +78,9 @@ def top_combos(
 
 def mine_semi_easy_negatives_from_distance_matrix(
     query_candidate_distances: np.ndarray,
-    min_distance: float = 0.3,  # not too hard
-    max_distance: float = 0.5,  # not too easy
-    num_candidates_per_query: int = 5,  # TODO(kddubey): make this 20. Can always sample down after writing it.
+    min_distance: float = 0.3,  # This can't be any smaller w/o letting false negatives slip in
+    max_distance: float = 0.5,  # Not higher so it's not too easy
+    num_candidates_per_query: int = 5,  # TODO: make this 20. Can always sample down after writing it.
 ):
     """
     Returns the furthest `num_candidates_per_query` candidate indices per query matching the distance filters.
