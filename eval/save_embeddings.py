@@ -5,6 +5,7 @@ For example to evaluate the baseline/prod model:
 
 python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/issue_grouping_v1 \
+    --base_model "jinaai/jina-embeddings-v2-base-code" \
     --does_not_support_sdpa \
     --truncate_dims 64 128 256 512 768
 
@@ -12,6 +13,12 @@ To evaluate the finetuned model:
 
 python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
+    --base_model "lightonai/modernbert-embed-large" \
+    --truncate_dims 64 128 256 512 768
+
+python eval/save_embeddings.py \
+    --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
+    --base_model "Alibaba-NLP/gte-modernbert-base" \
     --truncate_dims 64 128 256 512 768
 """
 
@@ -34,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 def main(
     run_gcs_dir: str,
+    base_model: str,
     df_path: str = "final_csvs/test_full2.csv",
     truncate_dims: tuple[int, ...] | None = None,
     batch_size: int = 2,
@@ -47,6 +55,8 @@ def main(
     ----------
     run_gcs_dir
         GCS path to the training run directory (e.g. gs://grouping-data/runs/my-run).
+    base_model
+        Base model name to set on the model card, e.g. "Qwen/Qwen3-Embedding-0.6B"
     df_path
         Path to the validation/test CSV file.
     truncate_dims
@@ -82,7 +92,7 @@ def main(
             trust_remote_code=True,
             model_kwargs=model_kwargs,
         )
-        model.model_card_data.try_to_set_base_model()
+        model.model_card_data.base_model = base_model
         logger.info(f"Model loaded in {time.monotonic() - start:.1f}s")
 
         _ = model.encode("warm up")
