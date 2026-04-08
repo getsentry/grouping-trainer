@@ -57,9 +57,9 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    model = gt.utils.encoder_from_base("Qwen/Qwen3-Embedding-0.6B")
+    # model = gt.utils.encoder_from_base("Qwen/Qwen3-Embedding-0.6B")
     # model = gt.utils.encoder_from_base("lightonai/modernbert-embed-large")
-    # model = gt.utils.encoder_from_base("Alibaba-NLP/gte-modernbert-base")
+    model = gt.utils.encoder_from_base("Alibaba-NLP/gte-modernbert-base")
     # model = gt.utils.SentenceTransformer(  # 239M params
     #     "jinaai/jina-embeddings-v5-text-nano-text-matching",
     #     trust_remote_code=True,
@@ -102,10 +102,18 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         upload_run_metadata(run_gcs_dir, config)
 
         wandb.login()
-        wandb.init(project=config.wandb_project, name=trainer.args.run_name, group=trainer.args.run_name)
-
+        wandb.init(
+            project=config.wandb_project,
+            name=trainer.args.run_name,
+            group=trainer.args.run_name,
+            settings=wandb.Settings(mode="shared", x_primary=True, x_label="train"),
+        )
         base_model = trainer.model.encoder.model_card_data.base_model
-        eval_cmd = f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} --loss_type {config.loss_type} --contrastive_margin {config.contrastive_margin}"
+        eval_cmd = (
+            f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} "
+            f"--wandb_run_id {wandb.run.id} --wandb_project {config.wandb_project} "
+            f"--loss_type {config.loss_type} --contrastive_margin {config.contrastive_margin}"
+        )
         if mini_cpu_test:
             eval_cmd += " --sample_val 200 --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")

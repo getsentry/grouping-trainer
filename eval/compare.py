@@ -1220,9 +1220,10 @@ def main(
         Path("eval/comparisons") / name_dataset / f"{name_model1}_dim{label_dim1}_vs_{name_model2}_dim{label_dim2}"
     )
     if dir_output.exists() and not overwrite:
+        print()
         raise SystemExit(
             f"Output directory already exists: {dir_output}\n"
-            "You're using the same dim_model1, dim_model2, name_model1, name_model2 values as a previous run."
+            "You're using the same dim_model1, dim_model2, name_model1, name_model2 values as a previous run.\n"
             "Pass --overwrite to replace it, or use a different name."
         )
     dir_output.mkdir(parents=True, exist_ok=True)

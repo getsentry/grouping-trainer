@@ -101,7 +101,7 @@ def _format_metrics(metrics: dict[str, float]) -> str:
 
 
 def log_eval_metrics(step: int, metrics: dict[str, float]):
-    wandb.log({"eval/step": step, **{f"eval/{key}": value for key, value in metrics.items()}})
+    wandb.log({"train/global_step": step, **{f"eval/{key}": value for key, value in metrics.items()}})
     logger.info(f"Step {step} eval:\n{_format_metrics(metrics)}")
 
 
@@ -231,6 +231,7 @@ def poll(
 def main(
     run_gcs_dir: str,
     base_model: str,
+    wandb_run_id: str,
     wandb_project: str = "grouping-trainer",
     poll_interval_sec: int = 60 * 2,
     sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
@@ -249,6 +250,8 @@ def main(
     base_model
         HuggingFace model ID for the base encoder. Used to load architecture before applying checkpoint weights.
         Example: "Qwen/Qwen3-Embedding-0.6B"
+    wandb_run_id
+        W&B run ID of the training run. Eval metrics are logged to the same run using shared mode.
     wandb_project
         W&B project name.
     poll_interval_sec
@@ -271,9 +274,13 @@ def main(
     )
 
     wandb.login()
-    wandb.init(project=wandb_project, name=f"{run_name}-eval", group=run_name)
-    wandb.define_metric("eval/step")
-    wandb.define_metric("eval/*", step_metric="eval/step")
+    wandb.init(
+        project=wandb_project,
+        id=wandb_run_id,
+        settings=wandb.Settings(mode="shared", x_primary=False, x_label="eval", x_update_finish_state=False),
+    )
+    wandb.define_metric("train/global_step")
+    wandb.define_metric("*", step_metric="train/global_step", step_sync=True)
 
     try:
         evaluator = make_evaluator(sample_val, truncate_dims, use_simple_precisions=use_simple_precisions)
