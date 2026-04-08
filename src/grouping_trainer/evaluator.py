@@ -26,10 +26,13 @@ def _metric_name_loss(*, dim: int) -> str:
 
 class MinPrecisionEvaluator(SentenceEvaluator):
     """
-    Evaluate a model by finding the minimum similarity threshold needed to achieve
-    target precision levels, then reporting the recall at those thresholds.
+    Evaluate a model by finding the minimum similarity threshold needed to achieve target precision levels, then
+    reporting the recall at those thresholds.
 
     We want to control precision (e.g., avoid overgrouping errors) and maximize recall (reduce undergrouping/noise).
+
+    One problem w/ this method is that precision doesn't monotically relate to the threshold. In practice this isn't
+    much of a b/c we have 80k pairs in the validation dataset.
     """
 
     def __init__(
@@ -120,9 +123,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
                 if np.isnan(precision):
                     logger.info(f"    Precision >= {p:.0%}: Not achievable with >= {self.min_predictions} predictions")
                 else:
-                    logger.info(
-                        f"    Precision >= {p:.0%}: precision={precision:.2%}, recall={recall:.2%}"
-                    )
+                    logger.info(f"    Precision >= {p:.0%}: precision={precision:.2%}, recall={recall:.2%}")
 
         # Build CSV row data
         file_output_data: list = [epoch, steps] + list(raw_metrics.values())

@@ -83,7 +83,6 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
             per_device_train_batch_size=256,
-            shuffle_within_dataset=True,
             per_device_token_budget=8192 * 4,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
             loss_type="contrastive",
