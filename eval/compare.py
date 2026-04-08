@@ -252,7 +252,7 @@ def _upload_projects_to_sheets(
     except gspread.WorksheetNotFound:
         pass
 
-    print(f"Done! View at: {spreadsheet.url}")
+    report(f"Done! View at: {spreadsheet.url}")
 
 
 def _compute_metrics_for_model(df: pl.DataFrame, model_name: str) -> dict:
