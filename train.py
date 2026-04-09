@@ -57,8 +57,8 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    model = gt.utils.encoder_from_base("lightonai/modernbert-embed-large")
-    # model = gt.utils.encoder_from_base("Qwen/Qwen3-Embedding-0.6B")
+    # model = gt.utils.encoder_from_base("lightonai/modernbert-embed-large")
+    model = gt.utils.encoder_from_base("Qwen/Qwen3-Embedding-0.6B")
     # model = gt.utils.encoder_from_base("Alibaba-NLP/gte-modernbert-base")
     # model = gt.utils.SentenceTransformer(  # 239M params
     #     "jinaai/jina-embeddings-v5-text-nano-text-matching",
@@ -83,10 +83,10 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
             per_device_train_batch_size=256,
-            per_device_token_budget=8192 * 4,
+            per_device_token_budget=8192 * 3,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
             loss_type="contrastive",
-            contrastive_margin=0.5,
+            contrastive_margin=0.3,
         )
 
     trainer = gt.train.make_trainer(model, training_config)
