@@ -6,5 +6,6 @@ __pycache__/
 final_csvs/
 gte-finetuned/
 eval/similarities/
-eval/comparisons/
+eval/comparisons/**/merged.csv
+eval/comparisons/**/new.csv
 client_secret.json
