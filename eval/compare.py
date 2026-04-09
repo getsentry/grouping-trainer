@@ -1299,7 +1299,8 @@ def main(
         "- **pred_GROUP_rate**: The fraction of pairs this model groups together"
         "—lower means more separate issues are created."
         " It's smaller than prod b/c the test dataset contains far more borderline cases;"
-        " it's missing pairs that are very close.\n"
+        " it's missing pairs that are very close. "
+        " This bias also means precision_GROUP is lower than what it'd be in prod.\n"
         "- **precision_GROUP**: When the model groups a pair, how often is it correct?"
         " Higher = less over-grouping.\n"
         "- **precision_SEPARATE**: When the model separates a pair, how often is it correct?\n"
@@ -1390,10 +1391,10 @@ def main(
                 description=f"{name_model1} vs {name_model2} — group rate decrease >= {min_group_rate_decrease:.0%}",
             )
         report(
-            "\n- Sheets suffixed w/ `|new` contain pairs that the current, prod model groups together,"
-            " but the new model separates (creating new issues).\n"
-            "- Sheets suffixed w/ `|merged` contain pairs that prod separates,"
-            " but the new model would group together (merging issues).\n"
+            f"\n- Sheets suffixed w/ `|new` contain pairs that {name_model1} groups together,"
+            f" but {name_model2} separates (creating new issues).\n"
+            f"- Sheets suffixed w/ `|merged` contain pairs that {name_model1} separates,"
+            f" but {name_model2} would group together (merging issues).\n"
             "- If you click the button in the top right corner of the table,"
             " you'll see what the LLM thought about the pair and the model's similarity scores"
         )
