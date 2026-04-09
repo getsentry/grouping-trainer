@@ -86,7 +86,7 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
             per_device_token_budget=8192 * 4,
             log_of_scale_init=math.log(10),  # TODO: wandb this param and bias
             loss_type="contrastive",
-            contrastive_margin=0.75,  # TODO: tune
+            contrastive_margin=0.5,
         )
 
     trainer = gt.train.make_trainer(model, training_config)
