@@ -4,20 +4,13 @@ Command to repro:
 
 ```bash
 python eval/compare.py \
-    --name_model1 \
-    v1 \
-    --name_model2 \
-    large-con \
-    --gcs_model1 \
-    gs://grouping-data/runs/issue_grouping_v1/similarities/test_full2 \
-    --gcs_model2 \
-    gs://grouping-data/runs/2026-04-07-11-56-28-large-con/similarities/test_full2 \
-    --threshold_model1 \
-    0.99 \
-    --threshold_model2 \
-    0.90 \
-    --dim_model2 \
-    64 \
+    --name_model1 v1 \
+    --name_model2 large-con \
+    --gcs_model1 gs://grouping-data/runs/issue_grouping_v1/similarities/test_full2 \
+    --gcs_model2 gs://grouping-data/runs/2026-04-07-11-56-28-large-con/similarities/test_full2 \
+    --threshold_model1 0.99 \
+    --threshold_model2 0.90 \
+    --dim_model2 64 \
     --overwrite \
     --upload_sheets
 ```

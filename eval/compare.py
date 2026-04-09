@@ -1,5 +1,6 @@
 """
-Head-to-head comparison b/t 2 models on held out data.
+Head-to-head comparison b/t 2 models on held out data. Writes a markdown report and optionally uploads the most impacted
+projects to Google Sheets.
 
 Example usage:
 
@@ -24,7 +25,9 @@ python eval/compare.py \
 
 from itertools import zip_longest
 import json
+import shlex
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,15 +73,39 @@ MODEL_COLORS = ["#1f77b4", "#ff7f0e"]  # matplotlib default blue and orange
 _report_lines: list[str] = []
 
 
+def _df_to_markdown(df: pl.DataFrame) -> str:
+    """Render a Polars DataFrame as a GitHub-flavored markdown table."""
+    with pl.Config(
+        tbl_formatting="MARKDOWN",
+        tbl_hide_column_data_types=True,
+        tbl_hide_dataframe_shape=True,
+        tbl_rows=-1,
+        tbl_cols=-1,
+        tbl_width_chars=10000,
+        fmt_str_lengths=1000,
+    ):
+        return str(df)
+
+
 def report(*args, **kwargs):
-    """Print to console AND buffer for the report file."""
-    output = " ".join(str(a) for a in args)
-    _report_lines.append(output)
+    """Print to console AND buffer for the markdown report."""
     print(*args, **kwargs)
+    parts = []
+    for a in args:
+        if isinstance(a, pl.DataFrame):
+            parts.append(_df_to_markdown(a))
+        else:
+            parts.append(str(a))
+    _report_lines.append(" ".join(parts))
+
+
+def report_plot(title: str, filename: str) -> None:
+    """Buffer a collapsible image embed for the markdown report."""
+    report(f"\n<details>\n<summary>{title}</summary>\n\n![{title}]({filename})\n</details>\n")
 
 
 def save_report(path: Path) -> None:
-    """Write buffered report lines to a text file."""
+    """Write buffered report lines to a markdown file."""
     path.write_text("\n".join(_report_lines) + "\n")
     print(f"Report saved to {path}")
 
@@ -190,8 +217,8 @@ def print_projects(
         selected_keys = set((row["org_id"], row["project_id"]) for row in projects_df.iter_rows(named=True))
         projects = [p for p in projects if (p["org_id"], p["project_id"]) in selected_keys]
 
-    stratify_msg = f", stratified by {stratify_by}" if stratify_by else ""
-    report(f"\n=== {description}:{stratify_msg} ===")
+    stratify_msg = f" (stratified by {stratify_by})" if stratify_by else ""
+    report(f"\n### {description}{stratify_msg}\n")
     with pl.Config(tbl_rows=-1, tbl_cols=-1, fmt_str_lengths=1000):
         report(_projects_to_display_df(projects))
 
@@ -243,7 +270,7 @@ def _upload_projects_to_sheets(
     except gspread.WorksheetNotFound:
         pass
 
-    report(f"Done! View at: {spreadsheet.url}")
+    report(f"\n[Pairs of stacktraces for {description}]({spreadsheet.url})\n")
 
 
 def _compute_metrics_for_model(df: pl.DataFrame, model_name: str) -> dict:
@@ -457,24 +484,6 @@ def compare_models(
     if write_csvs and output_dir is None:
         raise ValueError("output_dir is required when write_csvs is True")
 
-    report("Thresholds:", json.dumps(thresholds, indent=2))
-    report(df["distance"].describe())
-    report(f"GROUP rate: {(df['label'] == 'GROUP').mean():.2%}")
-
-    # Print platform stats
-    platform_stats = (
-        df.group_by("platform")
-        .agg(
-            pl.len().alias("n_pairs"),
-            pl.col("project_id").n_unique().alias("n_projects"),
-            (pl.col("label") == "GROUP").mean().round(2).alias("label_GROUP_rate"),
-        )
-        .sort("platform")
-        .with_columns((pl.col("n_pairs") / pl.col("n_pairs").sum()).round(2).alias("proportion"))
-    )
-    report("\nPlatform stats:")
-    report(platform_stats)
-
     # Get model names in order
     model_names = list(thresholds.keys())
     model1, model2 = model_names[0], model_names[1]
@@ -506,22 +515,17 @@ def compare_models(
     pred1_col = f"pred_{model1}"
     pred2_col = f"pred_{model2}"
 
-    # Compute and print overall metrics
-    report(_compute_metrics(df, model_names))
+    # Compute overall metrics (reported after per-project loop, alongside project-averaged)
+    metrics_overall = _compute_metrics(df, model_names)
 
-    # Conditional probabilities: P(model2 GROUP | model1 prediction)
+    # Compute conditional probabilities (reported later)
     prod_group = df.filter(pl.col(pred1_col) == "GROUP")
     prod_separate = df.filter(pl.col(pred1_col) == "SEPARATE")
     p_group_given_group = (prod_group[pred2_col] == "GROUP").mean() if len(prod_group) > 0 else float("nan")
     p_group_given_separate = (prod_separate[pred2_col] == "GROUP").mean() if len(prod_separate) > 0 else float("nan")
-    report(f"\nP({model2} GROUP | {model1} GROUP)    = {p_group_given_group:.4f}")
-    report(f"P({model2} GROUP | {model1} SEPARATE) = {p_group_given_separate:.4f}")
-
-    # Conditional probability for close pairs (distance < 0.005)
     df_close = df.filter(pl.col("distance") < 0.005)
     close_group = df_close.filter(pl.col(pred1_col) == "GROUP")
     p_close = (close_group[pred2_col] == "GROUP").mean() if len(close_group) > 0 else float("nan")
-    report(f"\nP({model2} GROUP | {model1} GROUP, distance < 0.005) = {p_close:.4f}  (n={len(close_group)})")
 
     # Columns to keep in output
     output_cols = [
@@ -610,15 +614,45 @@ def compare_models(
             merged_path = proj_dir / "merged.csv"
             merged_df.select(output_cols).write_csv(merged_path)
 
-    # Print project-averaged metrics (skip NaNs when averaging)
+    # --- Report sections (order matters for the markdown document) ---
+
+    # These two go first, right under "## Aggregate results"
+    report("\n### Overall metrics\n")
+    report(metrics_overall)
+
     project_metrics_df = pl.DataFrame(all_project_metrics)
-    report(f"\n=== Project-averaged metrics ({total_projects} projects) ===")
+    report(f"\n### Project-averaged metrics ({total_projects} projects)\n")
     avg_metrics = []
     for model_name in model_names:
         model_cols = [c for c in project_metrics_df.columns if c.startswith(f"{model_name}_")]
         avg = {c.replace(f"{model_name}_", ""): project_metrics_df[c].drop_nans().mean() for c in model_cols}
         avg_metrics.append({"model": model_name, **avg})
     report(pl.DataFrame(avg_metrics).with_columns(pl.col(pl.Float64).round(2)))
+
+    report("\n### Conditional probabilities\n")
+    report(f"P({model2} GROUP | {model1} GROUP)    = {p_group_given_group:.4f}\n")
+    report(f"P({model2} GROUP | {model1} SEPARATE) = {p_group_given_separate:.4f}\n")
+    report(f"P({model2} GROUP | {model1} GROUP, distance < 0.005) = {p_close:.4f}  (n={len(close_group)})")
+
+    report("\n### Thresholds\n")
+    report("```json\n" + json.dumps(thresholds, indent=2) + "\n```")
+
+    report("\n### Distance distribution\n")
+    report(df["distance"].describe())
+    report(f"\nGROUP rate: {(df['label'] == 'GROUP').mean():.2%}")
+
+    platform_stats = (
+        df.group_by("platform")
+        .agg(
+            pl.len().alias("n_pairs"),
+            pl.col("project_id").n_unique().alias("n_projects"),
+            (pl.col("label") == "GROUP").mean().round(2).alias("label_GROUP_rate"),
+        )
+        .sort("platform")
+        .with_columns((pl.col("n_pairs") / pl.col("n_pairs").sum()).round(2).alias("proportion"))
+    )
+    report("\n### Platform stats\n")
+    report(platform_stats)
 
     # Apply display names for charts
     display_names = display_names or {}
@@ -693,7 +727,7 @@ def compute_stacktrace_token_percentiles(df: pl.DataFrame) -> pl.DataFrame:
 
     result = pl.DataFrame(rows).with_columns(pl.col(pl.Float64).cast(pl.Int64))
 
-    report(f"\n=== Stacktrace Token Percentiles ({len(df)} pairs) ===")
+    report(f"\n### Stacktrace token percentiles ({len(df)} pairs)\n")
     report("(Using len(stacktrace) // 4 as token approximation)")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
         report(result)
@@ -730,7 +764,7 @@ def sweep_thresholds(
         rows.append({"threshold": thresh, **metrics})
 
     result = pl.DataFrame(rows).with_columns(pl.col(pl.Float64).round(2))
-    report(f"\n=== Threshold sweep for {model_name} ===")
+    report(f"\n### Threshold sweep for {model_name}\n")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
         report(result)
     return result
@@ -846,7 +880,7 @@ def sweep_thresholds_by_project(
                 }
             )
         by_platform = pl.DataFrame(rows_by_platform).sort("platform").with_columns(pl.col(pl.Float64).round(2))
-        report(f"\n=== Per-project precision_GROUP: platform-specific vs {baseline_key} by platform ===")
+        report(f"\n### Per-project precision_GROUP: platform-specific vs {baseline_key} by platform\n")
         with pl.Config(tbl_rows=-1, tbl_cols=-1):
             report(by_platform)
 
@@ -911,8 +945,8 @@ def metrics_by_platform(
 
     result = pl.DataFrame(rows).sort("platform").with_columns(pl.col(pl.Float64).round(3))
 
-    threshold_label = "platform-specific" if isinstance(threshold, dict) else str(threshold)
-    report(f"\n=== Metrics by platform, avg over projects ({model_name} @ {threshold_label}) ===")
+    threshold_label = "platform-specific" if isinstance(threshold, dict) else f"threshold={threshold}"
+    report(f"\n### Metrics by platform, avg over projects ({model_name}, {threshold_label})\n")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
         report(result)
 
@@ -1005,7 +1039,7 @@ def find_threshold_by_platform(
     result = pl.DataFrame(rows).sort("platform").with_columns(pl.col(pl.Float64).round(3))
 
     precision_label = "per-platform" if precision_by_platform else f"{min_precision:.0%}"
-    report(f"\n=== Min threshold for >= {precision_label} avg project precision_GROUP by platform ({model_name}) ===")
+    report(f"\n### Min threshold for >= {precision_label} avg project precision_GROUP by platform ({model_name})\n")
     with pl.Config(tbl_rows=-1, tbl_cols=-1):
         report(result)
 
@@ -1038,11 +1072,11 @@ def compare_metrics_by_stacktrace_length(
     long_df = df.filter(pl.col(token_col) >= p90)
 
     # Print metrics for each bucket
-    report(f"\n=== Short stacktraces ({token_col} <= p10 = {p10:.0f} tokens, {len(short_df)} pairs) ===")
+    report(f"\n### Short stacktraces ({token_col} <= p10 = {p10:.0f} tokens, {len(short_df)} pairs)\n")
     report(f"label GROUP rate: {(short_df['label'] == 'GROUP').mean():.2%}")
     report(_compute_metrics(short_df, model_names))
 
-    report(f"\n=== Long stacktraces ({token_col} >= p90 = {p90:.0f} tokens, {len(long_df)} pairs) ===")
+    report(f"\n### Long stacktraces ({token_col} >= p90 = {p90:.0f} tokens, {len(long_df)} pairs)\n")
     report(f"label GROUP rate: {(long_df['label'] == 'GROUP').mean():.2%}")
     report(_compute_metrics(long_df, model_names))
 
@@ -1243,6 +1277,40 @@ def main(
         name_model2: _load_thresholds(path2, threshold_model2),
     }
 
+    report(f"# {name_model1} (dim={label_dim1}) vs {name_model2} (dim={label_dim2}), dataset: {name_dataset}\n")
+    # Group --flag value pairs onto the same line
+    raw_args = sys.argv[1:]
+    cmd_parts = []
+    i = 0
+    while i < len(raw_args):
+        arg = shlex.quote(raw_args[i])
+        if raw_args[i].startswith("--") and i + 1 < len(raw_args) and not raw_args[i + 1].startswith("--"):
+            arg += " " + shlex.quote(raw_args[i + 1])
+            i += 2
+        else:
+            i += 1
+        cmd_parts.append(arg)
+    cmd = "python " + shlex.quote(sys.argv[0]) + " \\\n    " + " \\\n    ".join(cmd_parts)
+    report("Command to repro:\n\n```bash\n" + cmd + "\n```\n")
+
+    report(
+        "### Column definitions\n\n"
+        "- **model**: The name of the model being evaluated.\n"
+        "- **pred_GROUP_rate**: The fraction of pairs this model groups together"
+        "—lower means more separate issues are created."
+        " It's smaller than prod b/c the test dataset contains far more borderline cases;"
+        " it's missing pairs that are very close.\n"
+        "- **precision_GROUP**: When the model groups a pair, how often is it correct?"
+        " Higher = less over-grouping.\n"
+        "- **precision_SEPARATE**: When the model separates a pair, how often is it correct?\n"
+        "- **recall_GROUP**: Of all pairs that should be grouped,"
+        " what fraction does the model correctly group? Higher = less under-grouping.\n"
+        "- **recall_SEPARATE**: Of all pairs that should be separate,"
+        " what fraction does the model correctly separate?\n"
+    )
+
+    report("## Aggregate results\n")
+
     result = compare_models(
         df=df,
         thresholds=thresholds,
@@ -1251,13 +1319,10 @@ def main(
         min_group_rate_decrease=min_group_rate_decrease,
     )
 
-    # Per-platform metrics for each model
-    for name in [name_model1, name_model2]:
-        metrics_by_platform(df, name, thresholds[name])
+    # Metrics by stacktrace length
+    compare_metrics_by_stacktrace_length(result.df, result.model_names)
 
-    # Find minimum threshold per platform for each model
-    for name in [name_model1, name_model2]:
-        find_threshold_by_platform(df, name)
+    report("\n## Threshold sweep\n")
 
     # Threshold sweep for model2
     sweep_thresholds(df, name_model2)
@@ -1270,23 +1335,34 @@ def main(
         baseline_threshold=threshold_model1,
     )
 
-    # Metrics by stacktrace length
-    compare_metrics_by_stacktrace_length(result.df, result.model_names)
+    report("\n## Platform-level results\n")
 
-    # Plots
+    # Per-platform metrics for each model
+    for name in [name_model1, name_model2]:
+        metrics_by_platform(df, name, thresholds[name])
+
+    # Find minimum threshold per platform for each model
+    for name in [name_model1, name_model2]:
+        find_threshold_by_platform(df, name)
+
     fig = plot_metrics_by_platform(result.df, result.model_names)
     fig.savefig(dir_output / "metrics_by_platform.png", dpi=150, bbox_inches="tight")
     print(f"Saved {dir_output / 'metrics_by_platform.png'}")
+    report_plot("Metrics by platform", "metrics_by_platform.png")
+
+    for name in result.model_names:
+        fig = plot_similarity_distribution(result.df, name)
+        filename = f"similarity_distribution_{name}.png"
+        fig.savefig(dir_output / filename, dpi=150, bbox_inches="tight")
+        print(f"Saved {dir_output / filename}")
+        report_plot(f"Similarity distribution ({name})", filename)
+
+    report("\n## Project-level results\n")
 
     fig = plot_dumbbell_by_project(result.project_metrics, result.model_names)
     fig.savefig(dir_output / "dumbbell_by_project.png", dpi=150, bbox_inches="tight")
     print(f"Saved {dir_output / 'dumbbell_by_project.png'}")
-
-    for name in result.model_names:
-        fig = plot_similarity_distribution(result.df, name)
-        path_plot = dir_output / f"similarity_distribution_{name}.png"
-        fig.savefig(path_plot, dpi=150, bbox_inches="tight")
-        print(f"Saved {path_plot}")
+    report_plot("Dumbbell by project", "dumbbell_by_project.png")
 
     if result.projects:
         print_projects(
@@ -1313,8 +1389,16 @@ def main(
                 result.more_issues_projects,
                 description=f"{name_model1} vs {name_model2} — group rate decrease >= {min_group_rate_decrease:.0%}",
             )
+        report(
+            "\n- Sheets suffixed w/ `|new` contain pairs that the current, prod model groups together,"
+            " but the new model separates (creating new issues).\n"
+            "- Sheets suffixed w/ `|merged` contain pairs that prod separates,"
+            " but the new model would group together (merging issues).\n"
+            "- If you click the button in the top right corner of the table,"
+            " you'll see what the LLM thought about the pair and the model's similarity scores"
+        )
 
-    save_report(dir_output / "report.txt")
+    save_report(dir_output / "report.md")
     print(f"\nResults written to {dir_output}")
 
 
