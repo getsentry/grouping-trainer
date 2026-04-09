@@ -1399,7 +1399,7 @@ def main(
             " you'll see what the LLM thought about the pair and the model's similarity scores"
         )
 
-    save_report(dir_output / "report.md")
+    save_report(dir_output / "README.md")
     print(f"\nResults written to {dir_output}")
 
 
