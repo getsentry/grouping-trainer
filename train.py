@@ -38,12 +38,20 @@ def upload_run_metadata(run_gcs_dir: str, training_config: gt.train.TrainingConf
     logger.info(f"Uploaded run metadata (git: {git_commit}) to {run_gcs_dir}/metadata")
 
 
-def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
+def run(
+    base_model: str = "lightonai/modernbert-embed-large",
+    run_shortname: str | None = None,
+    mini_cpu_test: bool = False,
+):
     """
     Train a grouping model.
 
     Parameters
     ----------
+    base_model
+        HuggingFace model ID or local path for the base encoder.
+        Others we've tried: Alibaba-NLP/gte-modernbert-base, Qwen/Qwen3-Embedding-0.6B,
+        jinaai/jina-embeddings-v5-text-nano-text-matching.
     run_shortname
         Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp.
     mini_cpu_test
@@ -56,15 +64,8 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    model = gt.utils.encoder_from_base("lightonai/modernbert-embed-large")
-    # model = gt.utils.encoder_from_base("Qwen/Qwen3-Embedding-0.6B")
-    # model = gt.utils.encoder_from_base("Alibaba-NLP/gte-modernbert-base")
-    # model = gt.utils.SentenceTransformer(  # 239M params
-    #     "jinaai/jina-embeddings-v5-text-nano-text-matching",
-    #     trust_remote_code=True,
-    #     model_kwargs={"dtype": torch.bfloat16},
-    #     config_kwargs={"_attn_implementation": "sdpa"},
-    # )
+    use_prompt_prefix = False  # is this helpful or just annoying?
+    model = gt.utils.encoder_from_base(base_model, use_prompt_prefix=use_prompt_prefix)
 
     if mini_cpu_test:
         training_config = gt.train.TrainingConfig(
@@ -106,12 +107,13 @@ def run(run_shortname: str | None = None, mini_cpu_test: bool = False):
             group=trainer.args.run_name,
             settings=wandb.Settings(mode="shared", x_primary=True, x_label="train"),
         )
-        base_model = trainer.model.encoder.model_card_data.base_model
         eval_cmd = (
             f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} "
             f"--wandb_run_id {wandb.run.id} --wandb_project {training_config.wandb_project} "
             f"--loss_type {training_config.loss_type} --contrastive_margin {training_config.contrastive_margin}"
         )
+        if use_prompt_prefix:
+            eval_cmd += " --use_prompt_prefix"
         if mini_cpu_test:
             eval_cmd += " --sample_val 200 --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")

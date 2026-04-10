@@ -4,10 +4,23 @@ import torch.nn.functional as F
 import grouping_trainer as gt
 
 model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
-base_model = "lightonai/modernbert-embed-large"
+# mkdir v3
+# gcloud storage cp -r gs://grouping-data/runs/2026-04-07-11-56-28-large-con/inference/* v3
+base_model = "v3"
+prompt_prefix = "clustering: "
 
-encoder = gt.utils.SentenceTransformer(base_model, model_kwargs=model_kwargs)
-encoder_compiled = gt.compiled.SentenceTransformer(base_model, model_kwargs=model_kwargs)
+encoder = gt.utils.SentenceTransformer(
+    base_model,
+    trust_remote_code=True,
+    model_kwargs=model_kwargs,
+    prompt_prefix=prompt_prefix,
+)
+encoder_compiled = gt.compiled.SentenceTransformer(
+    base_model,
+    trust_remote_code=True,
+    model_kwargs=model_kwargs,
+    prompt_prefix=prompt_prefix,
+)
 
 for n, p in encoder.named_parameters():
     p_danger = encoder_compiled.get_parameter(n)
@@ -22,8 +35,8 @@ if not torch.allclose(x, x_danger):
     print("-" * 100)
     print(x_danger[:20])
 
-e = encoder.tokenize(test_string)
-e_danger = encoder_compiled.tokenize(test_string)
+e = encoder.tokenize([test_string])
+e_danger = encoder_compiled.tokenize([test_string])
 
 assert torch.all(e_danger["input_ids"][:, :3] == e["input_ids"])
 assert torch.all(e_danger["attention_mask"][:, :3] == e["attention_mask"])

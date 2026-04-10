@@ -7,7 +7,6 @@ For example to evaluate the baseline/prod model:
 
 python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/issue_grouping_v1 \
-    --base_model "jinaai/jina-embeddings-v2-base-code" \
     --does_not_support_sdpa \
     --truncate_dims 64 128 256 512 768
 
@@ -15,12 +14,11 @@ To evaluate the finetuned model:
 
 python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/2026-04-07-11-56-28-large-con \
-    --base_model "lightonai/modernbert-embed-large" \
+    --prompt_prefix "clustering: " \
     --truncate_dims 64 128 256 512 768
 
 python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
-    --base_model "Alibaba-NLP/gte-modernbert-base" \
     --truncate_dims 64 128 256 512 768
 """
 
@@ -101,7 +99,7 @@ def _check_no_train_test_overlap(run_gcs_dir: str, df_test: pl.DataFrame) -> Non
 
 def main(
     run_gcs_dir: str,
-    base_model: str,
+    prompt_prefix: str = "",
     df_path: str = "final_csvs/test_full2.csv",
     truncate_dims: tuple[int, ...] | None = None,
     batch_size: int = 2,
@@ -115,9 +113,9 @@ def main(
     Parameters
     ----------
     run_gcs_dir
-        GCS path to the training run directory, e.g. gs://grouping-data/runs/my-run
-    base_model
-        Base model name to set on the model card, e.g. "Qwen/Qwen3-Embedding-0.6B"
+        GCS path to the training run directory, e.g., gs://grouping-data/runs/my-run
+    prompt_prefix
+        String to prepend to every text before tokenization, e.g., for lightonai/modernbert-embed-large "clustering: "
     df_path
         Path to the validation/test CSV file.
     truncate_dims
@@ -166,8 +164,8 @@ def main(
             dir_tmp,
             trust_remote_code=True,
             model_kwargs=model_kwargs,
+            prompt_prefix=prompt_prefix,
         )
-        model.model_card_data.base_model = base_model  # TODO: automate. Is the custom Trainer missing the callback?
         logger.info(f"{st_class.__name__} loaded in {time.monotonic() - start:.1f}s")
         _ = model.encode("warm up")
         logger.info(f"{st_class.__name__} warm up done in {time.monotonic() - start:.1f}s")

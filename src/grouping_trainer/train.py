@@ -583,9 +583,6 @@ def init_bias(frac_positive: float) -> float:
 
 
 def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingConfig) -> Trainer:
-    if model.model_card_data.base_model is None:
-        raise ValueError("Base model is not set in the model card. Please set it in the model card data.")
-
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_name = f"{timestamp}-{training_config.run_shortname}"
 

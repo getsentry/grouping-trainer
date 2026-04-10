@@ -58,7 +58,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             if target_length > self.max_seq_length:
                 continue
 
-            num_words_to_hit_target_length = target_length - self.tokenizer.num_special_tokens_to_add(pair=False)
+            num_prefix_tokens = len(self.tokenizer.tokenize(self.prompt_prefix)) if self.prompt_prefix else 0
+            num_words_to_hit_target_length = target_length - self.tokenizer.num_special_tokens_to_add(pair=False) - num_prefix_tokens
             # For BERT: [CLS]...[SEP]
             text = "a " * num_words_to_hit_target_length
 

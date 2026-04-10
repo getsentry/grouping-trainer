@@ -239,6 +239,7 @@ def main(
     use_simple_precisions: bool = False,
     loss_type: Literal["sigmoid", "contrastive"] = "contrastive",
     contrastive_margin: float = 0.5,
+    use_prompt_prefix: bool = False,
 ):
     """
     Poll GCS for new training checkpoints and evaluate each one.
@@ -266,6 +267,8 @@ def main(
         Which loss function was used for training. Must match so checkpoint weights load correctly.
     contrastive_margin
         Margin for contrastive loss. Only used when loss_type is "contrastive".
+    use_prompt_prefix
+        If True, add the prompt prefix to the input text.
     """
     run_name = run_gcs_dir.rstrip("/").rsplit("/", 1)[-1]
     gt.logging.configure_logging(
@@ -284,7 +287,7 @@ def main(
 
     try:
         evaluator = make_evaluator(sample_val, truncate_dims, use_simple_precisions=use_simple_precisions)
-        encoder = gt.utils.encoder_from_base(base_model)
+        encoder = gt.utils.encoder_from_base(base_model, use_prompt_prefix=use_prompt_prefix)
         evaluate_baseline(run_gcs_dir, encoder, evaluator, loss_type=loss_type, contrastive_margin=contrastive_margin)
         poll(
             run_gcs_dir,
