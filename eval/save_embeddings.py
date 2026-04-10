@@ -96,6 +96,7 @@ def _check_no_train_test_overlap(run_gcs_dir: str, df_test: pl.DataFrame) -> Non
     paths_train = tuple(config["training_csvs"])
     logger.info(f"Loading training data from {paths_train} to check for overlap w/ test data.")
     df_train = gt.data.load_train_df(paths=paths_train)
+    logger.info(f"Training data shape: {df_train.shape}")
     _check_no_overlap(df_train, df_test)
 
 
