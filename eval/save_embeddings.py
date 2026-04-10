@@ -172,8 +172,11 @@ def main(
             prompt_prefix=prompt_prefix,
         )
         logger.info(f"{st_class.__name__} loaded in {time.monotonic() - start:.1f}s")
-        _ = model.encode("warm up")
-        logger.info(f"{st_class.__name__} warm up done in {time.monotonic() - start:.1f}s")
+        if use_compiled:
+            model.warm_up_and_compile()
+        else:
+            _ = model.encode("warm up")
+        logger.info(f"{st_class.__name__} loading and warming up done in {time.monotonic() - start:.1f}s")
 
         logger.info("Encoding queries")
         texts_query = df["query_stacktrace_string"].to_list()
