@@ -4,11 +4,10 @@ import torch.nn.functional as F
 import grouping_trainer as gt
 
 model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
-base_model = "Alibaba-NLP/gte-modernbert-base"
+base_model = "lightonai/modernbert-embed-large"
 
 encoder = gt.utils.SentenceTransformer(base_model, model_kwargs=model_kwargs)
-encoder_danger = gt.danger.SentenceTransformer(base_model, model_kwargs=model_kwargs)
-encoder_danger.warmup_and_compile()
+encoder_danger = gt.compiled.SentenceTransformer(base_model, model_kwargs=model_kwargs)
 
 for n, p in encoder.named_parameters():
     p_danger = encoder_danger.get_parameter(n)

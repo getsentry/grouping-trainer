@@ -544,7 +544,7 @@ class TrainingConfig(BaseModel):
     gradient_accumulation_steps: int = 1
     training_csvs: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS
     sample_size_train: int | None = None  # downsample for CPU sanity check runs
-    log_of_scale_init: float = math.log(5)
+    log_of_scale_init: float = math.log(10)
     learning_rate: float = 1e-4  # effective batch size should be large b/c more deduplication and more project mixing
     learning_rate_mapping: dict[str, float] = {
         r"^loss\.log_scale$": 2e-4,
@@ -558,8 +558,8 @@ class TrainingConfig(BaseModel):
         "unmatched": 1.0,
         "matched": 1.0,
         "synthetic-hard-negative-llm": 2.0,
-    }  # TODO: typed
-    shuffle_within_dataset: bool = False  # False for more cache hits in each forward
+    }  # TODO: Literal. source values aren't documented anywhere yet.
+    shuffle_within_dataset: bool = False  # more cache hits in each forward. 2-3x speedup w/o increasing gradient var
 
     # Loss
     loss_type: Literal["sigmoid", "contrastive"] = "contrastive"

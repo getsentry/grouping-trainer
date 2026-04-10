@@ -13,15 +13,15 @@ logger = logging.getLogger(__name__)
 
 class SentenceTransformer(gt.utils.SentenceTransformer):
     """
-    Python is too slow for this small model and batch size 1. So compile.
+    Python is too slow for this small model and batch size 1. Rm its overhead by compiling.
     Cost: warming up can take 120 seconds for our data.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._buckets = (64, 128, 256, 512, 1024, 2048)
-        # The vast majority of stacktraces are in this range.
+        self._buckets = (64, 128, 256, 512, 1024, 2048)  # vast majority of stacktraces are in this range
         self._compiled_forward: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None
+        self._compile()
 
     def tokenize(self, texts: list[str], **kwargs) -> dict[str, torch.Tensor]:
         """
@@ -37,7 +37,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         if target_len > current_len:
             num_padding_tokens = target_len - current_len
-            assert self.tokenizer.pad_token_id is not None, "Must be able to pad"
+            assert self.tokenizer.pad_token_id is not None, "Must be able to pad to use pre-compiled forward"
             pad_val = self.tokenizer.pad_token_id
 
             if extra_keys := (set(encodings.keys()) - {"input_ids", "attention_mask", "token_type_ids"}):
@@ -50,7 +50,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         return encodings
 
-    def warmup_and_compile(self):
+    def _compile(self):
         self._compiled_forward = torch.compile(super().forward, mode="reduce-overhead", dynamic=False)
         self.eval()
 
@@ -58,9 +58,9 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             if target_length > self.max_seq_length:
                 continue
 
-            num_words = target_length - self.tokenizer.num_special_tokens_to_add(pair=False)
+            num_words_to_hit_target_length = target_length - self.tokenizer.num_special_tokens_to_add(pair=False)
             # For BERT: [CLS]...[SEP]
-            text = "a " * num_words
+            text = "a " * num_words_to_hit_target_length
 
             # Check correctness here to avoid silent performance regressions.
             # There are other approaches like creating the encoding ourselves, padding to the target length, and calling
@@ -80,6 +80,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         for one that doesn't hit the bucket, we create a new CUDA graph for every unique sequence length above
         2048, which thrashes the cache.
         """
+        if self.training:
+            raise ValueError("This likely doesn't work for training.")
         seq_length = input["input_ids"].shape[1]
         if seq_length in self._buckets:
             return self._compiled_forward(input, **kwargs)

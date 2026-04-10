@@ -1,6 +1,8 @@
 """
 Download a model from GCS, encode test data, save embeddings and similarities, and upload results to GCS.
 
+After running this script for some `run_gcs_dir`, you can use it as a gcs_model1/gcs_model2 in eval/compare.py
+
 For example to evaluate the baseline/prod model:
 
 python eval/save_embeddings.py \
@@ -48,7 +50,8 @@ def _check_no_overlap(df_train: pl.DataFrame, df_test: pl.DataFrame) -> None:
     projects_test = set(df_test["project_id"].unique().to_list())
     projects_overlap = projects_train & projects_test
     assert not projects_overlap, (
-        f"Train/test project overlap: {len(projects_overlap)} projects in common: {sorted(projects_overlap)[:10]}"
+        f"Train/test project overlap: {len(projects_overlap)} projects in common. "
+        f"Showing first 10 project IDs: {sorted(projects_overlap)[:10]}"
     )
 
     # There should be almost no pair overlap
@@ -63,7 +66,7 @@ def _check_no_overlap(df_train: pl.DataFrame, df_test: pl.DataFrame) -> None:
     # When making this data I didn't dedupe pairs across train/test. There happens to be a tiny amount of overlap for a
     # handful of short iOS and Java stacktraces. Maybe this is b/c of projects migrating or generic stacktraces.
     #
-    # 37 / 235298 = 0.00016 overlap b/t DEFAULT_TRAIN_PATHS and test_full2.csv
+    # 37 / 235_298 = 0.00016 overlap b/t DEFAULT_TRAIN_PATHS and test_full2.csv
     assert fraction_overlap < 0.0005, f"Train/test pair overlap weirdly high: {fraction_overlap:.2%}"
 
     logger.info(
@@ -104,32 +107,43 @@ def main(
     batch_size: int = 2,
     sample_size: int | None = None,
     does_not_support_sdpa: bool = False,
+    use_compiled: bool = False,
 ):
     """
-    Download a model from GCS, encode val+test pairs, and save embeddings + cosine similarities.
+    Download a model from GCS, encode df_path texts, and save embeddings + cosine similarities.
 
     Parameters
     ----------
     run_gcs_dir
-        GCS path to the training run directory (e.g. gs://grouping-data/runs/my-run).
+        GCS path to the training run directory, e.g. gs://grouping-data/runs/my-run
     base_model
         Base model name to set on the model card, e.g. "Qwen/Qwen3-Embedding-0.6B"
     df_path
         Path to the validation/test CSV file.
     truncate_dims
         Grid of dimensions to truncate embeddings to. A cos_sim_{dim} column is added for each.
-        None computes a single cos_sim column using the full dimensionality.
+        None (default) computes a single cos_sim column using the full dimensionality.
     sample_size
-        Number of rows to sample. None uses the full dataset.
+        Number of rows to sample. None (default) uses the full dataset.
     does_not_support_sdpa
         If True, skip bfloat16 and SDPA attention for models that don't support it.
+    use_compiled
+        If True, compiles the model.
     """
     gt.logging.configure_logging(process_type="save_embeddings")
+
+    if use_compiled and batch_size != 1:
+        logger.warning(
+            "use_compiled is currently only supported with batch_size=1, b/c that's what we use in prod. "
+            "Re-setting batch_size=1."
+        )
+        batch_size = 1
 
     run_gcs_dir = run_gcs_dir.rstrip("/")
     path_gcs_inference = f"{run_gcs_dir}/inference"
     name_dataset = os.path.splitext(os.path.basename(df_path))[0]
-    dir_gcs_output = f"{run_gcs_dir}/similarities/{name_dataset}"
+    suffix = "_compiled" if use_compiled else ""
+    dir_gcs_output = f"{run_gcs_dir}/similarities{suffix}/{name_dataset}"
 
     df = gt.data.load_val_df(paths=(df_path,), sample_size=sample_size)
     logger.info(f"df shape: {df.shape}")
@@ -146,23 +160,23 @@ def main(
 
         logger.info("Loading model...")
         start = time.monotonic()
-        model = gt.utils.SentenceTransformer(
+
+        st_class = gt.compiled.SentenceTransformer if use_compiled else gt.utils.SentenceTransformer
+        model = st_class(
             dir_tmp,
             trust_remote_code=True,
             model_kwargs=model_kwargs,
         )
-        model.model_card_data.base_model = base_model
-        logger.info(f"Model loaded in {time.monotonic() - start:.1f}s")
-
+        model.model_card_data.base_model = base_model  # TODO: automate. Is the custom Trainer missing the callback?
+        logger.info(f"{st_class.__name__} loaded in {time.monotonic() - start:.1f}s")
         _ = model.encode("warm up")
-        logger.info(f"Warm up done in {time.monotonic() - start:.1f}s")
+        logger.info(f"{st_class.__name__} warm up done in {time.monotonic() - start:.1f}s")
 
         logger.info("Encoding queries")
         texts_query = df["query_stacktrace_string"].to_list()
         embeddings_query: np.ndarray = model.encode(
             texts_query, batch_size=batch_size, convert_to_numpy=True, show_progress_bar=True
         )
-
         logger.info("Encoding candidates")
         texts_candidate = df["candidate_stacktrace_string"].to_list()
         embeddings_candidate: np.ndarray = model.encode(

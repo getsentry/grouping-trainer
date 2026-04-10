@@ -2,6 +2,8 @@
 Head-to-head comparison b/t 2 models on held out data. Writes a markdown report and optionally uploads the most impacted
 projects to Google Sheets.
 
+Assumes you've run save_embeddings.py for both models.
+
 Example usage:
 
 python eval/compare.py \

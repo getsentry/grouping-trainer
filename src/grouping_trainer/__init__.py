@@ -7,7 +7,7 @@ __version__ = "0.1.0"
 from . import logging
 from . import sentinels
 from . import utils
-from . import danger
+from . import compiled
 from . import data
 from . import loss
 from . import train
@@ -18,7 +18,7 @@ __all__ = [
     "logging",
     "sentinels",
     "utils",
-    "danger",
+    "compiled",
     "data",
     "loss",
     "train",
