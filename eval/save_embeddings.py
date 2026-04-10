@@ -97,8 +97,7 @@ def _check_no_train_test_overlap(run_gcs_dir: str, df_test: pl.DataFrame) -> Non
     cols_needed = ["project_id", *_COLUMNS_PAIR]
     logger.info(f"Loading training data columns {cols_needed} from {paths_train} to check for overlap w/ test data.")
     df_train = pl.concat(
-        [pl.read_csv(path, columns=cols_needed) for path in paths_train],
-        how="vertical_relaxed",
+        [pl.read_csv(path, columns=cols_needed).select(cols_needed) for path in paths_train],
     )
     _check_no_overlap(df_train, df_test)
 
@@ -150,7 +149,7 @@ def main(
     dir_gcs_output = f"{run_gcs_dir}/similarities{suffix}/{name_dataset}"
 
     df = gt.data.load_val_df(paths=(df_path,), sample_size=sample_size)
-    logger.info(f"df shape: {df.shape}")
+    logger.info(f"Test df shape: {df.shape}")
 
     _check_no_train_test_overlap(run_gcs_dir, df)
 
