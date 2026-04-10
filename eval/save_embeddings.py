@@ -15,7 +15,8 @@ To evaluate the finetuned model:
 python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/2026-04-07-11-56-28-large-con \
     --prompt_prefix "clustering: " \
-    --truncate_dims 64 128 256 512 768
+    --truncate_dims 64 128 256 512 768 \
+    --use_compiled
 
 python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
@@ -52,15 +53,16 @@ def _check_no_overlap(df_train: pl.DataFrame, df_test: pl.DataFrame) -> None:
         f"Showing first 10 project IDs: {sorted(projects_overlap)[:10]}"
     )
 
-    # There should be almost no pair overlap
-    cols_canonical = [  # canonicalize order since grouping is symmetric
-        pl.min_horizontal(_COLUMNS_PAIR).alias("_pair_first"),
-        pl.max_horizontal(_COLUMNS_PAIR).alias("_pair_second"),
-    ]
-    pairs_train = set(df_train.select(cols_canonical).iter_rows())
-    pairs_test = set(df_test.select(cols_canonical).iter_rows())
-    pairs_overlap = pairs_train & pairs_test
-    fraction_overlap = len(pairs_overlap) / len(pairs_test)
+    # There should be almost no pair overlap. Hash pairs to avoid materializing full stacktrace strings
+    hash_expr = pl.concat_str(
+        pl.min_horizontal(_COLUMNS_PAIR),  # canonicalize order since grouping is symmetric
+        pl.max_horizontal(_COLUMNS_PAIR),
+        separator="\x00",
+    ).hash()
+    hashes_train = set(df_train.select(hash_expr).to_series().to_list())
+    hashes_test = df_test.select(hash_expr).to_series()
+    n_overlap = hashes_test.is_in(hashes_train).sum()
+    fraction_overlap = n_overlap / len(hashes_test)
     # When making this data I didn't dedupe pairs across train/test. There happens to be a tiny amount of overlap for a
     # handful of short iOS and Java stacktraces. Maybe this is b/c of projects migrating or generic stacktraces.
     #
@@ -69,7 +71,7 @@ def _check_no_overlap(df_train: pl.DataFrame, df_test: pl.DataFrame) -> None:
 
     logger.info(
         f"No overlap: {len(projects_train)} train projects, {len(projects_test)} test projects, "
-        f"{len(pairs_train)} train pairs, {len(pairs_test)} test pairs"
+        f"{len(hashes_train)} train pairs, {len(hashes_test)} test pairs"
     )
 
 
@@ -92,7 +94,7 @@ def _check_no_train_test_overlap(run_gcs_dir: str, df_test: pl.DataFrame) -> Non
             config = json.load(f)
 
     paths_train = tuple(config["training_csvs"])
-    logger.info(f"Loading training data from {paths_train} to check for overlap...")
+    logger.info(f"Loading training data from {paths_train} to check for overlap w/ test data.")
     df_train = gt.data.load_train_df(paths=paths_train)
     _check_no_overlap(df_train, df_test)
 
