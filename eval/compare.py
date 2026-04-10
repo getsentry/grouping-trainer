@@ -1171,12 +1171,9 @@ def _sync_gcs(gcs_dir: str) -> Path:
     to ``eval/similarities/issue_grouping_v1/test_full/``.
     """
     gcs_dir = gcs_dir.rstrip("/")
-    # Expected structure: gs://bucket/runs/{run_name}/similarities{_compiled}/{dataset}
+    # Expected structure: gs://bucket/runs/{run_name}/similarities/{dataset}
     parts = gcs_dir.split("/")
-    try:
-        idx_similarities = parts.index("similarities")
-    except ValueError:
-        idx_similarities = parts.index("similarities_compiled")
+    idx_similarities = parts.index("similarities")
     name_run = parts[idx_similarities - 1]
     name_dataset = parts[idx_similarities + 1]
     dir_local = Path("eval/similarities") / name_run / name_dataset

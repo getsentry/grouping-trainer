@@ -145,8 +145,7 @@ def main(
     run_gcs_dir = run_gcs_dir.rstrip("/")
     path_gcs_inference = f"{run_gcs_dir}/inference"
     name_dataset = os.path.splitext(os.path.basename(df_path))[0]
-    suffix = "_compiled" if use_compiled else ""
-    dir_gcs_output = f"{run_gcs_dir}/similarities{suffix}/{name_dataset}"
+    dir_gcs_output = f"{run_gcs_dir}/similarities/{name_dataset}"
 
     df = gt.data.load_val_df(paths=(df_path,), sample_size=sample_size)
     logger.info(f"Test df shape: {df.shape}")
