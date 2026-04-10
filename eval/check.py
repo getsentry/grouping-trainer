@@ -7,15 +7,15 @@ model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
 base_model = "lightonai/modernbert-embed-large"
 
 encoder = gt.utils.SentenceTransformer(base_model, model_kwargs=model_kwargs)
-encoder_danger = gt.compiled.SentenceTransformer(base_model, model_kwargs=model_kwargs)
+encoder_compiled = gt.compiled.SentenceTransformer(base_model, model_kwargs=model_kwargs)
 
 for n, p in encoder.named_parameters():
-    p_danger = encoder_danger.get_parameter(n)
+    p_danger = encoder_compiled.get_parameter(n)
     assert torch.allclose(p, p_danger)
 
 test_string = "test string here"
 x = encoder.encode(test_string, convert_to_numpy=False, convert_to_tensor=True)
-x_danger = encoder_danger.encode(test_string, convert_to_numpy=False, convert_to_tensor=True)
+x_danger = encoder_compiled.encode(test_string, convert_to_numpy=False, convert_to_tensor=True)
 if not torch.allclose(x, x_danger):
     print("x_danger is different")
     print(x[:20])
@@ -23,7 +23,7 @@ if not torch.allclose(x, x_danger):
     print(x_danger[:20])
 
 e = encoder.tokenize(test_string)
-e_danger = encoder_danger.tokenize(test_string)
+e_danger = encoder_compiled.tokenize(test_string)
 
 assert torch.all(e_danger["input_ids"][:, :3] == e["input_ids"])
 assert torch.all(e_danger["attention_mask"][:, :3] == e["attention_mask"])

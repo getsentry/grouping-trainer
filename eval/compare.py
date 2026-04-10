@@ -291,6 +291,18 @@ def _compute_metrics_for_model(df: pl.DataFrame, model_name: str) -> dict:
     }
 
 
+def _compute_metrics_avg_over_projects(df: pl.DataFrame, model_name: str) -> dict:
+    """Compute metrics averaged over projects so large projects don't dominate."""
+    metrics_per_project = []
+    for _, df_project in df.group_by("project_id"):
+        metrics_per_project.append(_compute_metrics_for_model(df_project, model_name))
+    avg_metrics = {}
+    for key in metrics_per_project[0]:
+        values_valid = [m[key] for m in metrics_per_project if m[key] == m[key]]
+        avg_metrics[key] = sum(values_valid) / len(values_valid) if values_valid else float("nan")
+    return avg_metrics
+
+
 def _compute_metrics(df: pl.DataFrame, model_names: list[str]) -> pl.DataFrame:
     """Compute metrics for each model on the given dataframe."""
     metrics_rows = []
@@ -924,15 +936,7 @@ def metrics_by_platform(
 
     rows = []
     for (platform,), platform_df in df_t.group_by("platform"):
-        # Average metrics over projects to avoid large projects dominating
-        project_metrics_list = []
-        for _, proj_df in platform_df.group_by("project_id"):
-            project_metrics_list.append(_compute_metrics_for_model(proj_df, model_name))
-        avg_metrics = {
-            k: sum(m[k] for m in project_metrics_list if m[k] == m[k])
-            / sum(1 for m in project_metrics_list if m[k] == m[k])
-            for k in project_metrics_list[0]
-        }
+        avg_metrics = _compute_metrics_avg_over_projects(platform_df, model_name)
         platform_threshold = threshold.get(platform, threshold["default"]) if isinstance(threshold, dict) else threshold
         rows.append(
             {
@@ -1008,7 +1012,7 @@ def find_threshold_by_platform(
                 continue
             precision = sum(project_precisions) / len(project_precisions)
             if precision >= target_precision:
-                metrics = _compute_metrics_for_model(df_t, model_name)
+                avg_metrics = _compute_metrics_avg_over_projects(df_t, model_name)
                 threshold_found = thresh
                 rows.append(
                     {
@@ -1017,7 +1021,7 @@ def find_threshold_by_platform(
                         "n_projects": n_projects,
                         "label_GROUP_rate": label_group_rate,
                         "min_threshold": thresh,
-                        **metrics,
+                        **avg_metrics,
                     }
                 )
                 break
