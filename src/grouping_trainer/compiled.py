@@ -62,16 +62,15 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         self._compiled_forward = torch.compile(super().forward, mode="reduce-overhead", dynamic=False)
         self.eval()
 
-        for target_length in self._buckets:
-            if target_length > self.max_seq_length:
+        for target_num_tokens in self._buckets:
+            if target_num_tokens > self.max_seq_length:
                 continue
 
-            num_prefix_tokens = len(self.tokenizer.tokenize(self.prompt_prefix)) if self.prompt_prefix else 0
-            num_words_to_hit_target_length = (
-                target_length - self.tokenizer.num_special_tokens_to_add(pair=False) - num_prefix_tokens
-            )
-            # For BERT: [CLS]...[SEP]
-            text = "a " * num_words_to_hit_target_length
+            num_words = target_num_tokens  # overestimate
+            text = "a " * num_words
+            num_tokens = super().tokenize([text])["input_ids"].shape[1]
+            num_words -= num_tokens - target_num_tokens
+            text = "a " * num_words
             texts = [text] * self._compiled_batch_size
 
             # Check correctness here to avoid silent performance regressions.
@@ -80,10 +79,10 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             # differences in how .encode works. I prefer going through .encode and being loud about missing the target.
             # To debug that other approach, can check which guards fail using TORCH_LOGS="recompiles" in a non-prod
             # env.
-            if super().tokenize(texts)["input_ids"].shape[1] != target_length:
-                raise ValueError(f"Tokenization failed for {target_length=}")
+            if super().tokenize(texts)["input_ids"].shape[1] != target_num_tokens:
+                raise ValueError(f"Tokenization failed for {target_num_tokens=}")
 
-            logger.info(f"Warming up for {target_length=}")
+            logger.info(f"Warming up for {target_num_tokens=}")
 
             for _ in range(4):
                 # Why repeat 4 times? See these docs:
