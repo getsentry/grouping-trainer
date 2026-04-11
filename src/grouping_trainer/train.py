@@ -395,6 +395,8 @@ class Trainer(SentenceTransformerTrainer):
             )
         )
         num_sub_batches = len(sub_batches)
+        rank = self.accelerator.process_index
+        logger.info(f"[rank {rank}] num_sub_batches={num_sub_batches}")
 
         # Each GPU can have a different number of sub-batches. Need all to call backward() the same number of times with
         # the same no_sync pattern, otherwise DDP deadlocks.
@@ -405,6 +407,8 @@ class Trainer(SentenceTransformerTrainer):
         else:
             max_sub_batches = num_sub_batches
 
+        logger.info(f"[rank {rank}] max_sub_batches={max_sub_batches}")
+
         # Nesting another no_sync would break FSDP2. Its no_sync unconditionally re-enables sync on exit
         should_no_sync = self.accelerator.sync_gradients
         losses = []
@@ -412,6 +416,10 @@ class Trainer(SentenceTransformerTrainer):
         for sub_batch_idx in range(max_sub_batches):
             is_last = sub_batch_idx == max_sub_batches - 1
             no_sync = should_no_sync and not is_last
+
+            logger.info(
+                f"[rank {rank}] sub_batch {sub_batch_idx}/{max_sub_batches}, no_sync={no_sync}, is_dummy={sub_batch_idx >= num_sub_batches}"
+            )
 
             if sub_batch_idx < num_sub_batches:
                 loss = _backward_on_sub_batch(sub_batches[sub_batch_idx], no_sync=no_sync)
@@ -422,6 +430,8 @@ class Trainer(SentenceTransformerTrainer):
                 sync_ctx = self.accelerator.no_sync(model) if no_sync else nullcontext()
                 with sync_ctx:
                     self.accelerator.backward(dummy_loss)
+
+            logger.info(f"[rank {rank}] sub_batch {sub_batch_idx} done")
 
         return sum(losses)  # we already re-scaled each loss
 
