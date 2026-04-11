@@ -9,6 +9,9 @@ import subprocess
 import warnings
 import tempfile
 
+os.environ["NCCL_NET_PLUGIN"] = "none"
+os.environ["NCCL_DEBUG"] = "WARN"
+
 import torch
 import wandb
 from tap import tapify
