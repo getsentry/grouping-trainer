@@ -181,7 +181,7 @@ def batch_pairs_by_token_budget(
 
 
 class ModelForTraining(torch.nn.Module):
-    def __init__(self, encoder: gt.utils.SentenceTransformer, loss: torch.nn.Module):
+    def __init__(self, encoder: gt.utils.SentenceTransformer, loss: gt.loss.PairwiseLoss):
         super().__init__()
         self.encoder = encoder
         # TODO: torch.compile(encoder[0].auto_model, dynamic=True) b/c variable batch sizes when calling the model, and
@@ -566,8 +566,7 @@ class TrainingConfig(BaseModel):
     contrastive_margin: float = 0.5  # idk, need to tune
 
     # MRL
-    matryoshka_dims: tuple[int, ...] = (768, 512, 256, 128, 64)
-    matryoshka_weights: tuple[float, ...] = (2.0, 1.0, 1.0, 0.5, 0.25)
+    mrl_dim_to_weight: dict[int, float] = {768: 2.0, 512: 1.0, 256: 1.0, 128: 0.5, 64: 0.25}
     n_dims_per_step: int = 2
 
     # Logging
@@ -616,8 +615,7 @@ def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingC
         "Batch transformations like batch norm mess up deduplication"
     )
     kwargs_mrl = dict(
-        matryoshka_dims=list(training_config.matryoshka_dims),
-        matryoshka_weights=list(training_config.matryoshka_weights),
+        mrl_dim_to_weight=training_config.mrl_dim_to_weight,
         n_dims_per_step=training_config.n_dims_per_step,
     )
     if training_config.loss_type == "sigmoid":

@@ -58,7 +58,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         return encodings
 
-    def warm_up_and_compile(self):
+    def compile_and_warm_up(self):
         self._compiled_forward = torch.compile(super().forward, mode="reduce-overhead", dynamic=False)
         self.eval()
 

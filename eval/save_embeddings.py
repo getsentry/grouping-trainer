@@ -172,7 +172,7 @@ def main(
         )
         logger.info(f"{st_class.__name__} loaded in {time.monotonic() - start:.1f}s")
         if use_compiled:
-            model.warm_up_and_compile()
+            model.compile_and_warm_up()
         else:
             _ = model.encode("warm up")
         logger.info(f"{st_class.__name__} loading and warming up done in {time.monotonic() - start:.1f}s")

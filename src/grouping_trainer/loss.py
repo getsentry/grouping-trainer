@@ -1,41 +1,97 @@
 """
 Pairwise losses.
 
-TODO: factor out MRL.
+In-batch negatives are not used b/c that would result in lots of false negatives for our dataset. Across pairs and w/in
+a project, there are plenty of similar stacktraces. Could change the sampler to pick a platform and sample a single
+pair across many projects, but then there wouldn't be cache hits. And these negatives would likely be too easy b/c
+they're cross-project. The module synthetic.py mines synthetic negatives w/in each project offline.
 """
 
+from abc import ABC, abstractmethod
+from typing import Protocol
 from sentence_transformers.util import pairwise_cos_sim
 import torch
 
 import grouping_trainer as gt
 
 
-class ContrastiveLoss(torch.nn.Module):
+class _ComputeLossFromEmbeddings(Protocol):
+    def __call__(self, all_embeddings: tuple[torch.Tensor, ...], *args, **kwargs) -> torch.Tensor: ...
+
+
+def _mrl_loss(
+    mrl_dim_to_weight: dict[int, float],
+    n_dims_per_step: int,
+    compute_loss_from_embeddings: _ComputeLossFromEmbeddings,
+    all_embeddings: tuple[torch.Tensor, ...],
+    *args,
+    **kwargs,
+) -> torch.Tensor:
+    embedding_dim = all_embeddings[0].shape[-1]
+    device = all_embeddings[0].device
+    if any(mrl_dim > embedding_dim for mrl_dim in mrl_dim_to_weight.keys()):
+        raise ValueError(f"mrl_dim_to_weight cannot exceed embedding dim {embedding_dim}: {mrl_dim_to_weight}")
+
+    mrl_dims = list(mrl_dim_to_weight.keys())
+    dim_indices = list(range(len(mrl_dims)))
+    if n_dims_per_step > 0 and n_dims_per_step < len(dim_indices):
+        dim_indices = torch.randperm(len(mrl_dims), device=device)[:n_dims_per_step].tolist()
+
+    loss_total = torch.zeros((), device=device)
+    for idx in dim_indices:
+        dim = mrl_dims[idx]
+        embeddings_for_dim = tuple(embedding[..., :dim] for embedding in all_embeddings)
+        loss_for_dim = compute_loss_from_embeddings(embeddings_for_dim, *args, **kwargs)
+        loss_total += mrl_dim_to_weight[dim] * loss_for_dim
+        # Appends a computation graph, but that's fine since our models don't have super high embedding dimensions.
+        # Can address by:
+        # 1. Detach embeddings from graph
+        # 2. Loop over dims, compute loss, backward in loop
+        # 3. Backprop detached embeddings' gradients to model
+    return loss_total / len(dim_indices)
+
+
+class PairwiseLoss(torch.nn.Module, ABC):
+    @abstractmethod
+    def compute_loss_from_similarities(
+        self,
+        similarities: torch.Tensor,
+        labels: torch.Tensor,
+        *,
+        sample_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor: ...
+
+    @abstractmethod
+    def compute_loss(
+        self,
+        all_embeddings: tuple[torch.Tensor, torch.Tensor],
+        labels: torch.Tensor,
+        *,
+        sample_weight: torch.Tensor | None = None,
+    ) -> torch.Tensor: ...
+
+    def forward(
+        self, features: gt.data.Features, labels: torch.Tensor, *, sample_weight: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        return self.compute_loss(
+            all_embeddings=(features["query_embeddings"], features["candidate_embeddings"]),
+            labels=labels.float(),
+            sample_weight=sample_weight,
+        )
+
+
+class ContrastiveLoss(PairwiseLoss):
     def __init__(
         self,
         *,
         margin: float = 0.5,
-        matryoshka_dims: list[int] | None = None,
-        matryoshka_weights: list[float] | None = None,
+        mrl_dim_to_weight: dict[int, float] | None = None,
         n_dims_per_step: int = -1,
     ):
         super().__init__()
         self.margin = margin
-
+        self.mrl_dim_to_weight = mrl_dim_to_weight if mrl_dim_to_weight else None
         self.n_dims_per_step = n_dims_per_step
-        if matryoshka_dims is None:
-            self.matryoshka_dims = None
-            self.matryoshka_weights = None
-        else:
-            if len(matryoshka_dims) == 0:
-                raise ValueError("matryoshka_dims must be non-empty (or None)")
-            if matryoshka_weights is None:
-                matryoshka_weights = [1] * len(matryoshka_dims)
-            if len(matryoshka_weights) != len(matryoshka_dims):
-                raise ValueError("matryoshka_weights must have the same length as matryoshka_dims")
-
-            self.matryoshka_dims = matryoshka_dims
-            self.matryoshka_weights = matryoshka_weights
 
     def compute_loss_from_similarities(
         self,
@@ -44,8 +100,6 @@ class ContrastiveLoss(torch.nn.Module):
         *,
         sample_weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # For positive pairs (label=1): loss = (1 - similarity)²
-        # For negative pairs (label=0): loss = max(0, similarity - (1 - margin))²
         distances: torch.Tensor = 1 - similarities
         loss_pos = labels * distances.pow(2)
         loss_neg = (1 - labels) * torch.relu(self.margin - distances).pow(2)
@@ -56,67 +110,41 @@ class ContrastiveLoss(torch.nn.Module):
 
     def compute_loss_from_embeddings(
         self,
-        query_embeddings: torch.Tensor,
-        candidate_embeddings: torch.Tensor,
+        all_embeddings: tuple[torch.Tensor, ...],
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        query_embeddings, candidate_embeddings = all_embeddings
         similarities = pairwise_cos_sim(query_embeddings, candidate_embeddings)
         return self.compute_loss_from_similarities(similarities, labels, sample_weight=sample_weight)
 
-    def compute_loss_mrl(
+    def compute_loss(
         self,
-        query_embeddings: torch.Tensor,
-        candidate_embeddings: torch.Tensor,
+        all_embeddings: tuple[torch.Tensor, ...],
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if self.matryoshka_dims is None:
-            return self.compute_loss_from_embeddings(
-                query_embeddings, candidate_embeddings, labels, sample_weight=sample_weight
-            )
-
-        embedding_dim = query_embeddings.shape[-1]
-        if any(d > embedding_dim for d in self.matryoshka_dims):
-            raise ValueError(f"matryoshka_dims cannot exceed embedding dim {embedding_dim}: {self.matryoshka_dims}")
-
-        dim_indices = list(range(len(self.matryoshka_dims)))
-        if self.n_dims_per_step > 0 and self.n_dims_per_step < len(dim_indices):
-            dim_indices = torch.randperm(len(self.matryoshka_dims), device=query_embeddings.device)[
-                : self.n_dims_per_step
-            ].tolist()
-
-        loss_total = torch.zeros((), device=query_embeddings.device)
-        for idx in dim_indices:
-            dim = self.matryoshka_dims[idx]
-            weight = self.matryoshka_weights[idx]
-            loss_dim = self.compute_loss_from_embeddings(
-                query_embeddings[..., :dim], candidate_embeddings[..., :dim], labels, sample_weight=sample_weight
-            )
-            loss_total += weight * loss_dim
-        return loss_total / len(dim_indices)
-
-    def forward(
-        self, features: gt.data.Features, labels: torch.Tensor, *, sample_weight: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        return self.compute_loss_mrl(
-            query_embeddings=features["query_embeddings"],
-            candidate_embeddings=features["candidate_embeddings"],
-            labels=labels.float(),
+        if self.mrl_dim_to_weight is None:
+            return self.compute_loss_from_embeddings(all_embeddings, labels, sample_weight=sample_weight)
+        return _mrl_loss(
+            mrl_dim_to_weight=self.mrl_dim_to_weight,
+            n_dims_per_step=self.n_dims_per_step,
+            compute_loss_from_embeddings=self.compute_loss_from_embeddings,
+            all_embeddings=all_embeddings,
+            labels=labels,
             sample_weight=sample_weight,
         )
 
 
-class SigmoidPairwiseLoss(torch.nn.Module):
+class SigmoidPairwiseLoss(PairwiseLoss):
     def __init__(
         self,
         *,
         bias_init: float = 0.0,
         log_of_scale_init: torch.Tensor = torch.tensor(5.0).log(),
-        matryoshka_dims: list[int] | None = None,
-        matryoshka_weights: list[float] | None = None,
+        mrl_dim_to_weight: dict[int, float] | None = None,
         n_dims_per_step: int = -1,
     ):
         super().__init__()
@@ -124,19 +152,7 @@ class SigmoidPairwiseLoss(torch.nn.Module):
         self.bias = torch.nn.Parameter(torch.tensor(bias_init))
 
         self.n_dims_per_step = n_dims_per_step
-        if matryoshka_dims is None:
-            self.matryoshka_dims = None
-            self.matryoshka_weights = None
-        else:
-            if len(matryoshka_dims) == 0:
-                raise ValueError("matryoshka_dims must be non-empty (or None)")
-            if matryoshka_weights is None:
-                matryoshka_weights = [1] * len(matryoshka_dims)
-            if len(matryoshka_weights) != len(matryoshka_dims):
-                raise ValueError("matryoshka_weights must have the same length as matryoshka_dims")
-
-            self.matryoshka_dims = matryoshka_dims
-            self.matryoshka_weights = matryoshka_weights
+        self.mrl_dim_to_weight = mrl_dim_to_weight if mrl_dim_to_weight else None
 
     def compute_loss_from_similarities(
         self,
@@ -154,54 +170,29 @@ class SigmoidPairwiseLoss(torch.nn.Module):
 
     def compute_loss_from_embeddings(
         self,
-        query_embeddings: torch.Tensor,
-        candidate_embeddings: torch.Tensor,
+        all_embeddings: tuple[torch.Tensor, ...],
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        query_embeddings, candidate_embeddings = all_embeddings
         similarities = pairwise_cos_sim(query_embeddings, candidate_embeddings)
         return self.compute_loss_from_similarities(similarities, labels, sample_weight=sample_weight)
 
-    def compute_loss_mrl(
+    def compute_loss(
         self,
-        query_embeddings: torch.Tensor,
-        candidate_embeddings: torch.Tensor,
+        all_embeddings: tuple[torch.Tensor, ...],
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        if self.matryoshka_dims is None:
-            return self.compute_loss_from_embeddings(
-                query_embeddings, candidate_embeddings, labels, sample_weight=sample_weight
-            )
-
-        embedding_dim = query_embeddings.shape[-1]
-        if any(d > embedding_dim for d in self.matryoshka_dims):
-            raise ValueError(f"matryoshka_dims cannot exceed embedding dim {embedding_dim}: {self.matryoshka_dims}")
-
-        dim_indices = list(range(len(self.matryoshka_dims)))
-        if self.n_dims_per_step > 0 and self.n_dims_per_step < len(dim_indices):
-            dim_indices = torch.randperm(len(self.matryoshka_dims), device=query_embeddings.device)[
-                : self.n_dims_per_step
-            ].tolist()
-
-        loss_total = torch.zeros((), device=query_embeddings.device)
-        for idx in dim_indices:
-            dim = self.matryoshka_dims[idx]
-            weight = self.matryoshka_weights[idx]
-            loss_dim = self.compute_loss_from_embeddings(
-                query_embeddings[..., :dim], candidate_embeddings[..., :dim], labels, sample_weight=sample_weight
-            )
-            loss_total += weight * loss_dim
-        return loss_total / len(dim_indices)
-
-    def forward(
-        self, features: gt.data.Features, labels: torch.Tensor, *, sample_weight: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        return self.compute_loss_mrl(
-            query_embeddings=features["query_embeddings"],
-            candidate_embeddings=features["candidate_embeddings"],
-            labels=labels.float(),
+        if self.mrl_dim_to_weight is None:
+            return self.compute_loss_from_embeddings(all_embeddings, labels, sample_weight=sample_weight)
+        return _mrl_loss(
+            mrl_dim_to_weight=self.mrl_dim_to_weight,
+            n_dims_per_step=self.n_dims_per_step,
+            compute_loss_from_embeddings=self.compute_loss_from_embeddings,
+            all_embeddings=all_embeddings,
+            labels=labels,
             sample_weight=sample_weight,
         )

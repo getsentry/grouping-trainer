@@ -38,9 +38,19 @@ def upload_run_metadata(run_gcs_dir: str, training_config: gt.train.TrainingConf
     logger.info(f"Uploaded run metadata (git: {git_commit}) to {run_gcs_dir}/metadata")
 
 
+base_model_to_per_device_token_budget_scale = {
+    "lightonai/modernbert-embed-large": 4,
+    "Alibaba-NLP/gte-modernbert-base": 6,
+    "Qwen/Qwen3-Embedding-0.6B": 3,
+    "jinaai/jina-embeddings-v5-text-nano-text-matching": 4,
+}
+
+
 def run(
     base_model: str = "lightonai/modernbert-embed-large",
     run_shortname: str | None = None,
+    use_prompt_prefix: bool = False,
+    per_device_token_budget_scale: int | None = None,
     mini_cpu_test: bool = False,
 ):
     """
@@ -51,9 +61,13 @@ def run(
     base_model
         HuggingFace model ID or local path for the base encoder.
         Others we've tried: Alibaba-NLP/gte-modernbert-base, Qwen/Qwen3-Embedding-0.6B,
-        jinaai/jina-embeddings-v5-text-nano-text-matching.
+        jinaai/jina-embeddings-v5-text-nano-text-matching
     run_shortname
         Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp.
+    use_prompt_prefix
+        If True, add the prompt prefix to the input text. It does not seem to help lightonai/modernbert-embed-large
+    per_device_token_budget_scale
+        Sets per_device_token_budget = per_device_token_budget_scale * 8192—the max tokens for grouping in prod
     mini_cpu_test
         Run a mini training run on CPU to sanity check plumbing.
     """
@@ -64,7 +78,6 @@ def run(
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    use_prompt_prefix = False  # is this helpful or just annoying?
     model = gt.utils.encoder_from_base(base_model, use_prompt_prefix=use_prompt_prefix)
 
     if mini_cpu_test:
@@ -80,12 +93,16 @@ def run(
             contrastive_margin=0.25,
         )
     else:
+        per_device_token_budget_scale = (
+            per_device_token_budget_scale or base_model_to_per_device_token_budget_scale.get(base_model, 3)
+        )
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
             per_device_train_batch_size=256,
-            per_device_token_budget=8192 * 4,  # 3 for Qwen3 0.6B. 6 for gte-modernbert-base.
+            per_device_token_budget=8192 * per_device_token_budget_scale,
             loss_type="contrastive",
             contrastive_margin=0.5,
+            mrl_dim_to_weight={768: 1, 512: 1, 256: 1, 128: 1, 64: 1},
         )
 
     trainer = gt.train.make_trainer(model, training_config)

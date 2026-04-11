@@ -21,7 +21,7 @@ encoder_compiled = gt.compiled.SentenceTransformer(
     model_kwargs=model_kwargs,
     prompt_prefix=prompt_prefix,
 )
-encoder_compiled.warm_up_and_compile()
+encoder_compiled.compile_and_warm_up()
 
 for n, p in encoder.named_parameters():
     p_compiled = encoder_compiled.get_parameter(n)
