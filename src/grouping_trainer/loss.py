@@ -4,7 +4,7 @@ Pairwise losses.
 In-batch negatives are not used b/c that would result in lots of false negatives for our dataset. Across pairs and w/in
 a project, there are plenty of similar stacktraces. Could change the sampler to pick a platform and sample a single
 pair across many projects, but then there wouldn't be cache hits. And these negatives would likely be too easy b/c
-they're cross-project. The module synthetic.py mines synthetic negatives w/in each project offline.
+they're cross-project. The module synthetic.py mines easy to semi-easy negative pairs w/in each project offline.
 """
 
 from abc import ABC, abstractmethod
