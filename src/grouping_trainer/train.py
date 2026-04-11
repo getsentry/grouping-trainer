@@ -53,11 +53,12 @@ def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | Non
         group_df.sort(pl.col("candidate_stacktrace_string").str.len_chars())
         for _, group_df in df.group_by("query_stacktrace_string")
     ]
+    # Sort deterministically first — polars group_by returns groups in arbitrary order, and DDP requires all processes
+    # to have the same dataset ordering.
+    query_group_dfs.sort(key=lambda query_group_df: query_group_df["query_stacktrace_string"][0])
     if shuffle_groups:
-        rng = random.Random(seed)
+        rng = random.Random(seed if seed is not None else 42)
         rng.shuffle(query_group_dfs)
-    else:
-        query_group_dfs.sort(key=lambda query_group_df: query_group_df["query_stacktrace_string"][0])
 
     return Dataset.from_list(
         [

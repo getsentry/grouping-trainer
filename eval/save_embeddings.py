@@ -13,8 +13,7 @@ python eval/save_embeddings.py \
 To evaluate the finetuned model:
 
 python eval/save_embeddings.py \
-    --run_gcs_dir gs://grouping-data/runs/2026-04-07-11-56-28-large-con \
-    --prompt_prefix "clustering: " \
+    --run_gcs_dir gs://grouping-data/runs/2026-04-10-12-39-45-large-no-prefix \
     --truncate_dims 64 128 256 512 768 \
     --use_compiled
 
