@@ -647,6 +647,7 @@ def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingC
             dataloader_pin_memory=torch.cuda.is_available(),
             num_train_epochs=1,  # data is very large. empirically 1 epoch is plenty
             gradient_checkpointing=training_config.gradient_checkpointing,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
             gradient_accumulation_steps=training_config.gradient_accumulation_steps,
             #
             # Datalaoder
