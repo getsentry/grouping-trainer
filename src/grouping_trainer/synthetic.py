@@ -16,13 +16,12 @@ This bias may not be good b/c:
   trained model to over-emphasize subtle differences. Seeing easy negatives should counteract this bias.
 """
 
+import subprocess
+import tempfile
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal, cast
-from dataclasses import asdict, dataclass
-
-import subprocess
-import tempfile
 
 import numpy as np
 import polars as pl

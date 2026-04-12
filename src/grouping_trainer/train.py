@@ -1,4 +1,3 @@
-from datetime import datetime
 import itertools
 import logging
 import math
@@ -8,32 +7,34 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from dataclasses import dataclass
 from collections.abc import Iterator
 from contextlib import nullcontext
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable, Literal
 
-from accelerate import DistributedType
-from safetensors.torch import load_model as safetensors_load_model
 import numpy as np
 import polars as pl
+import torch
+import torch.distributed as dist
+from accelerate import DistributedType
+from datasets import Dataset, DatasetDict
 from pydantic import BaseModel, ConfigDict
+from safetensors.torch import load_model as safetensors_load_model
 from sentence_transformers import SentenceTransformerTrainingArguments
 from sentence_transformers.data_collator import SentenceTransformerDataCollator
 from sentence_transformers.models import Pooling
-from sentence_transformers.training_args import MultiDatasetBatchSamplers
-import torch
-import torch.distributed as dist
-from datasets import Dataset, DatasetDict
 from sentence_transformers.trainer import SentenceTransformerTrainer
+from sentence_transformers.training_args import MultiDatasetBatchSamplers
 from torch.utils.data import BatchSampler, RandomSampler, SequentialSampler, default_collate
 from tqdm.auto import tqdm
-from transformers import TrainerCallback, TrainerState, TrainerControl, TrainingArguments
+from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from transformers.utils.import_utils import (
     is_torch_cuda_available,
     is_torch_mps_available,
 )
+
 import grouping_trainer as gt
 
 logger = logging.getLogger(__name__)

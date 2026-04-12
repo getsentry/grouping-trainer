@@ -6,8 +6,8 @@ Evaluation runs async on a separate machine. See eval/eval_poller.py
 import logging
 import os
 import subprocess
-import warnings
 import tempfile
+import warnings
 
 import torch
 import wandb

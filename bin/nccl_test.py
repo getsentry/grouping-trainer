@@ -2,9 +2,10 @@
 # Without Socket override (test if native networking works):
 # LD_LIBRARY_PATH="" torchrun --nproc_per_node=2 bin/nccl_test.py
 
+import os
+
 import torch
 import torch.distributed as dist
-import os
 
 rank = int(os.environ["LOCAL_RANK"])
 dist.init_process_group("nccl")

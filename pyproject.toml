@@ -59,6 +59,9 @@ line-length = 120
 indent-width = 4
 extend-include = ["*.ipynb"]
 
+[tool.ruff.lint]
+select = ["I"]
+
 [project.urls]
 Homepage = "https://github.com/getsentry/grouping-trainer"
 Issues = "https://github.com/getsentry/grouping-trainer/issues"

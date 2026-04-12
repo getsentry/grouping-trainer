@@ -31,8 +31,8 @@ import time
 
 import numpy as np
 import polars as pl
-from sentence_transformers.util import pairwise_cos_sim
 import torch
+from sentence_transformers.util import pairwise_cos_sim
 from tap import tapify
 
 import grouping_trainer as gt

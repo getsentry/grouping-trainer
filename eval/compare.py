@@ -25,13 +25,13 @@ python eval/compare.py \
     --dim_model2 64
 """
 
-from itertools import zip_longest
 import json
 import shlex
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from itertools import zip_longest
 from pathlib import Path
 
 import gspread

@@ -11,8 +11,8 @@ gcloud storage cp -r "gs://grouping-data/dataset/org_{org_id}/project_{project_i
 and are inside `grouping/data`.
 """
 
-from functools import wraps
 import gc
+from functools import wraps
 from itertools import zip_longest
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -22,13 +22,12 @@ try:
 except ImportError:
     display = print
 import polars as pl
+import torch
 from polars._typing import ConcatMethod
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer as SentenceTransformerOriginal
-import torch
-from transformers import PreTrainedTokenizerBase
 from tqdm.auto import tqdm
-
+from transformers import PreTrainedTokenizerBase
 
 SEER_THRESHOLD = 0.01
 "Current grouping threshold in prod for the unfinetuned grouping model"

@@ -1,10 +1,10 @@
 from typing import TypedDict
-from datasets import DatasetDict
+
 import polars as pl
 import torch
+from datasets import DatasetDict
 
 import grouping_trainer as gt
-
 
 COLUMNS_REQUIRED = (
     "query_seer_event_sent",

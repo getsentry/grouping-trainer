@@ -3,11 +3,10 @@ import logging
 import os
 
 import numpy as np
-
-from sentence_transformers.evaluation import SentenceEvaluator
-from sentence_transformers import SentenceTransformer
-from sentence_transformers.util import pairwise_cos_sim
 import torch
+from sentence_transformers import SentenceTransformer
+from sentence_transformers.evaluation import SentenceEvaluator
+from sentence_transformers.util import pairwise_cos_sim
 
 import grouping_trainer as gt
 

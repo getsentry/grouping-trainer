@@ -1,5 +1,5 @@
-from typing import Callable
 import logging
+from typing import Callable
 
 import torch
 import torch.nn.functional as F

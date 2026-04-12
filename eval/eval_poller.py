@@ -9,9 +9,9 @@ import tempfile
 import time
 from typing import Literal
 
+import wandb
 from pydantic import BaseModel
 from tap import tapify
-import wandb
 
 import grouping_trainer as gt
 

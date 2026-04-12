@@ -9,8 +9,9 @@ they're cross-project. The module synthetic.py mines easy to semi-easy negative 
 
 from abc import ABC, abstractmethod
 from typing import Protocol
-from sentence_transformers.util import pairwise_cos_sim
+
 import torch
+from sentence_transformers.util import pairwise_cos_sim
 
 import grouping_trainer as gt
 

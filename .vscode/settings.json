@@ -6,6 +6,9 @@
     "autoDocstring.startOnNewLine": true,
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports.ruff": "explicit"
+    },
     "rewrap.autoWrap.enabled": true,
     "notebook.formatOnSave.enabled": true,
     "notebook.defaultFormatter": "charliermarsh.ruff",
