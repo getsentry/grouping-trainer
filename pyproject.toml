@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "grouping-trainer"
 dynamic = ["version"]
-description = "Trainer for Sentry AI grouping"
+description = "Training and evaluation for Sentry AI grouping"
 readme = "README.md"
 license = { file = "LICENSE" }
 dependencies = [
@@ -15,7 +15,10 @@ dependencies = [
     "polars==1.32.0",  # cudf lol
     "pydantic==2.11.9",
     "sentence-transformers==5.1.0",
-    "torch==2.7.1",  # NCCL mismatches with 2.8.0. TODO: upgrade to latest
+    # torch 2.8+ requires NCCL 2.27+, which fails on GCP DL VM images: the image sets NCCL_NET=gIB but a2/a3 (at least
+    # non-mega ones) lack InfiniBand, and NCCL 2.27+ no longer has a built-in Socket fallback. NCCL 2.26.2 (bundled with
+    # torch 2.7.1) is the last version that works without an external NET plugin.
+    "torch==2.7.1",
     "torchvision==0.22.1",
     "transformers==4.56.2",
     "typed-argument-parser==1.11.0",

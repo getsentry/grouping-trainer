@@ -98,10 +98,17 @@ def run(
         )
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
-            per_device_train_batch_size=256,
+            per_device_train_batch_size=128,
             per_device_token_budget=8192 * per_device_token_budget_scale,
             loss_type="contrastive",
             contrastive_margin=0.5,
+            training_csvs=(
+                gt.data.DEFAULT_TRAIN_PATHS
+                + (
+                    "final_csvs/synthetic-hard-negatives-llm.csv",
+                    # "final_csvs/synthetic-hard-positives-llm.csv",
+                )
+            ),
         )
 
     trainer = gt.train.make_trainer(model, training_config)

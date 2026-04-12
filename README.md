@@ -11,7 +11,7 @@ Sampling and labeling is in [data-analysis](https://github.com/getsentry/data-an
 ./bin/flex_a100.sh
 ```
 
-Finetuning [gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) w/ takes ~12 hours w/ 1 A100 80
+Finetuning [gte-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-modernbert-base) w/ takes ~11 hours w/ 1 A100 80
 GB GPU, ~6.5 hours w/ 1 H100, and ~7 hours w/ 2 A100 80 GB GPUs w/ DDP:
 
 ```bash
