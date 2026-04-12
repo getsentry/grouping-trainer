@@ -450,9 +450,9 @@ class SentenceTransformer(SentenceTransformerOriginal):
     `SentenceTransformer` which deduplicates texts during inference and retries OOMs once.
     """
 
-    def __init__(self, *args, prompt_prefix: str = "", **kwargs) -> None:
+    def __init__(self, *args, text_prefix: str = "", **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.prompt_prefix = prompt_prefix
+        self.text_prefix = text_prefix
 
     @property
     def tokenizer(self) -> PreTrainedTokenizerBase:
@@ -465,9 +465,9 @@ class SentenceTransformer(SentenceTransformerOriginal):
     # The getter and setter above are just for type hints. SentenceTransformer annotates it as Any
 
     def tokenize(self, texts: list[str] | list[dict] | list[tuple[str, str]], **kwargs) -> dict[str, torch.Tensor]:
-        if self.prompt_prefix:
+        if self.text_prefix:
             if isinstance(texts, list) and all(isinstance(text, str) for text in texts):
-                texts = [self.prompt_prefix + text for text in texts]
+                texts = [self.text_prefix + text for text in texts]
             else:
                 raise ValueError(f"Not sure how to add the prefix for the input text type: {type(texts)}")
         return super().tokenize(texts, **kwargs)
@@ -483,7 +483,7 @@ class SentenceTransformer(SentenceTransformerOriginal):
         return embeddings[[text_to_idx[text] for text in texts]]  # assume numpy or torch
 
 
-def encoder_from_base(base_model: str, use_prompt_prefix: bool = True) -> SentenceTransformer:
+def encoder_from_base(base_model: str, use_text_prefix: bool = True) -> SentenceTransformer:
     """
     Build a SentenceTransformer encoder with standard dtype/attention settings.
 
@@ -503,16 +503,16 @@ def encoder_from_base(base_model: str, use_prompt_prefix: bool = True) -> Senten
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
         model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
 
-    prompt_prefix = ""
+    text_prefix = ""
     if base_model == "lightonai/modernbert-embed-large":
         trust_remote_code = True
-        if use_prompt_prefix:
+        if use_text_prefix:
             # https://huggingface.co/lightonai/modernbert-embed-large#usage
-            prompt_prefix = "clustering: "
+            text_prefix = "clustering: "
 
     return SentenceTransformer(
         base_model,
         trust_remote_code=trust_remote_code,
         model_kwargs=model_kwargs,
-        prompt_prefix=prompt_prefix,
+        text_prefix=text_prefix,
     )

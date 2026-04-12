@@ -7,19 +7,19 @@ model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
 # mkdir v3
 # gcloud storage cp -r gs://grouping-data/runs/2026-04-07-11-56-28-large-con/inference/* v3
 base_model = "v3"
-prompt_prefix = "clustering: "
+text_prefix = "clustering: "
 
 encoder = gt.utils.SentenceTransformer(
     base_model,
     trust_remote_code=True,
     model_kwargs=model_kwargs,
-    prompt_prefix=prompt_prefix,
+    text_prefix=text_prefix,
 )
 encoder_compiled = gt.compiled.SentenceTransformer(
     base_model,
     trust_remote_code=True,
     model_kwargs=model_kwargs,
-    prompt_prefix=prompt_prefix,
+    text_prefix=text_prefix,
 )
 encoder_compiled.compile_and_warm_up()
 

@@ -274,7 +274,7 @@ def main(
     csv_paths: tuple[str, ...],
     positives: bool = False,
     negatives: bool = False,
-    prompt_prefix: str = "",
+    text_prefix: str = "",
 ):
     """
     Mine synthetic positives and negatives from labeled pair CSVs.
@@ -290,7 +290,7 @@ def main(
         Mine easy positives.
     negatives
         Mine semi-easy negatives.
-    prompt_prefix
+    text_prefix
         String to prepend to every text before tokenization (e.g. "clustering: ").
     """
     if not positives and not negatives:
@@ -298,7 +298,7 @@ def main(
 
     dir_model = tempfile.mkdtemp()
     subprocess.run(["gcloud", "storage", "rsync", "-r", gcs_model_folder, dir_model], check=True)
-    model = gt.utils.SentenceTransformer(dir_model, trust_remote_code=True, prompt_prefix=prompt_prefix)
+    model = gt.utils.SentenceTransformer(dir_model, trust_remote_code=True, text_prefix=text_prefix)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
     df = gt.data.load_train_df(paths=csv_paths)

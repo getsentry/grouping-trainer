@@ -103,7 +103,7 @@ def _check_no_train_test_overlap(run_gcs_dir: str, df_test: pl.DataFrame) -> Non
 
 def main(
     run_gcs_dir: str,
-    prompt_prefix: str = "",
+    text_prefix: str = "",
     df_path: str = "final_csvs/test_full2.csv",
     truncate_dims: tuple[int, ...] | None = None,
     batch_size: int = 2,
@@ -118,7 +118,7 @@ def main(
     ----------
     run_gcs_dir
         GCS path to the training run directory, e.g., gs://grouping-data/runs/my-run
-    prompt_prefix
+    text_prefix
         String to prepend to every text before tokenization, e.g., for lightonai/modernbert-embed-large "clustering: "
     df_path
         Path to the validation/test CSV file.
@@ -167,7 +167,7 @@ def main(
             dir_tmp,
             trust_remote_code=True,
             model_kwargs=model_kwargs,
-            prompt_prefix=prompt_prefix,
+            text_prefix=text_prefix,
         )
         logger.info(f"{st_class.__name__} loaded in {time.monotonic() - start:.1f}s")
         if use_compiled:

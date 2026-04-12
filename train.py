@@ -49,7 +49,7 @@ base_model_to_per_device_token_budget_scale = {
 def run(
     base_model: str = "lightonai/modernbert-embed-large",
     run_shortname: str | None = None,
-    use_prompt_prefix: bool = False,
+    use_text_prefix: bool = False,
     per_device_token_budget_scale: int | None = None,
     mini_cpu_test: bool = False,
 ):
@@ -64,8 +64,8 @@ def run(
         jinaai/jina-embeddings-v5-text-nano-text-matching
     run_shortname
         Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp.
-    use_prompt_prefix
-        If True, add the prompt prefix to the input text. It does not seem to help lightonai/modernbert-embed-large
+    use_text_prefix
+        If True, add the model's designated prefix to the input text. Didn't help lightonai/modernbert-embed-large
     per_device_token_budget_scale
         Sets per_device_token_budget = per_device_token_budget_scale * 8192—the max tokens for grouping in prod
     mini_cpu_test
@@ -78,7 +78,7 @@ def run(
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
-    model = gt.utils.encoder_from_base(base_model, use_prompt_prefix=use_prompt_prefix)
+    model = gt.utils.encoder_from_base(base_model, use_text_prefix=use_text_prefix)
 
     if mini_cpu_test:
         training_config = gt.train.TrainingConfig(
@@ -90,7 +90,7 @@ def run(
             num_logs=30,
             num_checkpoints=2,
             loss_type="contrastive",
-            contrastive_margin=0.25,
+            contrastive_margin=0.5,
         )
     else:
         per_device_token_budget_scale = (
@@ -105,8 +105,8 @@ def run(
             training_csvs=(
                 gt.data.DEFAULT_TRAIN_PATHS
                 + (
-                    "final_csvs/synthetic-hard-negatives-llm.csv",
-                    # "final_csvs/synthetic-hard-positives-llm.csv",
+                    "final_csvs/synthetic-hard-negatives-llm.csv",  # TODO: curriculum learn these?
+                    "final_csvs/synthetic-hard-positives-llm.csv",
                 )
             ),
         )
@@ -135,8 +135,8 @@ def run(
             f"--wandb_run_id {wandb.run.id} --wandb_project {training_config.wandb_project} "
             f"--loss_type {training_config.loss_type} --contrastive_margin {training_config.contrastive_margin}"
         )
-        if use_prompt_prefix:
-            eval_cmd += " --use_prompt_prefix"
+        if use_text_prefix:
+            eval_cmd += " --use_text_prefix"
         if mini_cpu_test:
             eval_cmd += " --sample_val 200 --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")
