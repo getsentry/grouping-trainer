@@ -404,7 +404,7 @@ class Trainer(SentenceTransformerTrainer):
 
         if is_distributed:
             # Hardcode for DDP. The dummy gather to account for variable # sub-batches across GPUs didn't work for some
-            # reason.
+            # reason. TODO: figure out why to overlap all-reduce w/ final / no_sync=False backward
             for param in model.parameters():
                 if param.grad is not None:
                     torch.distributed.all_reduce(param.grad, op=torch.distributed.ReduceOp.AVG)
