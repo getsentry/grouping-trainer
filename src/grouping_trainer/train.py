@@ -22,14 +22,10 @@ from sentence_transformers.data_collator import SentenceTransformerDataCollator
 from sentence_transformers.models import Pooling
 from sentence_transformers.training_args import MultiDatasetBatchSamplers
 import torch
+import torch.distributed as dist
 from datasets import Dataset, DatasetDict
 from sentence_transformers.trainer import SentenceTransformerTrainer
-from torch.utils.data import (
-    BatchSampler,
-    RandomSampler,
-    SequentialSampler,
-    default_collate,
-)
+from torch.utils.data import BatchSampler, RandomSampler, SequentialSampler, default_collate
 from tqdm.auto import tqdm
 from transformers import TrainerCallback, TrainerState, TrainerControl, TrainingArguments
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
@@ -243,7 +239,8 @@ class ModelForTraining(torch.nn.Module):
 
 class Trainer(SentenceTransformerTrainer):
     """
-    Inputs a module whose forward computes the loss. This makes things like DDP and FSDP work out of the box.
+    Inputs a module whose forward computes the loss. This makes things like DDP and FSDP work out of the box (after I
+    figure out how to make the subbatch backward stuff work w/ it...)
 
     Also fixes a bug where loss parameters aren't saved and aren't picked up when resuming training from a checkpoint.
 
@@ -407,7 +404,7 @@ class Trainer(SentenceTransformerTrainer):
             # reason. TODO: figure out why to overlap all-reduce w/ final / no_sync=False backward
             for param in model.parameters():
                 if param.grad is not None:
-                    torch.distributed.all_reduce(param.grad, op=torch.distributed.ReduceOp.AVG)
+                    dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
 
         return sum(losses)  # we already re-scaled each loss
 
