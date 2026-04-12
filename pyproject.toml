@@ -15,8 +15,8 @@ dependencies = [
     "polars==1.32.0",  # cudf lol
     "pydantic==2.11.9",
     "sentence-transformers==5.1.0",
-    "torch==2.8.0",
-    "torchvision==0.23.0",
+    "torch==2.7.1",
+    "torchvision==0.22.1",
     "transformers==4.56.2",
     "typed-argument-parser==1.11.0",
     "wandb==0.23.1",

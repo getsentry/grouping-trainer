@@ -395,43 +395,19 @@ class Trainer(SentenceTransformerTrainer):
             )
         )
         num_sub_batches = len(sub_batches)
-        rank = self.accelerator.process_index
-        logger.info(f"[rank {rank}] num_sub_batches={num_sub_batches}")
 
-        # Each GPU can have a different number of sub-batches. Need all to call backward() the same number of times with
-        # the same no_sync pattern, otherwise DDP deadlocks.
-        # To fix, pad to the max sub-batch count with dummy backward passes.
-        if self.accelerator.num_processes > 1:
-            local_count = torch.tensor([num_sub_batches], dtype=torch.long, device=self.accelerator.device)
-            max_sub_batches = self.accelerator.gather(local_count).max().item()
-        else:
-            max_sub_batches = num_sub_batches
-
-        logger.info(f"[rank {rank}] max_sub_batches={max_sub_batches}")
-
-        # Nesting another no_sync would break FSDP2. Its no_sync unconditionally re-enables sync on exit
-        should_no_sync = self.accelerator.sync_gradients
+        is_distributed = self.accelerator.num_processes > 1
         losses = []
+        for sub_batch_idx in range(num_sub_batches):
+            loss = _backward_on_sub_batch(sub_batches[sub_batch_idx], no_sync=True)
+            losses.append(loss)
 
-        for sub_batch_idx in range(max_sub_batches):
-            is_last = sub_batch_idx == max_sub_batches - 1
-            no_sync = should_no_sync and not is_last
-
-            logger.info(
-                f"[rank {rank}] sub_batch {sub_batch_idx}/{max_sub_batches}, no_sync={no_sync}, is_dummy={sub_batch_idx >= num_sub_batches}"
-            )
-
-            if sub_batch_idx < num_sub_batches:
-                loss = _backward_on_sub_batch(sub_batches[sub_batch_idx], no_sync=no_sync)
-                losses.append(loss)
-            else:
-                # Dummy backward to keep DDP in sync
-                dummy_loss = sum(p.sum() for p in model.parameters() if p.requires_grad) * 0.0
-                sync_ctx = self.accelerator.no_sync(model) if no_sync else nullcontext()
-                with sync_ctx:
-                    self.accelerator.backward(dummy_loss)
-
-            logger.info(f"[rank {rank}] sub_batch {sub_batch_idx} done")
+        if is_distributed:
+            # Hardcode for DDP. The dummy gather to account for variable # sub-batches across GPUs didn't work for some
+            # reason.
+            for param in model.parameters():
+                if param.grad is not None:
+                    torch.distributed.all_reduce(param.grad, op=torch.distributed.ReduceOp.AVG)
 
         return sum(losses)  # we already re-scaled each loss
 
