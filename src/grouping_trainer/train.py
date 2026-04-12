@@ -49,7 +49,7 @@ def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | Non
         group_df.sort(pl.col("candidate_stacktrace_string").str.len_chars())
         for _, group_df in df.group_by("query_stacktrace_string")
     ]
-    # Sort deterministically first — polars group_by returns groups in arbitrary order, and DDP requires all processes
+    # Sort deterministically first b/c polars group_by returns groups in arbitrary order, and DDP requires all processes
     # to have the same dataset ordering.
     query_group_dfs.sort(key=lambda query_group_df: query_group_df["query_stacktrace_string"][0])
     if shuffle_groups:
@@ -190,6 +190,10 @@ class ModelForTraining(torch.nn.Module):
         Deduplicates inputs before calling the model.
         Recall that our dataloader loads stacktraces from the same project together, sorted by query string.
         """
+
+        # NOTE: HF accelerate's DDP shards the dataset at the batch level, not the record level. So each GPU gets a
+        # batch from a different project. The cache is local to the GPU, so cache hits are still maximized w/ DDP.
+
         queries = inputs["query_stacktrace_string"]
         candidates = inputs["candidate_stacktrace_string"]
 
@@ -543,7 +547,7 @@ class TrainingConfig(BaseModel):
         "matched": 1.0,
         "synthetic-hard-negative-llm": 2.0,
     }  # TODO: Literal. source values aren't documented anywhere yet.
-    shuffle_within_dataset: bool = False  # more cache hits in each forward. 2-3x speedup w/o increasing gradient var
+    shuffle_within_dataset: bool = False  # for cache hits. 2x overall training speedup w/o increasing gradient var
 
     # Loss
     loss_type: Literal["sigmoid", "contrastive"] = "contrastive"
