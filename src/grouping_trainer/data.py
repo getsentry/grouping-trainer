@@ -87,6 +87,7 @@ def load_train_dataset_dict(
     stress_test_min_pair_len: int | None = None,
     paths: tuple[str, ...] = DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
+    use_confidence_score: bool = False,
 ) -> tuple[DatasetDict, float]:
     """
     Args:
@@ -110,7 +111,9 @@ def load_train_dataset_dict(
     else:
         df = df.with_columns(pl.lit(1.0).alias("sample_weight"))
 
-    dataset_dict_train = gt.train.create_project_dataset_dict(df, min_dataset_size=min_dataset_size)
+    dataset_dict_train = gt.train.create_project_dataset_dict(
+        df, min_dataset_size=min_dataset_size, use_confidence_score=use_confidence_score
+    )
     frac_positive = (df["label"] == "GROUP").mean()
     return dataset_dict_train, frac_positive
 
@@ -123,6 +126,7 @@ class Record(TypedDict):
     candidate_stacktrace_string: str
     label: int
     sample_weight: float
+    confidence_score: float
 
 
 class Batch(TypedDict):
@@ -130,6 +134,7 @@ class Batch(TypedDict):
     candidate_stacktrace_string: list[str]
     label: torch.Tensor
     sample_weight: torch.Tensor
+    confidence_score: torch.Tensor
 
 
 class Features(TypedDict):

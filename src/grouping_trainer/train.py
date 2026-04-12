@@ -1,4 +1,5 @@
 from datetime import datetime
+import itertools
 import logging
 import math
 import os
@@ -38,13 +39,20 @@ import grouping_trainer as gt
 logger = logging.getLogger(__name__)
 
 
-def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | None = None) -> Dataset:
+def df_to_dataset(
+    df: pl.DataFrame, shuffle_groups: bool = True, seed: int | None = None, use_confidence_score: bool = False
+) -> Dataset:
     """
     Convert a DataFrame to a Dataset, grouping records by `query_stacktrace_string`.
 
     Records with the same `query_stacktrace_string` are kept together for cache hits in the forward pass. By default,
     the order of groups is randomized to avoid alphabetical ordering bias during training.
     """
+    if not use_confidence_score:
+        df = df.drop("confidence_score", strict=False)
+    else:
+        df = df.with_columns(pl.col("confidence_score").fill_null(1.0))
+
     query_group_dfs = [
         group_df.sort(pl.col("candidate_stacktrace_string").str.len_chars())
         for _, group_df in df.group_by("query_stacktrace_string")
@@ -58,12 +66,14 @@ def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | Non
 
     return Dataset.from_list(
         [
-            {
-                "query_stacktrace_string": record["query_stacktrace_string"],
-                "candidate_stacktrace_string": record["candidate_stacktrace_string"],
-                "label": int(record["label"] == "GROUP"),
-                "sample_weight": float(record.get("sample_weight", 1.0)),
-            }
+            gt.data.Record(
+                query_stacktrace_string=record["query_stacktrace_string"],
+                candidate_stacktrace_string=record["candidate_stacktrace_string"],
+                label=int(record["label"] == "GROUP"),
+                sample_weight=float(record.get("sample_weight", 1.0)),
+                confidence_score=float(record.get("confidence_score", 1.0)),
+                # NOTE: cast to float b/c polars could read the data as a string if there were nulls in the CSV
+            )
             for query_group_df in query_group_dfs
             for record in query_group_df.rows(named=True)
         ]
@@ -73,6 +83,7 @@ def df_to_dataset(df: pl.DataFrame, shuffle_groups: bool = True, seed: int | Non
 def create_project_dataset_dict(
     df: pl.DataFrame,
     min_dataset_size: int | None = None,
+    use_confidence_score: bool = False,
 ) -> DatasetDict:
     """
     Create a `DatasetDict` with one dataset per project. Projects below `min_dataset_size` are packed into a single
@@ -93,11 +104,11 @@ def create_project_dataset_dict(
         if (min_dataset_size is not None) and (df_project.height < min_dataset_size):
             small_project_dfs.append(df_project)
         else:
-            project_id_to_dataset[project_id] = df_to_dataset(df_project)
+            project_id_to_dataset[project_id] = df_to_dataset(df_project, use_confidence_score=use_confidence_score)
 
     if small_project_dfs:
         df_packed = pl.concat(small_project_dfs)
-        project_id_to_dataset["__packed__"] = df_to_dataset(df_packed)
+        project_id_to_dataset["__packed__"] = df_to_dataset(df_packed, use_confidence_score=use_confidence_score)
 
     return DatasetDict(project_id_to_dataset)
 
@@ -125,15 +136,13 @@ def batch_pairs_by_token_budget(
     Preserves order across and w/in pairs. If one pair exceeds the token budget, it's still included as its own
     sub-batch (i.e., its a batch with one pair).
     """
-    queries = batch["query_stacktrace_string"]
-    candidates = batch["candidate_stacktrace_string"]
-    labels = batch["label"]
-    sample_weights = batch["sample_weight"]
+    batch_keys = list(batch.keys())
 
-    if len(queries) != len(candidates) or len(queries) != len(labels):
-        raise ValueError("Batch fields have inconsistent lengths")
-    if len(queries) == 0:
-        raise ValueError("Batch has no pairs / label is empty")
+    for key1, key2 in itertools.combinations(batch_keys, 2):
+        if len(batch[key1]) != len(batch[key2]):
+            raise ValueError(f"Batch fields {key1} and {key2} have inconsistent lengths")
+    if len(batch[batch_keys[0]]) == 0:
+        raise ValueError("Batch is empty")
     if token_budget <= 0:
         raise ValueError("token_budget must be positive")
 
@@ -141,25 +150,19 @@ def batch_pairs_by_token_budget(
     curr_max_num_tokens = 0
     curr_pairs = 0
 
-    for i in range(len(queries)):
-        num_tokens_query = count_tokens(queries[i])
-        num_tokens_candidate = count_tokens(candidates[i])
+    for idx in range(len(batch["query_stacktrace_string"])):
+        num_tokens_query = count_tokens(batch["query_stacktrace_string"][idx])
+        num_tokens_candidate = count_tokens(batch["candidate_stacktrace_string"][idx])
         new_max_num_tokens = max(curr_max_num_tokens, num_tokens_query, num_tokens_candidate)
         new_pairs = curr_pairs + 1
         est_cost = (2 * new_pairs) * new_max_num_tokens
-        # Approximate padded token work as: (num_texts_in_microbatch * max_tokens_in_microbatch).
+        # Approximate padded token work as: num_texts_in_microbatch * max_tokens_in_microbatch
         # Since we encode 2 texts per pair, num_texts <= 2 * num_pairs. (Not equal b/c of caching.)
 
         if curr_pairs > 0 and est_cost > token_budget:
             # Flush [start, i)
-            yield {
-                "query_stacktrace_string": queries[start:i],
-                "candidate_stacktrace_string": candidates[start:i],
-                "label": labels[start:i],
-                "sample_weight": sample_weights[start:i],
-                # TODO: might be able to generalize this
-            }
-            start = i
+            yield {key: batch[key][start:idx] for key in batch_keys}
+            start = idx
             curr_max_num_tokens = max(num_tokens_query, num_tokens_candidate)
             curr_pairs = 1
             continue
@@ -168,13 +171,8 @@ def batch_pairs_by_token_budget(
         curr_pairs = new_pairs
 
     # Flush tail
-    if start < len(queries):
-        yield {
-            "query_stacktrace_string": queries[start:],
-            "candidate_stacktrace_string": candidates[start:],
-            "label": labels[start:],
-            "sample_weight": sample_weights[start:],
-        }
+    if start < len(batch["query_stacktrace_string"]):
+        yield {key: batch[key][start:] for key in batch_keys}
 
 
 class ModelForTraining(torch.nn.Module):
@@ -214,10 +212,15 @@ class ModelForTraining(torch.nn.Module):
         return gt.data.Features(query_embeddings=query_embeddings, candidate_embeddings=candidate_embeddings)
 
     def forward(
-        self, inputs: gt.data.Batch, labels: torch.Tensor, *, sample_weight: torch.Tensor | None = None
+        self,
+        inputs: gt.data.Batch,
+        labels: torch.Tensor,
+        *,
+        sample_weight: torch.Tensor | None = None,
+        confidence_scores: torch.Tensor | None = None,
     ) -> torch.Tensor:
         features = self.encode(inputs)
-        return self.loss(features, labels, sample_weight=sample_weight)
+        return self.loss(features, labels, sample_weight=sample_weight, confidence_scores=confidence_scores)
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None) -> None:
         self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
@@ -296,7 +299,12 @@ class Trainer(SentenceTransformerTrainer):
     def compute_loss(
         self, model: ModelForTraining, inputs: gt.data.Batch, return_outputs: bool = False, num_items_in_batch=None
     ):
-        loss = model(inputs, inputs["label"], sample_weight=inputs["sample_weight"])
+        loss = model(
+            inputs,
+            inputs["label"],
+            sample_weight=inputs["sample_weight"],
+            confidence_scores=inputs["confidence_score"],
+        )
         if return_outputs:
             return loss, {}
         return loss
@@ -338,7 +346,6 @@ class Trainer(SentenceTransformerTrainer):
 
         NOTE: training_step corresponds to one optimizer.step call.
         """
-        # TODO: maybe balance the sharded batch sampler across GPUs
         model.train()
         if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
             self.optimizer.train()
@@ -548,14 +555,16 @@ class TrainingConfig(BaseModel):
         "synthetic-hard-negative-llm": 2.0,
     }  # TODO: Literal. source values aren't documented anywhere yet.
     shuffle_within_dataset: bool = False  # for cache hits. 2x overall training speedup w/o increasing gradient var
+    use_confidence_score: bool = False
 
     # Loss
     loss_type: Literal["sigmoid", "contrastive"] = "contrastive"
-    contrastive_margin: float = 0.5  # idk, need to tune
+    contrastive_margin: float = 0.5  # did the best among 0.25, 0.5, 0.75
 
     # MRL
     mrl_dim_to_weight: dict[int, float] = {768: 2.0, 512: 1.0, 256: 1.0, 128: 0.5, 64: 0.25}
-    n_dims_per_step: int = 2
+    # Equal weights did slightly worse overall, no better at dim 64
+    n_dims_per_step: int = 2  # TODO: tune
 
     # Logging
     wandb_project: str = "grouping-trainer"
@@ -579,6 +588,7 @@ def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingC
         min_dataset_size=training_config.per_device_train_batch_size,
         paths=training_config.training_csvs,
         source_to_sample_weight=training_config.source_to_sample_weight or None,
+        use_confidence_score=training_config.use_confidence_score,
     )
     if "__packed__" in dataset_dict_train:
         logger.info(

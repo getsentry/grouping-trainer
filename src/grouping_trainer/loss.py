@@ -66,6 +66,7 @@ class PairwiseLoss(torch.nn.Module, ABC):
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
+        confidence_scores: torch.Tensor | None = None,
     ) -> torch.Tensor: ...
 
     @abstractmethod
@@ -75,15 +76,22 @@ class PairwiseLoss(torch.nn.Module, ABC):
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
+        confidence_scores: torch.Tensor | None = None,
     ) -> torch.Tensor: ...
 
     def forward(
-        self, features: gt.data.Features, labels: torch.Tensor, *, sample_weight: torch.Tensor | None = None
+        self,
+        features: gt.data.Features,
+        labels: torch.Tensor,
+        *,
+        sample_weight: torch.Tensor | None = None,
+        confidence_scores: torch.Tensor | None = None,
     ) -> torch.Tensor:
         return self.compute_loss(
             all_embeddings=(features["query_embeddings"], features["candidate_embeddings"]),
             labels=labels.float(),
             sample_weight=sample_weight,
+            confidence_scores=confidence_scores,
         )
 
 
@@ -106,6 +114,7 @@ class ContrastiveLoss(PairwiseLoss):
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
+        **kwargs,
     ) -> torch.Tensor:
         distances: torch.Tensor = 1 - similarities
         loss_pos = labels * distances.pow(2)
@@ -132,6 +141,7 @@ class ContrastiveLoss(PairwiseLoss):
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
+        **kwargs,
     ) -> torch.Tensor:
         if self.mrl_dim_to_weight is None:
             return self.compute_loss_from_embeddings(all_embeddings, labels, sample_weight=sample_weight)
@@ -167,7 +177,11 @@ class SigmoidPairwiseLoss(PairwiseLoss):
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
+        confidence_scores: torch.Tensor | None = None,
+        **kwargs,
     ) -> torch.Tensor:
+        if confidence_scores is not None:
+            labels = torch.where(labels == 0, 1 - confidence_scores, confidence_scores)
         scale = torch.exp(self.log_scale)
         logits = (similarities * scale) + self.bias
         loss_unreduced = torch.nn.functional.binary_cross_entropy_with_logits(logits, labels, reduction="none")
@@ -181,10 +195,13 @@ class SigmoidPairwiseLoss(PairwiseLoss):
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
+        confidence_scores: torch.Tensor | None = None,
     ) -> torch.Tensor:
         query_embeddings, candidate_embeddings = all_embeddings
         similarities = pairwise_cos_sim(query_embeddings, candidate_embeddings)
-        return self.compute_loss_from_similarities(similarities, labels, sample_weight=sample_weight)
+        return self.compute_loss_from_similarities(
+            similarities, labels, sample_weight=sample_weight, confidence_scores=confidence_scores
+        )
 
     def compute_loss(
         self,
@@ -192,9 +209,13 @@ class SigmoidPairwiseLoss(PairwiseLoss):
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
+        confidence_scores: torch.Tensor | None = None,
+        **kwargs,
     ) -> torch.Tensor:
         if self.mrl_dim_to_weight is None:
-            return self.compute_loss_from_embeddings(all_embeddings, labels, sample_weight=sample_weight)
+            return self.compute_loss_from_embeddings(
+                all_embeddings, labels, sample_weight=sample_weight, confidence_scores=confidence_scores
+            )
         return _mrl_loss(
             mrl_dim_to_weight=self.mrl_dim_to_weight,
             n_dims_per_step=self.n_dims_per_step,
@@ -202,4 +223,5 @@ class SigmoidPairwiseLoss(PairwiseLoss):
             all_embeddings=all_embeddings,
             labels=labels,
             sample_weight=sample_weight,
+            confidence_scores=confidence_scores,
         )

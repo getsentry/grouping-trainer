@@ -5,7 +5,6 @@ import os
 import numpy as np
 
 from sentence_transformers.evaluation import SentenceEvaluator
-from sentence_transformers.readers import InputExample
 from sentence_transformers import SentenceTransformer
 from sentence_transformers.util import pairwise_cos_sim
 import torch
@@ -31,8 +30,8 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
     We want to control precision (e.g., avoid overgrouping errors) and maximize recall (reduce undergrouping/noise).
 
-    One problem w/ this method is that precision doesn't monotically relate to the threshold. In practice this isn't
-    much of a b/c we have 80k pairs in the validation dataset.
+    One problem w/ this method is that precision doesn't monotonically relate to the threshold. In practice this isn't
+    much of a problem b/c we have 80k pairs in the validation dataset.
     """
 
     def __init__(
@@ -40,6 +39,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         sentences1: list[str],
         sentences2: list[str],
         labels: list[int],
+        confidence_scores: list[float] | None = None,
         name: str = "",
         batch_size: int = 1,
         show_progress_bar: bool | None = False,
@@ -52,12 +52,15 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         self.sentences1 = sentences1
         self.sentences2 = sentences2
         self.labels = labels
+        self.confidence_scores = confidence_scores
         self.truncate_dims = truncate_dims  # None means use model's full dimension
         self.target_precisions = target_precisions or [0.85, 0.90, 0.95, 0.99]
         self.min_predictions = min_predictions
 
         assert len(self.sentences1) == len(self.sentences2)
         assert len(self.sentences1) == len(self.labels)
+        if self.confidence_scores is not None:
+            assert len(self.sentences1) == len(self.confidence_scores)
         for label in labels:
             assert label == 0 or label == 1
 
@@ -152,18 +155,6 @@ class MinPrecisionEvaluator(SentenceEvaluator):
 
         return metrics
 
-    @classmethod
-    def from_input_examples(cls, examples: list[InputExample], **kwargs):
-        sentences1 = []
-        sentences2 = []
-        scores = []
-
-        for example in examples:
-            sentences1.append(example.texts[0])
-            sentences2.append(example.texts[1])
-            scores.append(example.label)
-        return cls(sentences1, sentences2, scores, **kwargs)
-
     def embed_inputs(
         self,
         model: SentenceTransformer | gt.train.ModelForTraining,
@@ -198,6 +189,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         Returns:
             A tuple of (dims, metrics) where dims is the tuple of dimensions evaluated.
         """
+        model.eval()
         sentences = list(set(self.sentences1 + self.sentences2))
         embeddings = self.embed_inputs(model, sentences)
         encoder = model.encoder if isinstance(model, gt.train.ModelForTraining) else model
@@ -220,6 +212,11 @@ class MinPrecisionEvaluator(SentenceEvaluator):
                     loss = model.loss.compute_loss_from_similarities(
                         similarities,
                         labels=torch.as_tensor(self.labels, device=embeddings1.device, dtype=torch.float),
+                        confidence_scores=(
+                            None
+                            if self.confidence_scores is None
+                            else torch.as_tensor(self.confidence_scores, device=embeddings1.device, dtype=torch.float)
+                        ),
                     )
                 metric_name_to_value[_metric_name_loss(dim=dim)] = loss.detach().cpu().item()
 

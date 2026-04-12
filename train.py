@@ -51,7 +51,7 @@ def run(
     run_shortname: str | None = None,
     use_text_prefix: bool = False,
     per_device_token_budget_scale: int | None = None,
-    mini_cpu_test: bool = False,
+    tiny_run: bool = False,
 ):
     """
     Train a grouping model.
@@ -68,29 +68,30 @@ def run(
         If True, add the model's designated prefix to the input text. Didn't help lightonai/modernbert-embed-large
     per_device_token_budget_scale
         Sets per_device_token_budget = per_device_token_budget_scale * 8192—the max tokens for grouping in prod
-    mini_cpu_test
-        Run a mini training run on CPU to sanity check plumbing.
+    tiny_run
+        Run a tiny training run to sanity check plumbing.
     """
     is_cuda = torch.cuda.is_available()
 
-    if not mini_cpu_test:
+    if not tiny_run:
         assert run_shortname is not None, "run_shortname is required for full training runs"
-        assert is_cuda, "CUDA is required for full training. Did you mean to pass --mini_cpu_test ?"
+        assert is_cuda, "CUDA is required for full training. Did you mean to pass --tiny_run ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
     model = gt.utils.encoder_from_base(base_model, use_text_prefix=use_text_prefix)
 
-    if mini_cpu_test:
+    if tiny_run:
         training_config = gt.train.TrainingConfig(
-            run_shortname=run_shortname or "cpu-sanity-check",
+            run_shortname=run_shortname or "tiny-run",
             per_device_train_batch_size=2,
             per_device_token_budget=64,
             gradient_checkpointing=True,
             sample_size_train=30,
             num_logs=30,
             num_checkpoints=2,
-            loss_type="contrastive",
-            contrastive_margin=0.5,
+            loss_type="sigmoid",
+            use_confidence_score=True,
+            # contrastive_margin=0.5,
         )
     else:
         per_device_token_budget_scale = (
@@ -100,15 +101,16 @@ def run(
             run_shortname=run_shortname,
             per_device_train_batch_size=128,
             per_device_token_budget=8192 * per_device_token_budget_scale,
-            loss_type="contrastive",
-            contrastive_margin=0.5,
-            training_csvs=(
-                gt.data.DEFAULT_TRAIN_PATHS
-                + (
-                    "final_csvs/synthetic-hard-negatives-llm.csv",  # TODO: curriculum learn these?
-                    "final_csvs/synthetic-hard-positives-llm.csv",
-                )
-            ),
+            loss_type="sigmoid",
+            use_confidence_score=True,
+            # contrastive_margin=0.5,
+            # training_csvs=(
+            #     gt.data.DEFAULT_TRAIN_PATHS
+            #     + (
+            #         "final_csvs/synthetic-hard-negatives-llm.csv",  # TODO: curriculum learn these?
+            #         "final_csvs/synthetic-hard-positives-llm.csv",
+            #     )
+            # ),
         )
 
     trainer = gt.train.make_trainer(model, training_config)
@@ -137,14 +139,16 @@ def run(
         )
         if use_text_prefix:
             eval_cmd += " --use_text_prefix"
-        if mini_cpu_test:
+        if training_config.use_confidence_score:
+            eval_cmd += " --use_confidence_score"
+        if tiny_run:
             eval_cmd += " --sample_val 200 --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")
-        if not mini_cpu_test:
+        if not tiny_run:
             # gt.train.launch_l4_eval(eval_cmd)
             pass
         else:
-            logger.info("Skipping async eval on L4 for mini_cpu_test")
+            logger.info("Skipping async eval on L4 for tiny_run")
 
         trainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run_gcs_dir))
 
