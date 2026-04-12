@@ -102,7 +102,6 @@ def run(
             per_device_token_budget=8192 * per_device_token_budget_scale,
             loss_type="contrastive",
             contrastive_margin=0.5,
-            mrl_dim_to_weight={768: 1, 512: 1, 256: 1, 128: 1, 64: 1},
         )
 
     trainer = gt.train.make_trainer(model, training_config)
