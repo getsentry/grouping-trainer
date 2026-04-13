@@ -486,8 +486,8 @@ def encoder_from_base(base_model: str, use_text_prefix: bool = True) -> Sentence
     """
     Build a SentenceTransformer encoder with standard dtype/attention settings.
 
-    Handles model-specific quirks (e.g. jina v5's config_kwargs, modernbert's trust_remote_code) and enables bfloat16 +
-    SDPA when CUDA supports it.
+    Handles model-specific quirks (e.g. jina v5's config_kwargs and trust_remote_code) and enables bfloat16 + SDPA when
+    CUDA supports it.
     """
     if base_model == "jinaai/jina-embeddings-v5-text-nano-text-matching":
         return SentenceTransformer(
@@ -498,20 +498,16 @@ def encoder_from_base(base_model: str, use_text_prefix: bool = True) -> Sentence
         )
 
     model_kwargs = None
-    trust_remote_code = False
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
         model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
 
     text_prefix = ""
-    if base_model == "lightonai/modernbert-embed-large":
-        trust_remote_code = True
-        if use_text_prefix:
-            # https://huggingface.co/lightonai/modernbert-embed-large#usage
-            text_prefix = "clustering: "
+    if base_model == "lightonai/modernbert-embed-large" and use_text_prefix:
+        # https://huggingface.co/lightonai/modernbert-embed-large#usage
+        text_prefix = "clustering: "
 
     return SentenceTransformer(
         base_model,
-        trust_remote_code=trust_remote_code,
         model_kwargs=model_kwargs,
         text_prefix=text_prefix,
     )
