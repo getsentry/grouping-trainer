@@ -89,9 +89,8 @@ def run(
             sample_size_train=30,
             num_logs=30,
             num_checkpoints=2,
-            loss_type="sigmoid",
-            use_confidence_score=True,
-            # contrastive_margin=0.5,
+            loss_type="contrastive",
+            contrastive_margin=0.5,
         )
     else:
         per_device_token_budget_scale = (
@@ -99,18 +98,15 @@ def run(
         )
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
-            per_device_train_batch_size=64,
+            per_device_train_batch_size=64,  # Have 4 GPUs
             per_device_token_budget=8192 * per_device_token_budget_scale,
-            loss_type="sigmoid",
-            use_confidence_score=True,
-            # contrastive_margin=0.5,
-            # training_csvs=(
-            #     gt.data.DEFAULT_TRAIN_PATHS
-            #     + (
-            #         "final_csvs/synthetic-hard-negatives-llm.csv",  # TODO: curriculum learn these?
-            #         "final_csvs/synthetic-hard-positives-llm.csv",
-            #     )
-            # ),
+            loss_type="contrastive",
+            contrastive_margin=0.5,
+            training_csvs=(
+                "final_csvs/train.csv",
+                "final_csvs/train_more.csv",
+                "final_csvs/train_more2.csv",  # experiment w/o synthetic-easy
+            ),
         )
 
     trainer = gt.train.make_trainer(model, training_config)
@@ -140,7 +136,7 @@ def run(
         if use_text_prefix:
             eval_cmd += " --use_text_prefix"
         if training_config.use_confidence_score:
-            eval_cmd += " --use_confidence_score"
+            eval_cmd += f" --use_confidence_score --confidence_score_floor {training_config.confidence_score_floor}"
         if tiny_run:
             eval_cmd += " --sample_val 200 --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")

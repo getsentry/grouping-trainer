@@ -41,7 +41,11 @@ logger = logging.getLogger(__name__)
 
 
 def df_to_dataset(
-    df: pl.DataFrame, shuffle_groups: bool = True, seed: int | None = None, use_confidence_score: bool = False
+    df: pl.DataFrame,
+    shuffle_groups: bool = True,
+    seed: int | None = None,
+    use_confidence_score: bool = False,
+    confidence_score_floor: float = 0.9,
 ) -> Dataset:
     """
     Convert a DataFrame to a Dataset, grouping records by `query_stacktrace_string`.
@@ -52,7 +56,9 @@ def df_to_dataset(
     if not use_confidence_score:
         df = df.drop("confidence_score", strict=False)
     else:
-        df = df.with_columns(pl.col("confidence_score").fill_null(1.0))
+        df = df.with_columns(
+            pl.col("confidence_score").cast(pl.Float64).fill_null(1.0).clip(lower_bound=confidence_score_floor)
+        )
 
     query_group_dfs = [
         group_df.sort(pl.col("candidate_stacktrace_string").str.len_chars())
@@ -85,6 +91,7 @@ def create_project_dataset_dict(
     df: pl.DataFrame,
     min_dataset_size: int | None = None,
     use_confidence_score: bool = False,
+    confidence_score_floor: float = 0.9,
 ) -> DatasetDict:
     """
     Create a `DatasetDict` with one dataset per project. Projects below `min_dataset_size` are packed into a single
@@ -105,11 +112,15 @@ def create_project_dataset_dict(
         if (min_dataset_size is not None) and (df_project.height < min_dataset_size):
             small_project_dfs.append(df_project)
         else:
-            project_id_to_dataset[project_id] = df_to_dataset(df_project, use_confidence_score=use_confidence_score)
+            project_id_to_dataset[project_id] = df_to_dataset(
+                df_project, use_confidence_score=use_confidence_score, confidence_score_floor=confidence_score_floor
+            )
 
     if small_project_dfs:
         df_packed = pl.concat(small_project_dfs)
-        project_id_to_dataset["__packed__"] = df_to_dataset(df_packed, use_confidence_score=use_confidence_score)
+        project_id_to_dataset["__packed__"] = df_to_dataset(
+            df_packed, use_confidence_score=use_confidence_score, confidence_score_floor=confidence_score_floor
+        )
 
     return DatasetDict(project_id_to_dataset)
 
@@ -557,6 +568,7 @@ class TrainingConfig(BaseModel):
     }  # TODO: Literal. source values aren't documented anywhere yet.
     shuffle_within_dataset: bool = False  # for cache hits. 2x overall training speedup w/o increasing gradient var
     use_confidence_score: bool = False
+    confidence_score_floor: float = 0.9
 
     # Loss
     loss_type: Literal["sigmoid", "contrastive"] = "contrastive"
@@ -590,6 +602,7 @@ def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingC
         paths=training_config.training_csvs,
         source_to_sample_weight=training_config.source_to_sample_weight or None,
         use_confidence_score=training_config.use_confidence_score,
+        confidence_score_floor=training_config.confidence_score_floor,
     )
     if "__packed__" in dataset_dict_train:
         logger.info(

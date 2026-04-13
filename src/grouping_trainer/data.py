@@ -88,6 +88,7 @@ def load_train_dataset_dict(
     paths: tuple[str, ...] = DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
     use_confidence_score: bool = False,
+    confidence_score_floor: float = 0.9,
 ) -> tuple[DatasetDict, float]:
     """
     Args:
@@ -112,7 +113,7 @@ def load_train_dataset_dict(
         df = df.with_columns(pl.lit(1.0).alias("sample_weight"))
 
     dataset_dict_train = gt.train.create_project_dataset_dict(
-        df, min_dataset_size=min_dataset_size, use_confidence_score=use_confidence_score
+        df, min_dataset_size=min_dataset_size, use_confidence_score=use_confidence_score, confidence_score_floor=confidence_score_floor
     )
     frac_positive = (df["label"] == "GROUP").mean()
     return dataset_dict_train, frac_positive
