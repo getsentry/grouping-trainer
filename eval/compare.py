@@ -15,12 +15,13 @@ python eval/compare.py \
     --threshold_model2 0.90 \
     --dim_model2 64
 
+# Platform-specific thresholds (comma-separated platform=value, must include "default"):
 python eval/compare.py \
     --name_model1 v2 \
     --name_model2 large-con \
     --gcs_model1 gs://grouping-data/runs/issue_grouping_v2/similarities/test_full2 \
     --gcs_model2 gs://grouping-data/runs/2026-04-07-11-56-28-large-con/similarities/test_full2 \
-    --threshold_model1 0.90 \
+    --threshold_model1 default=0.92,cocoa=0.80,csharp=0.75,go=0.80,node=0.90 \
     --threshold_model2 0.90 \
     --dim_model2 64
 """
@@ -38,7 +39,6 @@ import gspread
 import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
-import yaml
 from google.auth import default as google_auth_default
 from tap import tapify
 from tqdm.auto import tqdm
@@ -1090,19 +1090,21 @@ def compare_metrics_by_stacktrace_length(
 COLS_JOIN = ["query_stacktrace_string", "candidate_stacktrace_string"]
 
 
-def _load_thresholds(path_model: Path, threshold_default: float) -> float | dict[str, float]:
-    """Load platform-specific thresholds from a YAML file next to the similarities CSV.
+def _parse_threshold(value: str) -> float | dict[str, float]:
+    """Parse a threshold CLI argument.
 
-    If thresholds.yaml exists, returns a dict with platform keys and a "default" key.
-    Otherwise returns threshold_default as a flat float.
+    Accepts either a plain float (e.g. "0.99") or comma-separated platform=value
+    pairs (e.g. "default=0.92,cocoa=0.80,csharp=0.75"). The latter must include
+    a "default" key.
     """
-    path_yaml = path_model.parent / "thresholds.yaml"
-    if not path_yaml.exists():
-        return threshold_default
-    with open(path_yaml) as f:
-        thresholds = yaml.safe_load(f)
-    thresholds.setdefault("default", threshold_default)
-    print(f"Loaded thresholds from {path_yaml}")
+    if "=" not in value:
+        return float(value)
+    thresholds = {}
+    for part in value.split(","):
+        platform, thresh = part.split("=", 1)
+        thresholds[platform.strip()] = float(thresh.strip())
+    if "default" not in thresholds:
+        raise ValueError(f"Platform-specific thresholds must include a 'default' key, got: {value}")
     return thresholds
 
 
@@ -1190,8 +1192,8 @@ def main(
     name_model2: str,
     dim_model1: int = 768,
     dim_model2: int = 768,
-    threshold_model1: float = 0.99,
-    threshold_model2: float = 0.90,
+    threshold_model1: str = "0.99",
+    threshold_model2: str = "0.90",
     min_group_rate_increase: float = 0.15,
     min_group_rate_decrease: float = 0.10,
     max_display_projects: int = 30,
@@ -1221,11 +1223,10 @@ def main(
     name_model2
         Short alias for model 2 used in output columns and file names.
     threshold_model1
-        Default cosine similarity threshold for model 1. Overridden per-platform
-        if a thresholds.yaml exists next to the CSV.
+        Cosine similarity threshold for model 1. Either a plain float (e.g. "0.99")
+        or comma-separated platform=value pairs (e.g. "default=0.92,cocoa=0.80,node=0.90").
     threshold_model2
-        Default cosine similarity threshold for model 2. Overridden per-platform
-        if a thresholds.yaml exists next to the CSV.
+        Cosine similarity threshold for model 2. Same format as threshold_model1.
     min_group_rate_increase
         Flag projects where model2 GROUP rate exceeds model1 by at least this amount.
     min_group_rate_decrease
@@ -1279,8 +1280,8 @@ def main(
     dir_output.mkdir(parents=True, exist_ok=True)
 
     thresholds = {
-        name_model1: _load_thresholds(path1, threshold_model1),
-        name_model2: _load_thresholds(path2, threshold_model2),
+        name_model1: _parse_threshold(threshold_model1),
+        name_model2: _parse_threshold(threshold_model2),
     }
 
     report(f"# {name_model1} (dim={label_dim1}) vs {name_model2} (dim={label_dim2}), dataset: {name_dataset}\n")
@@ -1333,13 +1334,14 @@ def main(
 
     # Threshold sweep for model2
     sweep_thresholds(df, name_model2)
-    threshold2 = thresholds[name_model2]
+    threshold1_parsed = thresholds[name_model1]
+    threshold2_parsed = thresholds[name_model2]
     sweep_thresholds_by_project(
         df,
         name_model2,
-        thresholds_platform=threshold2 if isinstance(threshold2, dict) else None,
+        thresholds_platform=threshold2_parsed if isinstance(threshold2_parsed, dict) else None,
         baseline_model=name_model1,
-        baseline_threshold=threshold_model1,
+        baseline_threshold=threshold1_parsed if isinstance(threshold1_parsed, float) else threshold1_parsed["default"],
     )
 
     report("\n## Platform-level results\n")
@@ -1365,6 +1367,17 @@ def main(
         report_plot(f"Similarity distribution ({name})", filename)
 
     report("\n## Project-level results\n")
+
+    m1, m2 = result.model_names
+    pm = result.project_metrics
+    wins = pm.filter(
+        (pl.col(f"{m2}_precision_GROUP") > pl.col(f"{m1}_precision_GROUP"))
+        & (pl.col(f"{m2}_recall_GROUP") > pl.col(f"{m1}_recall_GROUP"))
+    )
+    report(
+        f"**Project win rate for {m2}**: {len(wins)}/{len(pm)}"
+        f" ({len(wins) / len(pm):.0%}) projects where both precision_GROUP and recall_GROUP are higher\n"
+    )
 
     fig = plot_dumbbell_by_project(result.project_metrics, result.model_names)
     fig.savefig(dir_output / "dumbbell_by_project.png", dpi=150, bbox_inches="tight")
