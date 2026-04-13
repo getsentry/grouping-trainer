@@ -680,10 +680,11 @@ def compare_models(
         project_metrics_df = project_metrics_df.rename(rename_map)
         # Rename pred_ and cos_sim_ columns in df
         df_rename_map = {}
-        for col in df.columns:
-            for old, new in display_names.items():
-                if col == f"pred_{old}" or col == f"cos_sim_{old}":
-                    df_rename_map[col] = col.replace(old, new)
+        for old, new in display_names.items():
+            for prefix in ("pred_", "cos_sim_"):
+                col = f"{prefix}{old}"
+                if col in df.columns:
+                    df_rename_map[col] = f"{prefix}{new}"
         df = df.rename(df_rename_map)
     display_model_names = [display_names.get(n, n) for n in model_names]
 
@@ -792,7 +793,7 @@ def sweep_thresholds_by_project(
     harm_threshold: float = 0.05,
     thresholds_platform: dict[str, float] | None = None,
     baseline_model: str | None = None,
-    baseline_threshold: float | None = None,
+    baseline_threshold: float | dict[str, float] | None = None,
 ) -> None:
     """
     Show per-platform precision stats for platform-specific thresholds vs a baseline.
@@ -807,7 +808,8 @@ def sweep_thresholds_by_project(
             Must include a "default" key for platforms not explicitly listed.
         baseline_model: If set, use this model at baseline_threshold as the baseline
             for computing deltas. Otherwise uses the highest threshold in the sweep.
-        baseline_threshold: Threshold for the baseline model.
+        baseline_threshold: Threshold for the baseline model. Can be a float or a
+            per-platform dict (with a "default" key), same format as thresholds_platform.
     """
     sim_col = f"cos_sim_{model_name}"
     pred_col = f"pred_{model_name}"
@@ -834,16 +836,20 @@ def sweep_thresholds_by_project(
             )
         return pl.DataFrame(rows_project)
 
-    def _compute_project_precisions_per_platform(thresholds_platform: dict[str, float]) -> pl.DataFrame:
+    def _compute_project_precisions_per_platform(
+        model: str, thresholds_platform: dict[str, float]
+    ) -> pl.DataFrame:
         """Compute per-project precision_GROUP using each platform's own threshold."""
+        sc = f"cos_sim_{model}"
+        pc = f"pred_{model}"
         rows_project = []
         for (org_id, project_id), group_df in df.group_by(["org_id", "project_id"]):
             platform = group_df["platform"][0]
             thresh = thresholds_platform.get(platform, thresholds_platform["default"])
             df_t = group_df.with_columns(
-                pl.when(pl.col(sim_col) > thresh).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pred_col)
+                pl.when(pl.col(sc) > thresh).then(pl.lit("GROUP")).otherwise(pl.lit("SEPARATE")).alias(pc)
             )
-            pred_group = df_t.filter(pl.col(pred_col) == "GROUP")
+            pred_group = df_t.filter(pl.col(pc) == "GROUP")
             prec = (pred_group["label"] == "GROUP").mean() if len(pred_group) > 0 else None
             rows_project.append(
                 {"org_id": org_id, "project_id": project_id, "platform": platform, "precision_GROUP": prec}
@@ -853,14 +859,20 @@ def sweep_thresholds_by_project(
     # Compute per-project precision_GROUP at each threshold
     project_precisions: dict[str, pl.DataFrame] = {}
     if thresholds_platform is not None:
-        project_precisions["platform-specific"] = _compute_project_precisions_per_platform(thresholds_platform)
+        project_precisions["platform-specific"] = _compute_project_precisions_per_platform(model_name, thresholds_platform)
     for thresh in thresholds_sorted:
         project_precisions[str(thresh)] = _compute_project_precisions(model_name, thresh)
 
     # Baseline: external model if provided, else highest flat threshold
     if baseline_model is not None:
-        baseline_key = f"{baseline_model}@{baseline_threshold}"
-        project_precisions[baseline_key] = _compute_project_precisions(baseline_model, baseline_threshold)
+        if isinstance(baseline_threshold, dict):
+            baseline_key = f"{baseline_model}@platform-specific"
+            project_precisions[baseline_key] = _compute_project_precisions_per_platform(
+                baseline_model, baseline_threshold
+            )
+        else:
+            baseline_key = f"{baseline_model}@{baseline_threshold}"
+            project_precisions[baseline_key] = _compute_project_precisions(baseline_model, baseline_threshold)
     else:
         baseline_key = str(thresholds_sorted[0])
     baseline_df = project_precisions[baseline_key].rename({"precision_GROUP": "baseline_prec"})
@@ -1087,7 +1099,7 @@ def compare_metrics_by_stacktrace_length(
     report(_compute_metrics(long_df, model_names))
 
 
-COLS_JOIN = ["query_stacktrace_string", "candidate_stacktrace_string"]
+COLS_JOIN = ("query_stacktrace_string", "candidate_stacktrace_string")
 
 
 def _parse_threshold(value: str) -> float | dict[str, float]:
@@ -1117,6 +1129,16 @@ def _resolve_cos_sim(df: pl.DataFrame, dim: int) -> tuple[str, str]:
     return col, str(dim)
 
 
+def _check_no_duplicate_pairs(df: pl.DataFrame, source: Path) -> None:
+    """
+    Raise if the DataFrame has duplicate stacktrace pairs. The join in _load_and_join assumes 1:1 rows.
+    eval/save_embeddings.py should have already deduplicated pairs when loading the test data.
+    """
+    n_dupes = len(df) - df.select(COLS_JOIN).n_unique()
+    if n_dupes > 0:
+        raise ValueError(f"{source} has {n_dupes} duplicate stacktrace pairs")
+
+
 def _load_and_join(
     path_model1: Path,
     path_model2: Path,
@@ -1132,6 +1154,8 @@ def _load_and_join(
     df1 = pl.read_csv(path_model1)
     col1, label_dim1 = _resolve_cos_sim(df1, dim_model1)
 
+    _check_no_duplicate_pairs(df1, path_model1)
+
     if path_model1.resolve() == path_model2.resolve():
         col2, label_dim2 = _resolve_cos_sim(df1, dim_model2)
         if col1 == col2:
@@ -1140,6 +1164,8 @@ def _load_and_join(
     else:
         df2 = pl.read_csv(path_model2)
         col2, label_dim2 = _resolve_cos_sim(df2, dim_model2)
+
+        _check_no_duplicate_pairs(df2, path_model2)
 
         # Validate pair sets match
         pairs1 = df1.select(COLS_JOIN)
@@ -1341,7 +1367,7 @@ def main(
         name_model2,
         thresholds_platform=threshold2_parsed if isinstance(threshold2_parsed, dict) else None,
         baseline_model=name_model1,
-        baseline_threshold=threshold1_parsed if isinstance(threshold1_parsed, float) else threshold1_parsed["default"],
+        baseline_threshold=threshold1_parsed,
     )
 
     report("\n## Platform-level results\n")
