@@ -52,12 +52,12 @@ def _check_no_overlap(df_train: pl.DataFrame, df_test: pl.DataFrame) -> None:
         f"Showing first 10 project IDs: {sorted(projects_overlap)[:10]}"
     )
 
-    # There should be almost no pair overlap. Hash pairs to avoid materializing full stacktrace strings
+    # There should be almost no pair overlap
     hash_expr = pl.concat_str(
         pl.min_horizontal(_COLUMNS_PAIR),  # canonicalize order since grouping is symmetric
         pl.max_horizontal(_COLUMNS_PAIR),
         separator="\x00",
-    ).hash()
+    ).hash()  # avoid materializing full stacktrace strings to avoid OOM on G2 instances
     hashes_train = set(df_train.select(hash_expr).to_series().to_list())
     hashes_test = df_test.select(hash_expr).to_series()
     n_overlap = hashes_test.is_in(hashes_train).sum()
@@ -95,7 +95,7 @@ def _check_no_train_test_overlap(run_gcs_dir: str, df_test: pl.DataFrame) -> Non
     paths_train = tuple(config["training_csvs"])
     cols_needed = ["project_id", *_COLUMNS_PAIR]
     logger.info(f"Loading training data columns {cols_needed} from {paths_train} to check for overlap w/ test data.")
-    df_train = pl.concat(
+    df_train = pl.concat(  # select only needed columns to avoid OOM on G2 instances
         [pl.read_csv(path, columns=cols_needed).select(cols_needed) for path in paths_train],
     )
     _check_no_overlap(df_train, df_test)
