@@ -99,7 +99,7 @@ def run(
         )
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
-            per_device_train_batch_size=128,
+            per_device_train_batch_size=64,
             per_device_token_budget=8192 * per_device_token_budget_scale,
             loss_type="sigmoid",
             use_confidence_score=True,
