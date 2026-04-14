@@ -46,8 +46,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         if batch_size != self._compiled_batch_size:
             logger.error(
-                "Requested batch size doesn't match the compiled batch size. You should generally only use the "
-                "compiled model when the batch size is known beforehand.",
+                "Input batch size doesn't match the compiled batch size. You should generally only use the compiled "
+                "model when the batch size is known beforehand.",
                 extra={
                     "compiled_batch_size": self._compiled_batch_size,
                     "batch_size": batch_size,

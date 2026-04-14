@@ -15,9 +15,8 @@ from datetime import UTC, datetime
 
 class GCPJsonFormatter(logging.Formatter):
     """
-    Formats log records as JSON for GCP Cloud Logging.
-    GCP expects 'severity' instead of 'level', and parses JSON logs automatically
-    when they're written to stdout/stderr.
+    Formats log records as JSON for GCP Cloud Logging. GCP expects 'severity' instead of 'level', and parses JSON logs
+    automatically when they're written to stdout/stderr.
     """
 
     RESERVED_ATTRS = frozenset(
