@@ -22,7 +22,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         self,
         *args,
         compiled_batch_size: int = 1,
-        compiled_token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024, 2048),
+        compiled_token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024, 2048, 4096, 8192),
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
