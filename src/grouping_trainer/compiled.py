@@ -1,6 +1,8 @@
 import logging
 from collections.abc import Callable
-from typing import Any, cast
+from contextlib import contextmanager
+from functools import wraps
+from typing import Any, Literal, ParamSpec, cast
 
 import torch
 import torch.nn.functional as F
@@ -10,6 +12,16 @@ import grouping_trainer as gt
 logger = logging.getLogger(__name__)
 
 _ForwardFunction = Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]]
+
+
+@contextmanager
+def _set_float32_matmul_precision(precision: Literal["highest", "high", "medium"]):
+    current_precision = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision(precision)
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(current_precision)
 
 
 class SentenceTransformer(gt.utils.SentenceTransformer):
@@ -22,7 +34,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         self,
         *args,
         compiled_batch_size: int = 1,
-        compiled_token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024, 2048, 4096, 8192),
+        compiled_token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024, 2048),
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -77,11 +89,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         return encodings
 
     def compile_and_warm_up(self):
-        # Not called as part of init so that the caller can transfer the model to the target device before warming up.
-
-        torch.set_float32_matmul_precision("high")
-
-        torch._dynamo.config.recompile_limit = len(self._compiled_token_buckets) + 2
+        # This method isn't called in __init__ so that the caller can transfer the model to the target device before
+        # warming up.
 
         self._compiled_forward = cast(
             _ForwardFunction,
@@ -129,12 +138,12 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
                 # Run 4 (Capture): PyTorch executes the code within a torch.cuda.graph(g) context. The GPU driver
                 # records the exact sequence of kernel launches and memory pointers without actually executing the math.
 
+    @_set_float32_matmul_precision("high")
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
-        """
-        Only use the compiled forward if the sequence length matches one of our buckets. If we used the compiled forward
-        for one that doesn't hit the bucket, we create a new CUDA graph for every unique sequence length above
-        2048, which thrashes the cache.
-        """
+        # Only use the compiled forward if the sequence length matches one of our buckets. If we used the compiled forward
+        # for one that doesn't hit the bucket, we create a new CUDA graph for every unique sequence length above
+        # 2048, which thrashes the cache.
+
         if self.training:
             raise ValueError("This won't work for training.")
 
@@ -145,4 +154,5 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
                 # It'll pad and call the model on padded input for no reason.
                 raise ValueError("compile_and_warm_up() must be called before using the compiled forward.")
             return self._compiled_forward(input, **kwargs)
+            # model-related kwargs shouldn't be variable across calls
         return super().forward(input, **kwargs)
