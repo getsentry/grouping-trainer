@@ -81,6 +81,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         torch.set_float32_matmul_precision("high")
 
+        torch._dynamo.config.recompile_limit = len(self._compiled_token_buckets) + 2
+
         self._compiled_forward = cast(
             _ForwardFunction,
             torch.compile(super().forward, mode="reduce-overhead", dynamic=False),
