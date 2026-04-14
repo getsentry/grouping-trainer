@@ -1,19 +1,20 @@
 import logging
-from typing import Callable
+from collections.abc import Callable
+from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
 
 import grouping_trainer as gt
 
-torch.set_float32_matmul_precision("high")
-
 logger = logging.getLogger(__name__)
+
+_ForwardFunction = Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]]
 
 
 class SentenceTransformer(gt.utils.SentenceTransformer):
     """
-    Python is too slow for small models w/ batch size 1. Rm its overhead by compiling.
+    Python is too slow for small models w/ batch size 1. Rm its overhead by compiling. 1.5-3x speedup for our models.
     Cost: warming up can take minutes.
     """
 
@@ -29,23 +30,40 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             raise ValueError("Must be able to pad to use pre-compiled forward")
 
         self._compiled_batch_size = compiled_batch_size
-        self._buckets = tuple(sorted({bucket for bucket in compiled_token_buckets if bucket <= self.max_seq_length}))
-        self._compiled_forward: Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]] | None = None
+        self._compiled_token_buckets = tuple(
+            sorted({bucket for bucket in compiled_token_buckets if bucket <= self.max_seq_length})
+        )
+        self._compiled_forward: _ForwardFunction | None = None
 
-    def tokenize(self, texts: list[str], **kwargs) -> dict[str, torch.Tensor]:
+    def tokenize(
+        self, texts: list[str] | list[dict[Any, Any]] | list[tuple[str, str]], **kwargs
+    ) -> dict[str, torch.Tensor]:
         """
         Pads tokens to the nearest bucket so encode calls use a pre-compiled CUDA graph.
         """
         encodings = super().tokenize(texts, **kwargs)
-        current_len = encodings["input_ids"].shape[1]
-        target_len = current_len
-        for bucket in self._buckets:
-            if bucket >= current_len:
-                target_len = bucket
+        batch_size, num_tokens = encodings["input_ids"].shape
+
+        if batch_size != self._compiled_batch_size:
+            logger.error(
+                "Requested batch size doesn't match the compiled batch size. You should generally only use the "
+                "compiled model when the batch size is known beforehand.",
+                extra={
+                    "compiled_batch_size": self._compiled_batch_size,
+                    "batch_size": batch_size,
+                    "num_tokens": num_tokens,
+                },
+            )
+            return encodings
+
+        target_num_tokens = num_tokens
+        for bucket in self._compiled_token_buckets:
+            if bucket >= num_tokens:
+                target_num_tokens = bucket
                 break
 
-        if target_len > current_len:
-            num_padding_tokens = target_len - current_len
+        if target_num_tokens > num_tokens:
+            num_padding_tokens = target_num_tokens - num_tokens
             if extra_keys := (set(encodings.keys()) - {"input_ids", "attention_mask", "token_type_ids"}):
                 raise ValueError(f"Unexpected encoding keys: {extra_keys}")
 
@@ -59,13 +77,18 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         return encodings
 
     def compile_and_warm_up(self):
-        self._compiled_forward = torch.compile(super().forward, mode="reduce-overhead", dynamic=False)
+        # Not called as part of init so that the caller can transfer the model to the target device before warming up.
+
+        torch.set_float32_matmul_precision("high")
+
+        self._compiled_forward = cast(
+            _ForwardFunction,
+            torch.compile(super().forward, mode="reduce-overhead", dynamic=False),
+        )
         self.eval()
 
-        for target_num_tokens in self._buckets:
-            if target_num_tokens > self.max_seq_length:
-                continue
-
+        for target_num_tokens in self._compiled_token_buckets:
+            # Create dummy text which is exactly target_num_tokens long.
             num_words = target_num_tokens  # overestimate
             text = "a " * num_words
             num_tokens = super().tokenize([text])["input_ids"].shape[1]
@@ -85,6 +108,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             logger.info(f"Warming up for {target_num_tokens=}")
 
             for _ in range(4):
+                _ = self.encode(texts, show_progress_bar=False)
                 # Why repeat 4 times? See these docs:
                 #
                 # https://docs.pytorch.org/tutorials/intermediate/torch_compile_full_example.html
@@ -102,7 +126,6 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
                 #
                 # Run 4 (Capture): PyTorch executes the code within a torch.cuda.graph(g) context. The GPU driver
                 # records the exact sequence of kernel launches and memory pointers without actually executing the math.
-                _ = self.encode(texts, show_progress_bar=False)
 
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
         """
@@ -114,6 +137,10 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             raise ValueError("This won't work for training.")
 
         batch_size, seq_length = input["input_ids"].shape
-        if batch_size == self._compiled_batch_size and seq_length in self._buckets:
+        if batch_size == self._compiled_batch_size and seq_length in self._compiled_token_buckets:
+            if self._compiled_forward is None:
+                # Don't fall back to the non-compiled forward. There's no point using this class if it's not warmed up.
+                # It'll pad and call the model on padded input for no reason.
+                raise ValueError("compile_and_warm_up() must be called before using the compiled forward.")
             return self._compiled_forward(input, **kwargs)
         return super().forward(input, **kwargs)
