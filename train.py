@@ -53,10 +53,12 @@ def run(
     run_shortname: str | None = None,
     use_text_prefix: bool = False,
     per_device_token_budget_scale: int | None = None,
+    per_device_train_batch_size: int = 256,
+    learning_rate: float = 1e-4,
     tiny_run: bool = False,
 ):
     """
-    Train a grouping model.
+    Train a grouping model. Writes checkpoints to GCS. Logs to wandb: https://wandb.ai/sentry-seer/grouping-trainer
 
     Parameters
     ----------
@@ -69,7 +71,13 @@ def run(
     use_text_prefix
         If True, add the model's designated prefix to the input text. Didn't help lightonai/modernbert-embed-large
     per_device_token_budget_scale
-        Sets per_device_token_budget = per_device_token_budget_scale * 8192—the max tokens for grouping in prod
+        Sets per_device_token_budget = per_device_token_budget_scale * 8192. This is the memory and throughput knob.
+        By default, if the base_model has a historically known good scale, we use that, o.w. uses 3.
+    per_device_train_batch_size
+        Training batch size per device. Be intentional about this when doing DDP. Only used for non-tiny runs.
+        Technically this can be arbitrarily high b/c we accumulate the gradient based on per_device_token_budget_scale.
+    learning_rate
+        Should consider scaling this in proportion to per_device_train_batch_size.
     tiny_run
         Run a tiny training run to sanity check plumbing.
     """
@@ -100,15 +108,12 @@ def run(
         )
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
-            per_device_train_batch_size=64,  # Have 4 GPUs
+            per_device_train_batch_size=per_device_train_batch_size,
             per_device_token_budget=8192 * per_device_token_budget_scale,
+            learning_rate=learning_rate,
             loss_type="contrastive",
             contrastive_margin=0.5,
-            training_csvs=(
-                "final_csvs/train.csv",
-                "final_csvs/train_more.csv",
-                "final_csvs/train_more2.csv",  # experiment w/o synthetic-easy
-            ),
+            training_csvs=gt.data.DEFAULT_TRAIN_PATHS,
         )
 
     trainer = gt.train.make_trainer(model, training_config)

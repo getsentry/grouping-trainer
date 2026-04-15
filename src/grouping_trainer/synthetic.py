@@ -8,12 +8,15 @@ python -m grouping_trainer.synthetic \
     --csv_paths final_csvs/train_more.csv final_csvs/train_more2.csv \
     --positives --negatives
 
-The sampling and labeling intentionally samples somewhat around the border to get the biggest bang for our buck.
-
-This bias may not be good b/c:
+The sampling code intentionally samples somewhat around the border to get the biggest bang for our buck. This bias may
+not be good b/c:
 - The model won't see easy negatives during training that it will see while crawling the index
-- Positive pairs whose v1 distance is in [0.001, 0.01) can only change from GROUP to SEPARATE, which might cause the
-  trained model to over-emphasize subtle differences. Seeing easy negatives should counteract this bias.
+- The label for pairs whose v1 distance is in [0.001, 0.01) can only change from GROUP to SEPARATE, which might cause
+  the trained model to over-emphasize subtle differences. Seeing easy positives should counteract this bias.
+
+In practice, including these easier examples makes training a bit more stable. It's not a big impact. Excluding it is
+prolly fine if you wanna make training runs complete faster. I typically include them to theoretically counter the
+biases above. Haven't studied it much yet.
 """
 
 import subprocess
