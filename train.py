@@ -39,6 +39,8 @@ def upload_run_metadata(run_gcs_dir: str, training_config: gt.train.TrainingConf
 
 
 base_model_to_per_device_token_budget_scale = {
+    # Not including the v1 jinaai/jina-embeddings-v2-base-code model b/c it doesn't support SDPA.
+    # Pls don't use models that don't support flash attention.
     "lightonai/modernbert-embed-large": 4,
     "Alibaba-NLP/gte-modernbert-base": 6,
     "Qwen/Qwen3-Embedding-0.6B": 3,
