@@ -87,6 +87,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         return encodings
 
+    @_set_float32_matmul_precision("high")
     def compile_and_warm_up(self):
         # This method isn't called in __init__ so that the caller can transfer the model to the target device before
         # warming up.
