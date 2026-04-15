@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 
 _ForwardFunction = Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]]
 
+_COMPILED_MATMUL_PRECISION: Literal["highest", "high", "medium"] = "high"
+"Shared precision for compile_and_warm_up and forward."
+
 
 @contextmanager
 def _set_float32_matmul_precision(precision: Literal["highest", "high", "medium"]):
@@ -87,11 +90,10 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         return encodings
 
+    @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def compile_and_warm_up(self):
         # This method isn't called in __init__ so that the caller can transfer the model to the target device before
         # warming up.
-
-        torch.set_float32_matmul_precision("high")
 
         self._compiled_forward = cast(
             _ForwardFunction,
@@ -139,6 +141,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
                 # Run 4 (Capture): PyTorch executes the code within a torch.cuda.graph(g) context. The GPU driver
                 # records the exact sequence of kernel launches and memory pointers without actually executing the math.
 
+    @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
         # Only use the compiled forward if the sequence length matches one of our buckets. If we used the compiled forward
         # for one that doesn't hit the bucket, we create a new CUDA graph for every unique sequence length above
