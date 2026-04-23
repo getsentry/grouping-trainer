@@ -135,7 +135,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             logger.info(f"Warming up for {target_num_tokens=}")
 
             for _ in range(4):
-                _ = self.encode(texts, batch_size=self._compiled_batch_size, **self._tokenize_and_forward_kwargs)
+                _ = self.encode(texts, **self._tokenize_and_forward_kwargs)
                 # Why repeat 4 times? The honest answer is that it was empirically necessary.
                 # See these docs:
                 # https://docs.pytorch.org/tutorials/intermediate/torch_compile_full_example.html

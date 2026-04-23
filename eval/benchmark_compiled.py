@@ -38,7 +38,7 @@ def _encode_timed(model: gt.utils.SentenceTransformer, texts: list[str], desc: s
         start = time.monotonic()
         # convert_to_numpy=True forces a device->host copy, which syncs CUDA, so time.monotonic deltas
         # reflect real wall-clock work rather than async launch overhead.
-        _ = model.encode(text, convert_to_numpy=True)
+        _ = model.encode(text, convert_to_numpy=True, show_progress_bar=False)
         times.append(time.monotonic() - start)
     return times
 
