@@ -30,19 +30,31 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
     """
     Python is too slow for small models w/ batch size 1. Rm its overhead by compiling. 1.5-3x speedup for our models.
     Cost: warming up can take minutes.
+
+    Assumes the tokenizer input type is a list of strings.
     """
 
     def __init__(
         self,
         *args,
         compiled_batch_size: int = 1,
+        # Anything higher should be benchmarked unless you know you'll only get small sequences.
         compiled_token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024, 2048),
+        # After 2048, for our data, empirically it seems like Python overhead isn't clearly worse than attention overhead.
+        # Stacktrace token lengths in particular have a long enough tail that we end up w/ an appreciable speedup.
+        # Run the benchmark over stacktraces sampled from prod in:
+        # https://github.com/getsentry/grouping-trainer/blob/main/eval/benchmark.ipynb
+        tokenize_and_forward_kwargs: dict[str, Any] | None = None,
+        # SentenceTransformer.encode passes **kwargs to tokenize and forward, so they need to provided up front so that
+        # compile_and_warm_up uses them.
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        if self.tokenizer.pad_token_id is None:
-            raise ValueError("Must be able to pad to use pre-compiled forward")
 
+        if self.tokenizer.pad_token_id is None:
+            raise ValueError("Must be able to pad sequences to use pre-compiled forward")
+
+        self._tokenize_and_forward_kwargs = tokenize_and_forward_kwargs or {}
         self._compiled_batch_size = compiled_batch_size
         self._compiled_token_buckets = tuple(
             sorted({bucket for bucket in compiled_token_buckets if bucket <= self.max_seq_length})
@@ -59,15 +71,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         batch_size, num_tokens = encodings["input_ids"].shape
 
         if batch_size != self._compiled_batch_size:
-            logger.error(
-                "Input batch size doesn't match the compiled batch size. You should generally only use the compiled "
-                "model when the batch size is known beforehand.",
-                extra={
-                    "compiled_batch_size": self._compiled_batch_size,
-                    "batch_size": batch_size,
-                    "num_tokens": num_tokens,
-                },
-            )
+            # No point in padding. forward falls back to the non-compiled forward and logs an error.
             return encodings
 
         target_num_tokens = num_tokens
@@ -90,56 +94,53 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         return encodings
 
+    def encode(self, *args, **kwargs):
+        # NOTE: doing
+        #   kwargs = self._tokenize_and_forward_kwargs | kwargs
+        # is wrong b/c it can silently change the output that the caller was after.
+        # I'm just gonna assume any differences are superficial, e.g., show_progress_bar=False vs True.
+        # Checking if kwargs are a subset of _tokenize_and_forward_kwargs would prevent silent guard failures,
+        # but it's not bulletproof and significantly hurts encode's ergonomics.
+        return super().encode(*args, batch_size=self._compiled_batch_size, **kwargs)
+
     @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def compile_and_warm_up(self):
         # This method isn't called in __init__ so that the caller can transfer the model to the target device before
         # warming up.
 
+        self.eval()
         self._compiled_forward = cast(
             _ForwardFunction,
             torch.compile(super().forward, mode="reduce-overhead", dynamic=False),
         )
-        self.eval()
 
         for target_num_tokens in self._compiled_token_buckets:
             # Create dummy text which is exactly target_num_tokens long.
             num_words = target_num_tokens  # overestimate
             text = "a " * num_words
-            num_tokens = super().tokenize([text])["input_ids"].shape[1]
+            num_tokens = (
+                super().tokenize([text], **self._tokenize_and_forward_kwargs)["input_ids"].shape[1]
+            )  # TODO: can prolly extend this to work w/ other tokenizer input types.
             num_words -= num_tokens - target_num_tokens
             text = "a " * num_words
             texts = [text] * self._compiled_batch_size
 
             # Check correctness here to avoid silent performance regressions.
             # There are other approaches like creating the encoding ourselves, padding to the target length, and calling
-            # .forward() (under inference_mode) ourselves. This approach didn't perform well—maybe b/c of subtle
+            # .forward() (under inference_mode) ourselves. This approach didn't perform well, maybe b/c of subtle
             # differences in how .encode works. I prefer going through .encode and being loud about missing the target.
-            # To debug that other approach, can check which guards fail using TORCH_LOGS="recompiles" in a non-prod
-            # env.
             if super().tokenize(texts)["input_ids"].shape[1] != target_num_tokens:
                 raise ValueError(f"Tokenization failed for {target_num_tokens=}")
 
             logger.info(f"Warming up for {target_num_tokens=}")
 
             for _ in range(4):
-                _ = self.encode(texts, show_progress_bar=False)
-                # Why repeat 4 times? See these docs:
-                #
+                _ = self.encode(texts, batch_size=self._compiled_batch_size, **self._tokenize_and_forward_kwargs)
+                # Why repeat 4 times? The honest answer is that it was empirically necessary.
+                # See these docs:
                 # https://docs.pytorch.org/tutorials/intermediate/torch_compile_full_example.html
                 # https://docs.nvidia.com/dl-cuda-graph/torch-cuda-graph/torch-integration.html#stream-capture-api-torch-cuda-graph
                 # https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/
-                #
-                # Summary from Gemini 3.1 Pro:
-                #
-                # Run 1 (Dynamo/Inductor): PyTorch lowers the model to FX graphs, creates Triton kernels, and runs them
-                # once. (This is the longest delay).
-                #
-                # Runs 2 & 3 (Memory Warmup): PyTorch runs the compiled kernels in "eager" mode on a side-stream. This
-                # initializes cuBLAS/cuDNN workspaces and forces PyTorch's caching allocator to assign static memory
-                # addresses for all intermediate tensors.
-                #
-                # Run 4 (Capture): PyTorch executes the code within a torch.cuda.graph(g) context. The GPU driver
-                # records the exact sequence of kernel launches and memory pointers without actually executing the math.
 
     @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
@@ -150,12 +151,16 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         if self.training:
             raise ValueError("This won't work for training.")
 
-        batch_size, seq_length = input["input_ids"].shape
-        if batch_size == self._compiled_batch_size and seq_length in self._compiled_token_buckets:
+        batch_size, num_tokens = input["input_ids"].shape
+        does_match_batch_size = batch_size == self._compiled_batch_size
+        does_match_num_tokens = num_tokens in self._compiled_token_buckets
+        if does_match_batch_size and does_match_num_tokens:
             if self._compiled_forward is None:
                 # Don't fall back to the non-compiled forward. There's no point using this class if it's not warmed up.
                 # It'll pad and call the model on padded input for no reason.
                 raise ValueError("compile_and_warm_up() must be called before using the compiled forward.")
             return self._compiled_forward(input, **kwargs)
-            # model-related kwargs shouldn't be variable across calls
+
+        if not does_match_batch_size:
+            logger.error(f"Batch size mismatch: {batch_size} (input) != {self._compiled_batch_size} (compiled)")
         return super().forward(input, **kwargs)
