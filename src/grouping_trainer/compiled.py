@@ -1,4 +1,5 @@
 import logging
+import math
 from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, Literal, cast
@@ -166,7 +167,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         # Warm up the eager fallback path by intentionally exceeding the biggest bucket.
         logger.info("Warming up fallback path")
         text = _create_text_with_num_tokens(
-            (max(self._compiled_token_buckets) + self.max_seq_length) // 2,
+            math.ceil((max(self._compiled_token_buckets) + self.max_seq_length) / 2),
             super().tokenize,
             **self._tokenize_and_forward_kwargs,
         )
