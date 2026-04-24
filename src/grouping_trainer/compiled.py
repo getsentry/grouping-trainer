@@ -133,8 +133,11 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             # There are other approaches like creating the encoding ourselves, padding to the target length, and calling
             # .forward() (under inference_mode) ourselves. This approach didn't perform well, maybe b/c of subtle
             # differences in how .encode works. I prefer going through .encode and being loud about missing the target.
-            if super().tokenize(texts)["input_ids"].shape[1] != target_num_tokens:
-                raise ValueError(f"Tokenization failed for {target_num_tokens=}")
+            batch_size, num_tokens = super().tokenize(texts, **self._tokenize_and_forward_kwargs)["input_ids"].shape
+            if batch_size != self._compiled_batch_size:
+                raise ValueError(f"Batch size mismatch: {batch_size} (attempt) != {self._compiled_batch_size} (target)")
+            if num_tokens != target_num_tokens:
+                raise ValueError(f"Tokens mismatch: {num_tokens} (attempt) != {target_num_tokens} (target)")
 
             logger.info(f"Warming up for {target_num_tokens=}")
 
