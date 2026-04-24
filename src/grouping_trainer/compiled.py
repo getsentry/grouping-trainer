@@ -99,13 +99,13 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         return encodings
 
     def encode(self, *args, **kwargs):
-        # NOTE: doing
-        #   kwargs = self._tokenize_and_forward_kwargs | kwargs
-        # is wrong b/c it can silently change the output that the caller was after.
-        # I'm just gonna assume any differences are superficial, e.g., show_progress_bar=False vs True.
-        # Checking if kwargs are a subset of _tokenize_and_forward_kwargs would prevent silent guard failures,
-        # but it's not bulletproof and significantly hurts encode's ergonomics.
-        return super().encode(*args, batch_size=self._compiled_batch_size, **kwargs)
+        # NOTE: merging self._tokenize_and_forward_kwargs and kwargs is wrong b/c it can silently change the output that
+        # the caller was after. I'm just gonna assume any differences are superficial, e.g., show_progress_bar=False vs
+        # True. Checking if kwargs are a subset of _tokenize_and_forward_kwargs would prevent silent guard failures, but
+        # it's not bulletproof and significantly hurts encode's ergonomics.
+        if "batch_size" not in kwargs:
+            kwargs["batch_size"] = self._compiled_batch_size
+        return super().encode(*args, **kwargs)
 
     @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def compile_and_warm_up(self):
@@ -139,7 +139,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             logger.info(f"Warming up for {target_num_tokens=}")
 
             for _ in range(4):
-                _ = self.encode(texts, **self._tokenize_and_forward_kwargs)
+                _ = self.encode(texts, show_progress_bar=False, **self._tokenize_and_forward_kwargs)
                 # Why repeat 4 times? The honest answer is that it was empirically necessary.
                 # See these docs:
                 # https://docs.pytorch.org/tutorials/intermediate/torch_compile_full_example.html
