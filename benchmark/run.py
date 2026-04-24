@@ -8,7 +8,7 @@ gs://grouping-data/perf/{stamp}-{run_id}/{dataset_name}/
 
 Example:
 
-python eval/benchmark_compiled.py \
+python benchmark/run.py \
     --run_gcs_dir gs://grouping-data/runs/2026-04-10-12-39-45-large-no-prefix
 """
 
