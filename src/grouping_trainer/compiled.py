@@ -26,6 +26,19 @@ def _set_float32_matmul_precision(precision: Literal["highest", "high", "medium"
         torch.set_float32_matmul_precision(current_precision)
 
 
+def _create_text_with_num_tokens(
+    target_num_tokens: int,
+    tokenize_function: Callable[[list[str]], dict[str, torch.Tensor]],
+    **tokenize_kwargs,
+) -> str:
+    num_words = target_num_tokens  # overestimate
+    text = "a " * num_words
+    num_tokens = tokenize_function([text], **tokenize_kwargs)["input_ids"].shape[1]
+    num_words -= num_tokens - target_num_tokens
+    text = "a " * num_words
+    return text
+
+
 class SentenceTransformer(gt.utils.SentenceTransformer):
     """
     Python is too slow for small models w/ batch size 1. Rm its overhead by compiling. 1.5-3x speedup for our models.
@@ -60,9 +73,15 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         self._tokenize_and_forward_kwargs = tokenize_and_forward_kwargs or {}
         self._compiled_batch_size = compiled_batch_size
+        if not compiled_token_buckets:
+            raise ValueError("Must provide at least one compiled token bucket")
         self._compiled_token_buckets = tuple(
             sorted({bucket for bucket in compiled_token_buckets if bucket <= self.max_seq_length})
         )
+        if not self._compiled_token_buckets:
+            raise ValueError(
+                f"All compiled token buckets are greater than the model's max sequence length: {self.max_seq_length}"
+            )
         self._compiled_forward: _ForwardFunction | None = None
 
     def tokenize(
@@ -119,14 +138,9 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         )
 
         for target_num_tokens in self._compiled_token_buckets:
-            # Create dummy text which is exactly target_num_tokens long.
-            num_words = target_num_tokens  # overestimate
-            text = "a " * num_words
-            num_tokens = (
-                super().tokenize([text], **self._tokenize_and_forward_kwargs)["input_ids"].shape[1]
-            )  # TODO: can prolly extend this to work w/ other tokenizer input types.
-            num_words -= num_tokens - target_num_tokens
-            text = "a " * num_words
+            text = _create_text_with_num_tokens(
+                target_num_tokens, super().tokenize, **self._tokenize_and_forward_kwargs
+            )
             texts = [text] * self._compiled_batch_size
 
             # Check correctness here to avoid silent performance regressions.
@@ -151,7 +165,11 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         # Warm up the eager fallback path by intentionally exceeding the biggest bucket.
         logger.info("Warming up fallback path")
-        text = text + ("a " * 64)
+        text = _create_text_with_num_tokens(
+            (max(self._compiled_token_buckets) + self.max_seq_length) // 2,
+            super().tokenize,
+            **self._tokenize_and_forward_kwargs,
+        )
         _ = self.encode(text, show_progress_bar=False, **self._tokenize_and_forward_kwargs)
 
     @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
