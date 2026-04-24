@@ -39,14 +39,18 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         *args,
         compiled_batch_size: int = 1,
         # Anything higher should be benchmarked unless you know you'll only get small sequences.
-        compiled_token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024, 2048),
-        # After 2048, for our data, empirically it seems like Python overhead isn't clearly worse than attention overhead.
+        #
+        compiled_token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024),
+        # After 1024, for the v2.1 model, empirically it seems like Python overhead isn't clearly worse than attention
+        # overhead. Compiled needs to pad, so it gets worse as the sequence length increases.
         # Stacktrace token lengths in particular have a long enough tail that we end up w/ an appreciable speedup.
         # Run the benchmark over stacktraces sampled from prod in:
         # https://github.com/getsentry/grouping-trainer/blob/main/eval/benchmark.ipynb
+        #
         tokenize_and_forward_kwargs: dict[str, Any] | None = None,
         # SentenceTransformer.encode passes **kwargs to tokenize and forward, so they need to provided up front so that
         # compile_and_warm_up uses them.
+        #
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
