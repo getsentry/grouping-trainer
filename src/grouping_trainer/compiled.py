@@ -171,7 +171,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             super().tokenize,
             **self._tokenize_and_forward_kwargs,
         )
-        _ = self.encode(text, show_progress_bar=False, **self._tokenize_and_forward_kwargs)
+        texts = [text] * self._compiled_batch_size
+        _ = self.encode(texts, show_progress_bar=False, **self._tokenize_and_forward_kwargs)
 
     @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
