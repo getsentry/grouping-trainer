@@ -45,7 +45,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         # overhead. Compiled needs to pad, so it gets worse as the sequence length increases.
         # Stacktrace token lengths in particular have a long enough tail that we end up w/ an appreciable speedup.
         # Run the benchmark over stacktraces sampled from prod in:
-        # https://github.com/getsentry/grouping-trainer/blob/main/eval/benchmark.ipynb
+        # https://github.com/getsentry/grouping-trainer/blob/main/benchmark/run.py
         #
         tokenize_and_forward_kwargs: dict[str, Any] | None = None,
         # SentenceTransformer.encode passes **kwargs to tokenize and forward, so they need to provided up front so that
@@ -148,6 +148,11 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
                 # https://docs.pytorch.org/tutorials/intermediate/torch_compile_full_example.html
                 # https://docs.nvidia.com/dl-cuda-graph/torch-cuda-graph/torch-integration.html#stream-capture-api-torch-cuda-graph
                 # https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/
+
+        # Warm up the eager fallback path by intentionally exceeding the biggest bucket.
+        logger.info("Warming up fallback path")
+        text = text + ("a " * 64)
+        _ = self.encode(text, show_progress_bar=False, **self._tokenize_and_forward_kwargs)
 
     @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
