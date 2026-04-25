@@ -96,7 +96,32 @@ def main(
         logger.info(f"Downloading model from {path_gcs_inference} ...")
         subprocess.run(["gcloud", "storage", "rsync", "-r", path_gcs_inference, dir_tmp], check=True)
 
-        # ONNX model
+        logger.info("Loading compiled model")
+        start = time.monotonic()
+        model_compiled = gt.compiled.SentenceTransformer(
+            dir_tmp, trust_remote_code=True, model_kwargs=model_kwargs, text_prefix=text_prefix
+        )
+        model_compiled.compile_and_warm_up()
+        logger.info(f"Compiled model ready in {time.monotonic() - start:.1f}s")
+
+        num_tokens = [_num_tokens(model_compiled.tokenizer, text, max_seq_length) for text in texts]
+
+        times_compiled = _encode_timed(model_compiled, texts, desc="compiled")
+        (model_compiled,) = release_memory(model_compiled)
+
+        logger.info("Loading base model")
+        start = time.monotonic()
+        model_base = gt.utils.SentenceTransformer(
+            dir_tmp, trust_remote_code=True, model_kwargs=model_kwargs, text_prefix=text_prefix
+        )
+        _ = model_base.encode("warm up")
+        logger.info(f"Base model ready in {time.monotonic() - start:.1f}s")
+
+        times_base = _encode_timed(model_base, texts, desc="base")
+        (model_base,) = release_memory(model_base)
+
+        # ONNX export ignores dtype/attn_implementation, so we run it fp32 here. A post-export fp16
+        # optimization pass is the next step if this looks promising.
         logger.info("Loading ONNX model (first load triggers export, can take a couple minutes)")
         start = time.monotonic()
         model_onnx = gt.utils.SentenceTransformer(
@@ -111,32 +136,6 @@ def main(
 
         times_onnx = _encode_timed(model_onnx, texts, desc="onnx")
         (model_onnx,) = release_memory(model_onnx)
-
-        # Compiled model
-        logger.info("Loading compiled model")
-        start = time.monotonic()
-        model_compiled = gt.compiled.SentenceTransformer(
-            dir_tmp, trust_remote_code=True, model_kwargs=model_kwargs, text_prefix=text_prefix
-        )
-        model_compiled.compile_and_warm_up()
-        logger.info(f"Compiled model ready in {time.monotonic() - start:.1f}s")
-
-        num_tokens = [_num_tokens(model_compiled.tokenizer, text, max_seq_length) for text in texts]
-
-        times_compiled = _encode_timed(model_compiled, texts, desc="compiled")
-        (model_compiled,) = release_memory(model_compiled)
-
-        # Base model
-        logger.info("Loading base model")
-        start = time.monotonic()
-        model_base = gt.utils.SentenceTransformer(
-            dir_tmp, trust_remote_code=True, model_kwargs=model_kwargs, text_prefix=text_prefix
-        )
-        _ = model_base.encode("warm up")
-        logger.info(f"Base model ready in {time.monotonic() - start:.1f}s")
-
-        times_base = _encode_timed(model_base, texts, desc="base")
-        (model_base,) = release_memory(model_base)
 
     df_out = pl.DataFrame(
         {
