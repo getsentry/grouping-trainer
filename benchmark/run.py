@@ -27,6 +27,8 @@ from tap import tapify
 from tqdm.auto import tqdm
 from transformers import PreTrainedTokenizerBase
 
+from sentence_transformers import export_optimized_onnx_model
+
 import grouping_trainer as gt
 
 logger = logging.getLogger(__name__)
@@ -110,7 +112,27 @@ def main(
         logger.info(f"ONNX model ready in {time.monotonic() - start:.1f}s")
 
         times_onnx = _encode_timed(model_onnx, texts, desc="onnx")
+
+        # ONNX model w/ optimizer pass. O2 = extended graph optimizations (op fusion, constant folding, layer norm
+        # fusion). If ORT has fusion patterns for this architecture, the memcpy-warning count should drop and CUDA
+        # Graph becomes viable. If the warnings barely change, ORT's runtime support for this architecture is too
+        # immature to compete with torch.compile.
+        logger.info("Running ORT optimizer pass (O2)")
+        start = time.monotonic()
+        export_optimized_onnx_model(model_onnx, optimization_config="O2", model_name_or_path=dir_tmp)
         (model_onnx,) = release_memory(model_onnx)
+        logger.info(f"Optimizer pass done in {time.monotonic() - start:.1f}s")
+
+        model_onnx_opt = gt.utils.SentenceTransformer(
+            dir_tmp,
+            backend="onnx",
+            trust_remote_code=True,
+            model_kwargs={"file_name": "onnx/model_O2.onnx", "provider": "CUDAExecutionProvider"},
+            text_prefix=text_prefix,
+        )
+        _ = model_onnx_opt.encode("warm up")
+        times_onnx_opt = _encode_timed(model_onnx_opt, texts, desc="onnx_opt")
+        (model_onnx_opt,) = release_memory(model_onnx_opt)
 
         # Compiled model
         logger.info("Loading compiled model")
@@ -145,18 +167,22 @@ def main(
             "time_compiled_sec": times_compiled,
             "time_base_sec": times_base,
             "time_onnx_sec": times_onnx,
+            "time_onnx_opt_sec": times_onnx_opt,
         }
     )
 
     median_compiled_ms = float(np.median(times_compiled)) * 1000
     median_base_ms = float(np.median(times_base)) * 1000
     median_onnx_ms = float(np.median(times_onnx)) * 1000
+    median_onnx_opt_ms = float(np.median(times_onnx_opt)) * 1000
     logger.info(
         f"Median compiled={median_compiled_ms:.1f}ms  "
         f"base={median_base_ms:.1f}ms  "
         f"onnx={median_onnx_ms:.1f}ms  "
+        f"onnx_opt={median_onnx_opt_ms:.1f}ms  "
         f"compiled_vs_base={median_base_ms / median_compiled_ms:.2f}x  "
-        f"onnx_vs_base={median_base_ms / median_onnx_ms:.2f}x"
+        f"onnx_vs_base={median_base_ms / median_onnx_ms:.2f}x  "
+        f"onnx_opt_vs_base={median_base_ms / median_onnx_opt_ms:.2f}x"
     )
 
     with tempfile.TemporaryDirectory() as dir_out:
