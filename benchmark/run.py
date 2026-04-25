@@ -12,6 +12,14 @@ python benchmark/run.py \
     --run_gcs_dir gs://grouping-data/runs/2026-04-10-12-39-45-large-no-prefix
 """
 
+# Note on ONNX-Runtime: we tried sentence-transformers' onnx backend (onnxruntime-gpu==1.25.0, optimum==1.27.0,
+# including the O2 optimizer pass via export_optimized_onnx_model) on an L4 with cu128. It ran ~1.5x slower than
+# the eager bf16+sdpa baseline. The export inserts ~28 Memcpy nodes around ops ORT can't run on CUDA ("28 Memcpy
+# nodes are added to the graph main_graph for CUDAExecutionProvider"), which disables the CUDA Graph path — the
+# only thing that would have closed the launch-overhead gap with torch.compile(mode="reduce-overhead"). Root
+# cause: ORT's fusion patterns are tuned for classic BERT, not ModernBERT's alternating local/global attention +
+# RoPE + GeGLU. Revisit when optimum/ORT ship ModernBERT-aware fusion.
+
 import logging
 import os.path
 import subprocess
