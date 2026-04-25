@@ -13,12 +13,14 @@ logger = logging.getLogger(__name__)
 
 _ForwardFunction = Callable[[dict[str, torch.Tensor]], dict[str, torch.Tensor]]
 
-_COMPILED_MATMUL_PRECISION: Literal["highest", "high", "medium"] = "high"
+type MatmulPrecision = Literal["highest", "high", "medium"]
+
+_COMPILED_MATMUL_PRECISION: MatmulPrecision = "high"
 "Shared precision for compile_and_warm_up and forward."
 
 
 @contextmanager
-def _set_float32_matmul_precision(precision: Literal["highest", "high", "medium"]):
+def _set_float32_matmul_precision(precision: MatmulPrecision):
     current_precision = torch.get_float32_matmul_precision()
     torch.set_float32_matmul_precision(precision)
     try:
