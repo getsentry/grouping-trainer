@@ -120,21 +120,42 @@ def main(
         times_base = _encode_timed(model_base, texts, desc="base")
         (model_base,) = release_memory(model_base)
 
+        # ONNX export ignores dtype/attn_implementation, so we run it fp32 here. A post-export fp16
+        # optimization pass is the next step if this looks promising.
+        logger.info("Loading ONNX model (first load triggers export, can take a couple minutes)")
+        start = time.monotonic()
+        model_onnx = gt.utils.SentenceTransformer(
+            dir_tmp,
+            backend="onnx",
+            trust_remote_code=True,
+            model_kwargs={"provider": "CUDAExecutionProvider"},
+            text_prefix=text_prefix,
+        )
+        _ = model_onnx.encode("warm up")
+        logger.info(f"ONNX model ready in {time.monotonic() - start:.1f}s")
+
+        times_onnx = _encode_timed(model_onnx, texts, desc="onnx")
+        (model_onnx,) = release_memory(model_onnx)
+
     df_out = pl.DataFrame(
         {
             "query_stacktrace_string": texts,
             "num_tokens": num_tokens,
             "time_compiled_sec": times_compiled,
             "time_base_sec": times_base,
+            "time_onnx_sec": times_onnx,
         }
     )
 
     median_compiled_ms = float(np.median(times_compiled)) * 1000
     median_base_ms = float(np.median(times_base)) * 1000
+    median_onnx_ms = float(np.median(times_onnx)) * 1000
     logger.info(
         f"Median compiled={median_compiled_ms:.1f}ms  "
         f"base={median_base_ms:.1f}ms  "
-        f"speedup={median_base_ms / median_compiled_ms:.2f}x"
+        f"onnx={median_onnx_ms:.1f}ms  "
+        f"compiled_vs_base={median_base_ms / median_compiled_ms:.2f}x  "
+        f"onnx_vs_base={median_base_ms / median_onnx_ms:.2f}x"
     )
 
     with tempfile.TemporaryDirectory() as dir_out:
