@@ -12,13 +12,30 @@ python benchmark/run.py \
     --run_gcs_dir gs://grouping-data/runs/2026-04-10-12-39-45-large-no-prefix
 """
 
-# Note on ONNX-Runtime: we tried sentence-transformers' onnx backend (onnxruntime-gpu==1.25.0, optimum==1.27.0,
-# including the O2 optimizer pass via export_optimized_onnx_model) on an L4 with cu128. It ran ~1.5x slower than
-# the eager bf16+sdpa baseline. The export inserts ~28 Memcpy nodes around ops ORT can't run on CUDA ("28 Memcpy
-# nodes are added to the graph main_graph for CUDAExecutionProvider"), which disables the CUDA Graph path — the
-# only thing that would have closed the launch-overhead gap with torch.compile(mode="reduce-overhead"). Root
-# cause: ORT's fusion patterns are tuned for classic BERT, not ModernBERT's alternating local/global attention +
-# RoPE + GeGLU. Revisit when optimum/ORT ship ModernBERT-aware fusion.
+# NOTE: not sure why ONNX didn't play nice w/ ModernBERT. Tried the ONNX backend w/ the latest pre-transformers v5
+# versions (onnxruntime-gpu==1.25.0, optimum==1.27.0, including the O2 optimizer pass via export_optimized_onnx_model)
+# on an L4 with cu128. ModernBERT support was added in optimum==1.26.0:
+# https://github.com/huggingface/optimum/releases/tag/v1.26.0. It was 1.5x slower than the eager bf16+sdpa baseline. Got
+# these warnings:
+#
+# 2026-04-25 19:57:03.793307561 [W:onnxruntime:, transformer_memcpy.cc:111 ApplyImpl] 28 Memcpy nodes are added to the
+# graph main_graph for CUDAExecutionProvider. It might have negative impact on performance (including unable to run CUDA
+# graph). Set session_options.log_severity_level=1 to see the detail logs before this message.
+#
+# 2026-04-25 19:57:03.815823108 [W:onnxruntime:, session_state.cc:1359 VerifyEachNodeIsAssignedToAnEp] Some nodes were
+# not assigned to the preferred execution providers which may or may not have an negative impact on performance. e.g.
+# ORT explicitly assigns shape related ops to CPU to improve perf.
+#
+# 2026-04-25 19:57:03.815865405 [W:onnxruntime:, session_state.cc:1361 VerifyEachNodeIsAssignedToAnEp] Rerunning with
+# verbose output on a non-minimal build will show node assignments.
+#
+# (Digging around w/ Claude) In optimum 1.27.0 and onnxruntime 1.25.0:
+# - optimum/onnxruntime/utils.py:111 maps "modernbert" -> "bert", so optimum routes ModernBERT graphs through ORT's
+#   BERT optimizer (BertOnnxModel).
+# - onnxruntime/python/tools/transformers/onnx_model_bert.py:131 fuses RoPE via FusionRotaryEmbeddings.
+# - But the BERT optimizer has no fuser for alternating sliding-window / local attention (zero hits for
+#   sliding_window/local_attention/window_attention in onnxruntime's fusion_*.py) and GeGLU FFN (zero hits for
+#   geglu/swiglu).
 
 import logging
 import os.path
@@ -44,8 +61,6 @@ def _encode_timed(model: gt.utils.SentenceTransformer, texts: list[str], desc: s
     times: list[float] = []
     for text in tqdm(texts, desc=desc):
         start = time.monotonic()
-        # convert_to_numpy=True forces a device->host copy, which syncs CUDA, so time.monotonic deltas
-        # reflect real wall-clock work rather than async launch overhead.
         _ = model.encode(text, convert_to_numpy=True, show_progress_bar=False)
         times.append(time.monotonic() - start)
     return times
