@@ -3,12 +3,12 @@ Analyze a benchmark/run.py run: produce a markdown report comparing compiled vs 
 
 Reads `times.csv` (one row per unique query stacktrace, columns
 `query_stacktrace_string, num_tokens, time_compiled_sec, time_base_sec`) from a gs:// dir and writes
-`<output_dir>/report.md`. By default, output_dir mirrors the run dir under benchmark/reports/.
+`./benchmark/README.md` by default (overwriting the previous run's report — raw data lives in GCS).
 
 Example:
 
 python benchmark/report.py \
-    --run_gcs_dir gs://grouping-data/perf/2026-04-24-21-14-40-2026-04-10-12-39-45-large-no-prefix/test_full2
+    --run_gcs_dir gs://grouping-data/perf/2026-04-24-23-44-59-2026-04-10-12-39-45-large-no-prefix/test_full2
 """
 
 import logging
@@ -127,12 +127,9 @@ def _write_report(
     path_out.write_text("\n".join(lines))
 
 
-_PERF_GCS_PREFIX = "gs://grouping-data/perf/"
-
-
 def main(
     run_gcs_dir: str,
-    output_dir: str | None = None,
+    output_path: str = "./benchmark/README.md",
     token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024),
 ):
     """
@@ -141,9 +138,9 @@ def main(
     run_gcs_dir
         gs:// path to a directory containing times.csv and run.txt, e.g.,
         gs://grouping-data/perf/{stamp}-{run_id}/{dataset_name}.
-    output_dir
-        Local directory to write report.md into. Created if missing. Defaults to
-        ./benchmark/reports/{stamp}-{run_id}/{dataset_name}/, derived from run_gcs_dir.
+    output_path
+        Local path to write the markdown report to. Overwrites if it exists. Defaults to ./benchmark/README.md
+        — the report is intended to reflect the latest run, not be archived (raw data lives in GCS).
     token_buckets
         Bucket boundaries used to group rows for the per-bucket table. Should match the buckets the compiled
         model was warmed up with. Defaults to the current `gt.compiled.SentenceTransformer` defaults.
@@ -152,15 +149,6 @@ def main(
 
     if not run_gcs_dir.startswith("gs://"):
         raise ValueError(f"run_gcs_dir must start with gs://, got: {run_gcs_dir}")
-
-    if output_dir is None:
-        if not run_gcs_dir.startswith(_PERF_GCS_PREFIX):
-            raise ValueError(
-                f"Cannot infer output_dir: run_gcs_dir must start with {_PERF_GCS_PREFIX} "
-                f"(got: {run_gcs_dir}). Pass --output_dir explicitly."
-            )
-        suffix = run_gcs_dir[len(_PERF_GCS_PREFIX) :].rstrip("/")
-        output_dir = f"./benchmark/reports/{suffix}"
 
     with tempfile.TemporaryDirectory(prefix="benchmark_report_") as dir_tmp:
         logger.info(f"Downloading {run_gcs_dir} -> {dir_tmp}")
@@ -177,11 +165,11 @@ def main(
     df = _bucketize(df, edges=token_buckets)
     summary = _summary_per_bucket(df)
 
-    dir_out = Path(output_dir)
-    dir_out.mkdir(parents=True, exist_ok=True)
-    _write_report(df, summary, run_txt=run_txt, edges=token_buckets, path_out=dir_out / "report.md")
+    path_out = Path(output_path)
+    path_out.parent.mkdir(parents=True, exist_ok=True)
+    _write_report(df, summary, run_txt=run_txt, edges=token_buckets, path_out=path_out)
 
-    logger.info(f"Wrote report to {dir_out.resolve() / 'report.md'}")
+    logger.info(f"Wrote report to {path_out.resolve()}")
     print(_df_to_markdown(summary))
 
 

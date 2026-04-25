@@ -61,7 +61,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         # overhead. Compiled needs to pad, so it gets worse as the sequence length increases.
         # Stacktrace token lengths in particular have a long enough tail that we end up w/ an appreciable speedup.
         # Run the benchmark over stacktraces sampled from prod in:
-        # https://github.com/getsentry/grouping-trainer/blob/main/benchmark/run.py
+        # https://github.com/getsentry/grouping-trainer/blob/main/benchmark
         #
         tokenize_and_forward_kwargs: dict[str, Any] | None = None,
         # SentenceTransformer.encode passes **kwargs to tokenize and forward, so they need to provided up front so that
