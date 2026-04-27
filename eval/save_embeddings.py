@@ -110,6 +110,7 @@ def main(
     sample_size: int | None = None,
     does_not_support_sdpa: bool = False,
     use_compiled: bool = False,
+    gpu: bool = True,
 ):
     """
     Download a model from GCS, encode df_path texts, and save embeddings + cosine similarities.
@@ -131,7 +132,14 @@ def main(
         If True, skip bfloat16 and SDPA attention for models that don't support it.
     use_compiled
         If True, compiles the model.
+    gpu
+        If True (default) and CUDA is not locally available, flex-start an L4 and run this same
+        invocation there. Pass `--no_gpu` to force a local run (e.g., quick CPU sanity check).
     """
+    if gpu and not torch.cuda.is_available() and not gt.launch.is_on_remote():
+        gt.launch.remote("l4")
+        return
+
     gt.logging.configure_logging(process_type="save_embeddings")
 
     if use_compiled and batch_size != 1:

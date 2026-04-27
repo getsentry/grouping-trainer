@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 import warnings
+from typing import Literal
 
 import torch
 import wandb
@@ -56,6 +57,8 @@ def run(
     per_device_train_batch_size: int = 256,
     learning_rate: float = 1e-4,
     tiny_run: bool = False,
+    gpu: Literal["h100", "h100-ddp", "a100", "a100-ddp"] | None = None,
+    zone: str | None = None,
 ):
     """
     Train a grouping model. Writes checkpoints to GCS. Logs to wandb: https://wandb.ai/sentry-seer/grouping-trainer
@@ -80,7 +83,16 @@ def run(
         Should consider scaling this in proportion to per_device_train_batch_size.
     tiny_run
         Run a tiny training run to sanity check plumbing.
+    gpu
+        Flex-start a GPU instance and train on that machine.
+    zone
+        Override the default GCP zone when launching the GPU instance. Useful when
+        flex-start capacity is dry in the default zone for the requested gpu type.
     """
+    if gpu is not None:
+        gt.launch.remote(gpu, ddp=gpu.endswith("-ddp"), zone=zone)
+        return
+
     is_cuda = torch.cuda.is_available()
 
     if not tiny_run:
@@ -135,21 +147,20 @@ def run(
             group=trainer.args.run_name,
             settings=wandb.Settings(mode="shared", x_primary=True, x_label="train"),
         )
-        eval_cmd = (
+        eval_command = (
             f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} "
             f"--wandb_run_id {wandb.run.id} --wandb_project {training_config.wandb_project} "
             f"--loss_type {training_config.loss_type} --contrastive_margin {training_config.contrastive_margin}"
         )
         if use_text_prefix:
-            eval_cmd += " --use_text_prefix"
+            eval_command += " --use_text_prefix"
         if training_config.use_confidence_score:
-            eval_cmd += f" --use_confidence_score --confidence_score_floor {training_config.confidence_score_floor}"
+            eval_command += f" --use_confidence_score --confidence_score_floor {training_config.confidence_score_floor}"
         if tiny_run:
-            eval_cmd += " --sample_val 200 --use_simple_precisions"
-        logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_cmd}\n")
+            eval_command += " --sample_val 200 --use_simple_precisions"
+        logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_command}\n")
         if not tiny_run:
-            # gt.train.launch_l4_eval(eval_cmd)
-            pass
+            gt.launch.l4_eval(eval_command)
         else:
             logger.info("Skipping async eval on L4 for tiny_run")
 

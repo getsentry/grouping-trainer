@@ -79,6 +79,9 @@ def main(
     max_seq_length: int = 8192,
 ):
     """
+    Always runs on a GPU — the compiled model path requires CUDA. If CUDA is not locally
+    available, this auto-launches an L4 and re-runs the same invocation there.
+
     Parameters
     ----------
     run_gcs_dir
@@ -94,6 +97,10 @@ def main(
     max_seq_length
         Maximum sequence length to tokenize. Based on prod.
     """
+    if not torch.cuda.is_available() and not gt.launch.is_on_remote():
+        gt.launch.remote("l4")
+        return
+
     gt.logging.configure_logging(process_type="benchmark_compiled")
 
     stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")

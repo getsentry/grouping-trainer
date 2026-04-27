@@ -3,9 +3,7 @@ import logging
 import math
 import os
 import random
-import shutil
 import subprocess
-import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import nullcontext
@@ -516,29 +514,6 @@ class GCSCheckpointUploadCallback(TrainerCallback):
         logger.info("Wrote TRAINING_DONE sentinel")
 
 
-def launch_l4_eval(eval_cmd: str):
-    """
-    Copy the startup script to a tempfile with the eval command appended, then create the L4 instance.
-    """
-    startup_path = os.path.join(os.path.dirname(__file__), "../../bin/_startup.sh")
-    # Append the eval command to run after setup, activating the conda env.
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False) as tmp:
-        with open(startup_path) as src:
-            shutil.copyfileobj(src, tmp)
-        tmp.write(f"\n{eval_cmd}\n")
-        tmp_path = tmp.name
-
-    try:
-        create_l4_path = os.path.join(os.path.dirname(__file__), "../../bin/create_l4.sh")
-        with open(create_l4_path) as f:
-            create_script = f.read()
-        create_script = create_script.replace("startup-script=bin/_startup.sh", f"startup-script={tmp_path}")
-        subprocess.run(["bash", "-c", create_script], check=True)
-    finally:
-        os.unlink(tmp_path)
-    logger.info("Created l4-eval instance with eval poller in startup script")
-
-
 class TrainingConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -692,6 +667,4 @@ def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingC
         train_dataset=dataset_dict_train,
         shuffle_within_dataset=training_config.shuffle_within_dataset,
         per_device_token_budget=training_config.per_device_token_budget,
-        #
-        # Eval runs async on a separate machine. See eval_poller.py
     )
