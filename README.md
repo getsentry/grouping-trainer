@@ -49,6 +49,21 @@ python -m grouping_trainer.launch --gpu h100
 ```
 
 
+### Check instance output
+
+From local:
+
+```bash
+gcloud compute instances get-serial-port-output grouping-trainer-l4-eval --zone=us-central1-a --project=ml-ai-420606 | tail -50
+```
+
+In the instance:
+
+```bash
+sudo tail -f /var/log/grouping_trainer_run.log
+```
+
+
 ### Eval
 
 <details>
