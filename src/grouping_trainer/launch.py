@@ -142,6 +142,21 @@ def flex(gpu: GpuType, command: str | None = None, zone: str | None = None) -> N
         Override the default zone (use this when flex-start capacity is dry).
     """
     config = gpu_type_to_config[gpu]
+
+    # Both startup-script and command must go in the SAME --metadata-from-file
+    # flag (comma-separated): passing the flag twice makes the second
+    # invocation overwrite the first, silently dropping the startup script.
+    # And we use --metadata-from-file=command=<tempfile> rather than
+    # --metadata=command=<cmd> because gcloud splits --metadata values on
+    # commas to find KEY=VAL pairs, so any comma in the cmd would break it.
+    metadata_files = {"startup-script": f"{_repo_root()}/bin/_startup.sh"}
+    cmd_file: tempfile._TemporaryFileWrapper | None = None
+    if command:
+        cmd_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".cmd", encoding="utf-8")
+        cmd_file.write(command)
+        cmd_file.close()
+        metadata_files["command"] = cmd_file.name
+
     args = [
         "gcloud",
         "compute",
@@ -152,7 +167,7 @@ def flex(gpu: GpuType, command: str | None = None, zone: str | None = None) -> N
         f"--zone={zone or config.zone}",
         f"--machine-type={config.machine_type}",
         "--network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default",
-        f"--metadata-from-file=startup-script={_repo_root()}/bin/_startup.sh",
+        f"--metadata-from-file={','.join(f'{k}={v}' for k, v in metadata_files.items())}",
         "--maintenance-policy=TERMINATE",
         "--provisioning-model=FLEX_START",
         "--request-valid-for-duration=1h",
@@ -176,16 +191,6 @@ def flex(gpu: GpuType, command: str | None = None, zone: str | None = None) -> N
     if not config.wait:
         args.append("--async")
 
-    # Stash the command in a tempfile and pass via --metadata-from-file. We can't
-    # use --metadata=command=<cmd> because gcloud splits the value on commas to
-    # find KEY=VAL pairs, so any comma in the cmd would silently break parsing.
-    cmd_file: tempfile._TemporaryFileWrapper | None = None
-    if command:
-        cmd_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".cmd", encoding="utf-8")
-        cmd_file.write(command)
-        cmd_file.close()
-        args.append(f"--metadata-from-file=command={cmd_file.name}")
-
     try:
         logger.info(f"Creating {config.name} in {zone or config.zone}")
         subprocess.run(args, check=True)
@@ -203,13 +208,21 @@ def l4_eval(eval_command: str) -> None:
     logger.info("Created l4-eval instance with eval poller in startup script")
 
 
-def remote(gpu: GpuType, ddp: bool = False, zone: str | None = None) -> None:
+def remote(
+    gpu: GpuType,
+    ddp: bool = False,
+    zone: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> None:
     """
     Launch a remote GPU instance and re-run the current Python invocation on it
     (i.e. `python sys.argv[0] <args>`, with `--gpu` and `--zone` stripped).
 
     ddp: prefix the command with NCCL env vars and use `accelerate launch --multi_gpu`.
     zone: override the default GCP zone for this gpu type.
+    extra_env: additional env vars to set on the remote command (e.g. forwarding a
+        run_name generated locally so the remote re-uses it instead of generating
+        its own).
 
     Caller should `return` immediately after invoking this — the remote instance
     runs the actual workload. Callers should also check `is_on_remote()` before
@@ -225,7 +238,10 @@ def remote(gpu: GpuType, ddp: bool = False, zone: str | None = None) -> None:
     repo_root = _repo_root()
     argv_remote = _strip_flags(sys.argv[1:], ("--gpu", "--zone"))
     script_path = os.path.relpath(os.path.abspath(sys.argv[0]), repo_root)
-    env_prefix = f"{_REMOTE_ENV_VAR}=1"
+    env_pairs = [f"{_REMOTE_ENV_VAR}=1"]
+    for key, value in (extra_env or {}).items():
+        env_pairs.append(f"{key}={shlex.quote(value)}")
+    env_prefix = " ".join(env_pairs)
     if ddp:
         command = (
             f"{env_prefix} NCCL_NET=Socket LD_LIBRARY_PATH= "

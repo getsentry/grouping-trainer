@@ -687,9 +687,14 @@ def init_bias(frac_positive: float) -> float:
     return bias_init
 
 
-def make_trainer(model: gt.utils.SentenceTransformer, training_config: TrainingConfig) -> Trainer:
-    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    run_name = f"{timestamp}-{training_config.run_shortname}"
+def make_trainer(
+    model: gt.utils.SentenceTransformer,
+    training_config: TrainingConfig,
+    run_name: str | None = None,
+) -> Trainer:
+    if run_name is None:
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        run_name = f"{timestamp}-{training_config.run_shortname}"
 
     # Load data
     load_kwargs = dict(

@@ -41,5 +41,9 @@ echo "Setup complete."
 COMMAND=$(curl -fsS -H "Metadata-Flavor: Google" \
     http://metadata.google.internal/computeMetadata/v1/instance/attributes/command 2>/dev/null || true)
 if [ -n "$COMMAND" ]; then
-    eval "$COMMAND"
+    LOG_FILE="/var/log/grouping_trainer_run.log"
+    echo "Running command, output → $LOG_FILE"
+    eval "$COMMAND" >>"$LOG_FILE" 2>&1 || true
+    shutdown -h now
 fi
+# To follow the log: `sudo tail -f /var/log/grouping_trainer_run.log`

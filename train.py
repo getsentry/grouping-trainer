@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 import warnings
+from datetime import datetime
 from typing import Literal
 
 import torch
@@ -15,6 +16,8 @@ import wandb
 from tap import tapify
 
 import grouping_trainer as gt
+
+_RUN_NAME_ENV_VAR = "GROUPING_TRAINER_RUN_NAME"
 
 logger = logging.getLogger(__name__)
 
@@ -89,14 +92,35 @@ def run(
         Override the default GCP zone when launching the GPU instance. Useful when
         flex-start capacity is dry in the default zone for the requested gpu type.
     """
+    if not tiny_run:
+        assert run_shortname is not None, "run_shortname is required for full training runs"
+
+    # Generate run_name up front so we can log the artifact URL locally before
+    # auto-launching. On the remote, re-use the local run_name via env var so
+    # both sides log the same GCS path (rather than each generating its own
+    # timestamp).
+    run_name_env = os.environ.get(_RUN_NAME_ENV_VAR)
+    if run_name_env:
+        run_name = run_name_env
+    else:
+        timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        run_name = f"{timestamp}-{run_shortname or 'tiny-run'}"
+    run_gcs_dir = f"gs://grouping-data/runs/{run_name}"
+    run_console_url = run_gcs_dir.replace("gs://", "https://console.cloud.google.com/storage/browser/", 1)
+    logger.info(f"Run artifacts: {run_console_url}")
+
     if gpu is not None:
-        gt.launch.remote(gpu, ddp=gpu.endswith("-ddp"), zone=zone)
+        gt.launch.remote(
+            gpu,
+            ddp=gpu.endswith("-ddp"),
+            zone=zone,
+            extra_env={_RUN_NAME_ENV_VAR: run_name},
+        )
         return
 
     is_cuda = torch.cuda.is_available()
 
     if not tiny_run:
-        assert run_shortname is not None, "run_shortname is required for full training runs"
         assert is_cuda, "CUDA is required for full training. Did you mean to pass --tiny_run ?"
         assert torch.cuda.is_bf16_supported(), "Get a GPU that supports bfloat16"
 
@@ -134,14 +158,14 @@ def run(
             group_by_query_stacktrace_string=False,
         )
 
-    trainer = gt.train.make_trainer(model, training_config)
+    trainer = gt.train.make_trainer(model, training_config, run_name=run_name)
     gt.logging.configure_logging(
         run_name=trainer.args.run_name,
         process_type="training",
     )
 
     is_main_process = trainer.accelerator.is_main_process
-    run_gcs_dir = f"gs://grouping-data/runs/{trainer.args.run_name}"
+    eval_was_launched = False
 
     if is_main_process:
         upload_run_metadata(run_gcs_dir, training_config)
@@ -153,6 +177,7 @@ def run(
             group=trainer.args.run_name,
             settings=wandb.Settings(mode="shared", x_primary=True, x_label="train"),
         )
+        logger.info(f"W&B logs: {wandb.run.url}/logs")
         eval_command = (
             f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} "
             f"--wandb_run_id {wandb.run.id} --wandb_project {training_config.wandb_project} "
@@ -167,6 +192,7 @@ def run(
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_command}\n")
         if not tiny_run:
             gt.launch.l4_eval(eval_command)
+            eval_was_launched = True
         else:
             logger.info("Skipping async eval on L4 for tiny_run")
 
@@ -177,22 +203,31 @@ def run(
         message=".*torch.utils.checkpoint: the use_reentrant parameter.*",
         category=UserWarning,
     )
-    logger.info("Training - start")
-    trainer.train(resume_from_checkpoint=training_config.resume_from_checkpoint)
-    logger.info("Training - complete")
+    try:
+        logger.info("Training - start")
+        trainer.train(resume_from_checkpoint=training_config.resume_from_checkpoint)
+        logger.info("Training - complete")
 
-    if is_main_process:
-        dir_inference = os.path.join(trainer.args.output_dir, "inference")
-        trainer.model.encoder.save_pretrained(dir_inference)
-        subprocess.run(
-            ["gcloud", "storage", "cp", "-r", "wandb", f"{run_gcs_dir}/wandb"],
-            check=True,
-        )
-        subprocess.run(
-            ["gcloud", "storage", "rsync", "-r", dir_inference, f"{run_gcs_dir}/inference"],
-            check=True,
-        )
-        logger.info(f"Uploaded wandb artifacts and model to {run_gcs_dir}")
+        if is_main_process:
+            dir_inference = os.path.join(trainer.args.output_dir, "inference")
+            trainer.model.encoder.save_pretrained(dir_inference)
+            subprocess.run(
+                ["gcloud", "storage", "cp", "-r", "wandb", f"{run_gcs_dir}/wandb"],
+                check=True,
+            )
+            subprocess.run(
+                ["gcloud", "storage", "rsync", "-r", dir_inference, f"{run_gcs_dir}/inference"],
+                check=True,
+            )
+            logger.info(f"Uploaded wandb artifacts and model to {run_gcs_dir}")
+    finally:
+        # So the eval poller always stops polling, exists, and then the instance shuts down
+        if eval_was_launched:
+            subprocess.run(
+                ["gcloud", "storage", "cp", "-", f"{run_gcs_dir}/{gt.sentinels.TRAINING_DONE}"],
+                input=b"",
+                check=False,
+            )
 
 
 if __name__ == "__main__":
