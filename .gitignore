@@ -9,3 +9,4 @@ eval/similarities/
 eval/comparisons/**/merged.csv
 eval/comparisons/**/new.csv
 client_secret.json
+look_at_data.ipynb
