@@ -8,12 +8,17 @@ they're cross-project. The module synthetic.py mines easy to semi-easy negative 
 """
 
 from abc import ABC, abstractmethod
-from typing import Protocol
+from typing import Protocol, TypedDict
 
 import torch
 from sentence_transformers.util import pairwise_cos_sim
 
 import grouping_trainer as gt
+
+
+class Features(TypedDict):
+    query_embeddings: torch.Tensor
+    candidate_embeddings: torch.Tensor
 
 
 class _ComputeLossFromEmbeddings(Protocol):
@@ -82,7 +87,7 @@ class PairwiseLoss(torch.nn.Module, ABC):
 
     def forward(
         self,
-        features: gt.data.Features,
+        features: Features,
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
