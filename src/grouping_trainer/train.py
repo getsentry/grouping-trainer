@@ -55,10 +55,17 @@ class Batch(TypedDict):
 
 
 def _record_from_dict(record_dict: dict[str, Any]) -> Record:
+    label = record_dict["label"]
+    if label == "GROUP":
+        label_int = 1
+    elif label == "SEPARATE":
+        label_int = 0
+    else:
+        raise ValueError(f"Unknown label: {label!r} (expected 'GROUP' or 'SEPARATE')")
     return Record(
         query_stacktrace_string=record_dict["query_stacktrace_string"],
         candidate_stacktrace_string=record_dict["candidate_stacktrace_string"],
-        label=int(record_dict["label"] == "GROUP"),
+        label=label_int,
         sample_weight=float(record_dict.get("sample_weight", 1.0)),
         confidence_score=float(record_dict.get("confidence_score", 1.0)),
         # NOTE: cast to float b/c polars could read the data as a string if there were nulls in the CSV
@@ -90,6 +97,8 @@ def df_to_dataset(
         return Dataset.from_list([_record_from_dict(record_dict) for record_dict in df.rows(named=True)])
 
     query_group_dfs = [
+        # Sort within each query group by candidate length so adjacent rows have similar token counts. When the loaded
+        # batch is later split into sub-batches by token budget, this minimizes padding waste.
         group_df.sort(pl.col("candidate_stacktrace_string").str.len_chars())
         for _, group_df in df.group_by("query_stacktrace_string")
     ]

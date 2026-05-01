@@ -59,7 +59,7 @@ def top_combos(
 
     The output of this function isn't too useful w/ a symmetric distance matrix.
     """
-    if num_combos < 0:
+    if num_combos is not None and num_combos < 0:
         raise ValueError("num_combos must be positive")
     if num_combos == 0:
         return []

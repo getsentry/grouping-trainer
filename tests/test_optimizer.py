@@ -1,4 +1,5 @@
 from copy import copy
+from typing import Any
 
 import pytest
 import torch
@@ -7,10 +8,9 @@ from sentence_transformers.losses import MultipleNegativesRankingLoss
 
 import grouping_trainer as gt
 
-
-@pytest.fixture()
-def model() -> gt.utils.SentenceTransformer:
-    return gt.utils.SentenceTransformer("Alibaba-NLP/gte-modernbert-base")
+# A param group as expected by torch.optim.Optimizer: keys are "params" (list of nn.Parameter) plus
+# hyperparams like "lr", "weight_decay", "betas", "eps", etc.
+type ParamGroup = dict[str, Any]
 
 
 @pytest.fixture()
@@ -28,15 +28,15 @@ def config() -> gt.train.TrainingConfig:
 
 
 @pytest.fixture()
-def trainer(model: gt.utils.SentenceTransformer, config: gt.train.TrainingConfig) -> gt.train.Trainer:
-    return gt.train.make_trainer(model, config)
+def trainer(encoder: gt.utils.SentenceTransformer, config: gt.train.TrainingConfig) -> gt.train.Trainer:
+    return gt.train.make_trainer(encoder, config)
 
 
 @pytest.fixture()
-def baseline_trainer(model: gt.utils.SentenceTransformer, trainer: gt.train.Trainer) -> SentenceTransformerTrainer:
+def baseline_trainer(encoder: gt.utils.SentenceTransformer, trainer: gt.train.Trainer) -> SentenceTransformerTrainer:
     args = copy(trainer.args)
     args.learning_rate_mapping = {}
-    return SentenceTransformerTrainer(model, args=args, loss=MultipleNegativesRankingLoss(model))
+    return SentenceTransformerTrainer(encoder, args=args, loss=MultipleNegativesRankingLoss(encoder))
 
 
 def test_last_two_params_are_loss_scale_and_bias(trainer: gt.train.Trainer) -> None:
@@ -57,8 +57,8 @@ def test_has_extra_param_groups_for_loss(
 ) -> None:
     _, kwargs_custom = trainer.get_optimizer_cls_and_kwargs(trainer.args)
     _, kwargs_baseline = baseline_trainer.get_optimizer_cls_and_kwargs(baseline_trainer.args)
-    groups_custom = kwargs_custom["optimizer_dict"]
-    groups_baseline = kwargs_baseline["optimizer_dict"]
+    groups_custom: list[ParamGroup] = kwargs_custom["optimizer_dict"]
+    groups_baseline: list[ParamGroup] = kwargs_baseline["optimizer_dict"]
 
     assert len(groups_custom) >= 4
     assert len(groups_custom[:-2]) == len(groups_baseline)
@@ -69,8 +69,8 @@ def test_shared_param_groups_match_baseline(
 ) -> None:
     _, kwargs_custom = trainer.get_optimizer_cls_and_kwargs(trainer.args)
     _, kwargs_baseline = baseline_trainer.get_optimizer_cls_and_kwargs(baseline_trainer.args)
-    groups_custom = kwargs_custom["optimizer_dict"]
-    groups_baseline = kwargs_baseline["optimizer_dict"]
+    groups_custom: list[ParamGroup] = kwargs_custom["optimizer_dict"]
+    groups_baseline: list[ParamGroup] = kwargs_baseline["optimizer_dict"]
 
     for group_custom, group_baseline in zip(groups_custom[:-2], groups_baseline):
         assert len(group_custom["params"]) == len(group_baseline["params"])
@@ -93,7 +93,7 @@ def test_shared_param_groups_match_baseline(
 
 def test_extra_groups_have_expected_shape(trainer: gt.train.Trainer) -> None:
     _, kwargs = trainer.get_optimizer_cls_and_kwargs(trainer.args)
-    extra = kwargs["optimizer_dict"][-2:]
+    extra: list[ParamGroup] = kwargs["optimizer_dict"][-2:]
 
     for group in extra:
         assert len(group["params"]) == 1

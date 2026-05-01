@@ -92,6 +92,9 @@ def deduplicate_pairs(
 
     Grouping is symmetric.
     """
+    assert "_pair_first" not in df.columns and "_pair_second" not in df.columns, (
+        "input df must not have columns named '_pair_first' or '_pair_second' (used as scratch)"
+    )
     return (
         df.with_columns(
             _pair_first=pl.min_horizontal(column1, column2),
