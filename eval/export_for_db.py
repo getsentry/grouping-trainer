@@ -101,7 +101,9 @@ def _export(
         "prompt",
     ]
     query_cols = [c for c in query_source.columns if c.startswith("query_")] + other_cols
-    query_df = query_source.select(query_cols).unique(subset=["query_stacktrace_string"], keep="first", maintain_order=True)
+    query_df = query_source.select(query_cols).unique(
+        subset=["query_stacktrace_string"], keep="first", maintain_order=True
+    )
     if keep_fraction_queries < 1.0:
         n_keep = int(len(query_df) * keep_fraction_queries)
         query_df = query_df.sample(n=n_keep, seed=seed)
@@ -217,5 +219,7 @@ if __name__ == "__main__":
             kwargs[key] = float(val)
         export_for_load_test(sys.argv[1], **kwargs)
     else:
-        print(f"Usage: python {sys.argv[0]} <similarities_dir> [--load-test [keep_fraction_candidates=X] [keep_fraction_queries=X]]")
+        print(
+            f"Usage: python {sys.argv[0]} <similarities_dir> [--load-test [keep_fraction_candidates=X] [keep_fraction_queries=X]]"
+        )
         sys.exit(1)

@@ -46,9 +46,7 @@ def _summary_per_bucket(df: pl.DataFrame) -> pl.DataFrame:
             (pl.col("time_base_sec").median() * 1000).round(2).alias("base_ms_p50"),
             (pl.col("time_compiled_sec").quantile(0.9) * 1000).round(2).alias("compiled_ms_p90"),
             (pl.col("time_base_sec").quantile(0.9) * 1000).round(2).alias("base_ms_p90"),
-            (pl.col("time_base_sec").median() / pl.col("time_compiled_sec").median())
-            .round(2)
-            .alias("speedup_p50"),
+            (pl.col("time_base_sec").median() / pl.col("time_compiled_sec").median()).round(2).alias("speedup_p50"),
         )
         .sort("tok_p50")
     )

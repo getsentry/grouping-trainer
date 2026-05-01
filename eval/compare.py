@@ -836,9 +836,7 @@ def sweep_thresholds_by_project(
             )
         return pl.DataFrame(rows_project)
 
-    def _compute_project_precisions_per_platform(
-        model: str, thresholds_platform: dict[str, float]
-    ) -> pl.DataFrame:
+    def _compute_project_precisions_per_platform(model: str, thresholds_platform: dict[str, float]) -> pl.DataFrame:
         """Compute per-project precision_GROUP using each platform's own threshold."""
         sc = f"cos_sim_{model}"
         pc = f"pred_{model}"
@@ -859,7 +857,9 @@ def sweep_thresholds_by_project(
     # Compute per-project precision_GROUP at each threshold
     project_precisions: dict[str, pl.DataFrame] = {}
     if thresholds_platform is not None:
-        project_precisions["platform-specific"] = _compute_project_precisions_per_platform(model_name, thresholds_platform)
+        project_precisions["platform-specific"] = _compute_project_precisions_per_platform(
+            model_name, thresholds_platform
+        )
     for thresh in thresholds_sorted:
         project_precisions[str(thresh)] = _compute_project_precisions(model_name, thresh)
 
