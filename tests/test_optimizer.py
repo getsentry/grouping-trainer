@@ -13,7 +13,7 @@ import grouping_trainer as gt
 type ParamGroup = dict[str, Any]
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def config() -> gt.train.TrainingConfig:
     return gt.train.TrainingConfig(
         run_shortname="cpu-sanity-check",
@@ -27,12 +27,12 @@ def config() -> gt.train.TrainingConfig:
     )
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def trainer(encoder: gt.utils.SentenceTransformer, config: gt.train.TrainingConfig) -> gt.train.Trainer:
     return gt.train.make_trainer(encoder, config)
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def baseline_trainer(encoder: gt.utils.SentenceTransformer, trainer: gt.train.Trainer) -> SentenceTransformerTrainer:
     args = copy(trainer.args)
     args.learning_rate_mapping = {}
