@@ -137,7 +137,6 @@ def run(
             num_checkpoints=2,
             loss_type="contrastive",
             contrastive_margin=0.5,
-            group_by_query_stacktrace_string=False,
         )
     else:
         per_device_token_budget_scale = (
@@ -150,12 +149,7 @@ def run(
             learning_rate=learning_rate,
             loss_type="contrastive",
             contrastive_margin=0.5,
-            training_csvs=(
-                "final_csvs/train.csv",
-                "final_csvs/train_more.csv",
-                "final_csvs/train_more2.csv",
-            ),
-            group_by_query_stacktrace_string=False,
+            training_csvs=gt.data.DEFAULT_TRAIN_PATHS,
         )
 
     trainer = gt.train.make_trainer(model, training_config, run_name=run_name)
