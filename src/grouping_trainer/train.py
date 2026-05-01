@@ -43,7 +43,6 @@ class Record(TypedDict):
     candidate_stacktrace_string: str
     label: int
     sample_weight: float
-    confidence_score: float
 
 
 class Batch(TypedDict):
@@ -51,7 +50,6 @@ class Batch(TypedDict):
     candidate_stacktrace_string: list[str]
     label: torch.Tensor
     sample_weight: torch.Tensor
-    confidence_score: torch.Tensor
 
 
 def _record_from_dict(record_dict: dict[str, Any]) -> Record:
@@ -67,7 +65,6 @@ def _record_from_dict(record_dict: dict[str, Any]) -> Record:
         candidate_stacktrace_string=record_dict["candidate_stacktrace_string"],
         label=label_int,
         sample_weight=float(record_dict.get("sample_weight", 1.0)),
-        confidence_score=float(record_dict.get("confidence_score", 1.0)),
         # NOTE: cast to float b/c polars could read the data as a string if there were nulls in the CSV
     )
 
@@ -77,8 +74,6 @@ def df_to_dataset(
     group_by_query_stacktrace_string: bool = True,
     shuffle_groups: bool = True,
     seed: int | None = None,
-    use_confidence_score: bool = False,
-    confidence_score_floor: float = 0.9,
 ) -> Dataset:
     """
     Convert a DataFrame to a Dataset, grouping records by `query_stacktrace_string`.
@@ -86,13 +81,6 @@ def df_to_dataset(
     Records with the same `query_stacktrace_string` are kept together for cache hits in the forward pass. By default,
     the order of groups is randomized to avoid alphabetical ordering bias during training.
     """
-    if not use_confidence_score:
-        df = df.drop("confidence_score", strict=False)
-    else:
-        df = df.with_columns(
-            pl.col("confidence_score").cast(pl.Float64).fill_null(1.0).clip(lower_bound=confidence_score_floor)
-        )
-
     if not group_by_query_stacktrace_string:
         return Dataset.from_list([_record_from_dict(record_dict) for record_dict in df.rows(named=True)])
 
@@ -121,8 +109,6 @@ def df_to_dataset(
 def create_project_dataset_dict(
     df: pl.DataFrame,
     min_dataset_size: int | None = None,
-    use_confidence_score: bool = False,
-    confidence_score_floor: float = 0.9,
 ) -> DatasetDict:
     """
     Create a `DatasetDict` with one dataset per project. Projects below `min_dataset_size` are packed into a single
@@ -143,15 +129,11 @@ def create_project_dataset_dict(
         if (min_dataset_size is not None) and (df_project.height < min_dataset_size):
             small_project_dfs.append(df_project)
         else:
-            project_id_to_dataset[project_id] = df_to_dataset(
-                df_project, use_confidence_score=use_confidence_score, confidence_score_floor=confidence_score_floor
-            )
+            project_id_to_dataset[project_id] = df_to_dataset(df_project)
 
     if small_project_dfs:
         df_packed = pl.concat(small_project_dfs)
-        project_id_to_dataset["__packed__"] = df_to_dataset(
-            df_packed, use_confidence_score=use_confidence_score, confidence_score_floor=confidence_score_floor
-        )
+        project_id_to_dataset["__packed__"] = df_to_dataset(df_packed)
 
     return DatasetDict(project_id_to_dataset)
 
@@ -187,8 +169,6 @@ def load_train_dataset(
     stress_test_min_pair_len: int | None = None,
     paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
-    use_confidence_score: bool = False,
-    confidence_score_floor: float = 0.9,
 ) -> tuple[Dataset, float, int]:
     """
     Args:
@@ -202,12 +182,7 @@ def load_train_dataset(
         paths=paths,
         source_to_sample_weight=source_to_sample_weight,
     )
-    dataset_train = df_to_dataset(
-        df,
-        use_confidence_score=use_confidence_score,
-        confidence_score_floor=confidence_score_floor,
-        group_by_query_stacktrace_string=False,
-    )
+    dataset_train = df_to_dataset(df, group_by_query_stacktrace_string=False)
     frac_positive = (df["label"] == "GROUP").mean()
     return dataset_train, frac_positive, num_projects
 
@@ -217,8 +192,6 @@ def load_train_dataset_dict(
     stress_test_min_pair_len: int | None = None,
     paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
-    use_confidence_score: bool = False,
-    confidence_score_floor: float = 0.9,
     min_dataset_size: int | None = None,
 ) -> tuple[DatasetDict, float, int]:
     """
@@ -234,12 +207,7 @@ def load_train_dataset_dict(
         paths=paths,
         source_to_sample_weight=source_to_sample_weight,
     )
-    dataset_dict_train = create_project_dataset_dict(
-        df,
-        min_dataset_size=min_dataset_size,
-        use_confidence_score=use_confidence_score,
-        confidence_score_floor=confidence_score_floor,
-    )
+    dataset_dict_train = create_project_dataset_dict(df, min_dataset_size=min_dataset_size)
     frac_positive = (df["label"] == "GROUP").mean()
     return dataset_dict_train, frac_positive, num_projects
 
@@ -348,10 +316,9 @@ class ModelForTraining(torch.nn.Module):
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
-        confidence_scores: torch.Tensor | None = None,
     ) -> torch.Tensor:
         features = self.encode(inputs)
-        return self.loss(features, labels, sample_weight=sample_weight, confidence_scores=confidence_scores)
+        return self.loss(features, labels, sample_weight=sample_weight)
 
     def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None) -> None:
         self.encoder.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
@@ -430,12 +397,7 @@ class Trainer(SentenceTransformerTrainer):
     def compute_loss(
         self, model: ModelForTraining, inputs: Batch, return_outputs: bool = False, num_items_in_batch=None
     ) -> torch.Tensor | tuple[torch.Tensor, dict]:
-        loss = model(
-            inputs,
-            inputs["label"],
-            sample_weight=inputs["sample_weight"],
-            confidence_scores=inputs["confidence_score"],
-        )
+        loss = model(inputs, inputs["label"], sample_weight=inputs["sample_weight"])
         if return_outputs:
             return loss, {}
         return loss
@@ -671,10 +633,6 @@ class TrainingConfig(BaseModel):
     # group_by_query_stacktrace_string=True, shuffle_within_dataset=True is a middleground: don't include too many of
     # the same query stacktrace strings in a batch, while still generating pairs from 1 project per batch.
 
-    # TODO: poor accuracy. Needs to be fixed
-    use_confidence_score: bool = False
-    confidence_score_floor: float = 0.9
-
     # Loss
     loss_type: Literal["sigmoid", "contrastive"] = "contrastive"
     contrastive_margin: float = 0.5  # did the best among 0.25, 0.5, 0.75
@@ -710,8 +668,6 @@ def make_trainer(
         sample_size=training_config.sample_size_train,
         paths=training_config.training_csvs,
         source_to_sample_weight=training_config.source_to_sample_weight or None,
-        use_confidence_score=training_config.use_confidence_score,
-        confidence_score_floor=training_config.confidence_score_floor,
     )
     if training_config.group_by_query_stacktrace_string:
         train_dataset, frac_positive, num_projects = load_train_dataset_dict(
@@ -814,5 +770,5 @@ def make_trainer(
         ),
         per_device_token_budget=training_config.per_device_token_budget,
         #
-        # Eval is async on a separate machine. See eval/eval_poller.py
+        # Eval runs in parallel to training on a separate machine. See eval/eval_poller.py
     )

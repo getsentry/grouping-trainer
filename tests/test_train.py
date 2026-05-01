@@ -12,22 +12,18 @@ def _reconcat(sub_batches: Iterable[gt.train.Batch]) -> gt.train.Batch:
     candidates = []
     labels = []
     sample_weights = []
-    confidence_scores = []
     for sb in sub_batches:
         queries.extend(sb["query_stacktrace_string"])
         candidates.extend(sb["candidate_stacktrace_string"])
         labels.append(sb["label"])
         sample_weights.append(sb["sample_weight"])
-        confidence_scores.append(sb["confidence_score"])
     labels = torch.cat(labels, dim=0) if labels else torch.empty((0,), dtype=torch.int64)
     sample_weights = torch.cat(sample_weights, dim=0) if sample_weights else torch.empty((0,))
-    confidence_scores = torch.cat(confidence_scores, dim=0) if confidence_scores else torch.empty((0,))
     return {
         "query_stacktrace_string": queries,
         "candidate_stacktrace_string": candidates,
         "label": labels,
         "sample_weight": sample_weights,
-        "confidence_score": confidence_scores,
     }
 
 
@@ -54,13 +50,11 @@ def test_batch_pairs_by_token_budget_roundtrip_preserves_pairs_order_and_alignme
     labels = torch.tensor([0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 0], dtype=torch.int64)
 
     sample_weights = torch.ones(len(queries))
-    confidence_scores = torch.ones(len(queries))
     batch = {
         "query_stacktrace_string": queries,
         "candidate_stacktrace_string": candidates,
         "label": labels,
         "sample_weight": sample_weights,
-        "confidence_score": confidence_scores,
     }
 
     sub_batches = list(gt.train.batch_pairs_by_token_budget(batch, token_budget=token_budget))
@@ -75,7 +69,6 @@ def test_batch_pairs_by_token_budget_roundtrip_preserves_pairs_order_and_alignme
     assert roundtrip["candidate_stacktrace_string"] == candidates
     assert torch.equal(roundtrip["label"], labels)
     assert torch.equal(roundtrip["sample_weight"], sample_weights)
-    assert torch.equal(roundtrip["confidence_score"], confidence_scores)
 
 
 def test_batch_pairs_by_token_budget_rejects_empty_batch():
@@ -84,7 +77,6 @@ def test_batch_pairs_by_token_budget_rejects_empty_batch():
         "candidate_stacktrace_string": [],
         "label": torch.empty((0,), dtype=torch.int64),
         "sample_weight": torch.empty((0,)),
-        "confidence_score": torch.empty((0,)),
     }
     with pytest.raises(ValueError, match="Batch is empty"):
         list(gt.train.batch_pairs_by_token_budget(empty, token_budget=128))
@@ -96,7 +88,6 @@ def test_batch_pairs_by_token_budget_rejects_inconsistent_lengths():
         "candidate_stacktrace_string": ["c" * 4],
         "label": torch.tensor([1, 0], dtype=torch.int64),
         "sample_weight": torch.ones(2),
-        "confidence_score": torch.ones(2),
     }
     with pytest.raises(ValueError, match="inconsistent lengths"):
         list(gt.train.batch_pairs_by_token_budget(bad, token_budget=128))
@@ -109,7 +100,6 @@ def test_batch_pairs_by_token_budget_rejects_non_positive_budget(token_budget: i
         "candidate_stacktrace_string": ["c"],
         "label": torch.tensor([1], dtype=torch.int64),
         "sample_weight": torch.ones(1),
-        "confidence_score": torch.ones(1),
     }
     with pytest.raises(ValueError, match="token_budget must be positive"):
         list(gt.train.batch_pairs_by_token_budget(batch, token_budget=token_budget))
@@ -122,7 +112,6 @@ def test_batch_pairs_by_token_budget_oversized_pair_yielded_as_singleton() -> No
         "candidate_stacktrace_string": ["c"],
         "label": torch.tensor([1], dtype=torch.int64),
         "sample_weight": torch.ones(1),
-        "confidence_score": torch.ones(1),
     }
     sub_batches = list(gt.train.batch_pairs_by_token_budget(batch, token_budget=10))
     assert len(sub_batches) == 1
@@ -136,7 +125,6 @@ def test_batch_pairs_by_token_budget_honors_custom_count_tokens() -> None:
         "candidate_stacktrace_string": ["c"] * 4,
         "label": torch.tensor([1, 0, 1, 0], dtype=torch.int64),
         "sample_weight": torch.ones(4),
-        "confidence_score": torch.ones(4),
     }
     sub_batches = list(gt.train.batch_pairs_by_token_budget(batch, token_budget=512, count_tokens=lambda _: 1000))
     assert [len(sb["label"]) for sb in sub_batches] == [1, 1, 1, 1]
@@ -153,7 +141,6 @@ def test_batch_pairs_by_token_budget_splits_at_expected_indices() -> None:
         "candidate_stacktrace_string": ["c"] * 8,
         "label": torch.tensor([1, 0, 1, 0, 1, 0, 1, 0], dtype=torch.int64),
         "sample_weight": torch.ones(8),
-        "confidence_score": torch.ones(8),
     }
     sub_batches = list(gt.train.batch_pairs_by_token_budget(batch, token_budget=100, count_tokens=lambda _: 10))
     assert [len(sb["label"]) for sb in sub_batches] == [5, 3]
@@ -191,21 +178,6 @@ def test_record_from_dict_defaults_when_optional_keys_missing() -> None:
         {"query_stacktrace_string": "q", "candidate_stacktrace_string": "c", "label": "GROUP"}
     )
     assert record["sample_weight"] == 1.0
-    assert record["confidence_score"] == 1.0
-
-
-def test_record_from_dict_coerces_string_confidence_score() -> None:
-    """polars can read confidence_score as string when the CSV column has nulls; the function casts to float."""
-    record = gt.train._record_from_dict(
-        {
-            "query_stacktrace_string": "q",
-            "candidate_stacktrace_string": "c",
-            "label": "GROUP",
-            "confidence_score": "0.5",
-        }
-    )
-    assert record["confidence_score"] == 0.5
-    assert isinstance(record["confidence_score"], float)
 
 
 def test_record_from_dict_coerces_string_sample_weight() -> None:
@@ -327,56 +299,6 @@ def test_df_to_dataset_different_seeds_produce_different_orders() -> None:
     assert dataset_a["query_stacktrace_string"] != dataset_b["query_stacktrace_string"]
 
 
-def test_df_to_dataset_use_confidence_score_false_drops_column_and_uses_default() -> None:
-    df = pl.DataFrame(
-        {
-            "query_stacktrace_string": ["q"],
-            "candidate_stacktrace_string": ["c"],
-            "label": ["GROUP"],
-            "confidence_score": [0.5],
-        }
-    )
-    dataset = gt.train.df_to_dataset(df, use_confidence_score=False, group_by_query_stacktrace_string=False)
-    assert dataset["confidence_score"] == [1.0]
-
-
-def test_df_to_dataset_use_confidence_score_true_applies_floor() -> None:
-    df = pl.DataFrame(
-        {
-            "query_stacktrace_string": ["q"],
-            "candidate_stacktrace_string": ["c"],
-            "label": ["GROUP"],
-            "confidence_score": [0.5],
-        }
-    )
-    dataset = gt.train.df_to_dataset(
-        df,
-        use_confidence_score=True,
-        confidence_score_floor=0.7,
-        group_by_query_stacktrace_string=False,
-    )
-    assert dataset["confidence_score"] == [0.7]
-
-
-def test_df_to_dataset_use_confidence_score_true_fills_null_with_one() -> None:
-    df = pl.DataFrame(
-        {
-            "query_stacktrace_string": ["q1", "q2"],
-            "candidate_stacktrace_string": ["c1", "c2"],
-            "label": ["GROUP", "SEPARATE"],
-            "confidence_score": [None, 0.8],
-        },
-        schema_overrides={"confidence_score": pl.Float64},
-    )
-    dataset = gt.train.df_to_dataset(
-        df,
-        use_confidence_score=True,
-        confidence_score_floor=0.5,
-        group_by_query_stacktrace_string=False,
-    )
-    assert dataset["confidence_score"] == [1.0, 0.8]
-
-
 # create_project_dataset_dict
 
 
@@ -453,7 +375,6 @@ def _make_batch(queries: list[str], candidates: list[str]) -> gt.train.Batch:
         "candidate_stacktrace_string": candidates,
         "label": torch.zeros(n, dtype=torch.int64),
         "sample_weight": torch.ones(n),
-        "confidence_score": torch.ones(n),
     }
 
 

@@ -80,19 +80,14 @@ def make_evaluator(
     sample_val: int | None,
     truncate_dims: tuple[int, ...],
     use_simple_precisions: bool = False,
-    use_confidence_score: bool = False,
-    confidence_score_floor: float = 0.9,
 ) -> gt.evaluator.MinPrecisionEvaluator:
     dataset_val = gt.train.df_to_dataset(
         gt.data.load_val_df(paths=("final_csvs/val.csv",), sample_size=sample_val),
-        use_confidence_score=use_confidence_score,
-        confidence_score_floor=confidence_score_floor,
     )
     return gt.evaluator.MinPrecisionEvaluator(
         sentences1=list(dataset_val["query_stacktrace_string"]),
         sentences2=list(dataset_val["candidate_stacktrace_string"]),
         labels=[int(record["label"]) for record in dataset_val],
-        confidence_scores=None if not use_confidence_score else [record["confidence_score"] for record in dataset_val],
         name="val",
         show_progress_bar=True,
         batch_size=2,
@@ -249,8 +244,6 @@ def main(
     loss_type: Literal["sigmoid", "contrastive"] = "contrastive",
     contrastive_margin: float = 0.5,
     use_text_prefix: bool = False,
-    use_confidence_score: bool = False,
-    confidence_score_floor: float = 0.9,
 ):
     """
     Poll GCS for new training checkpoints and evaluate each one.
@@ -280,10 +273,6 @@ def main(
         Margin for contrastive loss. Only used when loss_type is "contrastive".
     use_text_prefix
         If True, add the model's designated prefix to the input text.
-    use_confidence_score
-        If True, use the confidence score as part of the evaluation loss computation.
-    confidence_score_floor
-        Minimum confidence score. Values below this are clipped up.
     """
     run_name = run_gcs_dir.rstrip("/").rsplit("/", 1)[-1]
     gt.logging.configure_logging(
@@ -305,8 +294,6 @@ def main(
             sample_val,
             truncate_dims,
             use_simple_precisions=use_simple_precisions,
-            use_confidence_score=use_confidence_score,
-            confidence_score_floor=confidence_score_floor,
         )
         encoder = gt.utils.encoder_from_base(base_model, use_text_prefix=use_text_prefix)
         evaluate_baseline(run_gcs_dir, encoder, evaluator, loss_type=loss_type, contrastive_margin=contrastive_margin)

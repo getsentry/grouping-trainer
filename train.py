@@ -179,8 +179,6 @@ def run(
         )
         if use_text_prefix:
             eval_command += " --use_text_prefix"
-        if training_config.use_confidence_score:
-            eval_command += f" --use_confidence_score --confidence_score_floor {training_config.confidence_score_floor}"
         if tiny_run:
             eval_command += " --sample_val 200 --use_simple_precisions"
         logger.info(f"\nThis command will be run to evaluate the model:\n\n{eval_command}\n")
