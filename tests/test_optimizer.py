@@ -21,9 +21,9 @@ def config() -> gt.train.TrainingConfig:
         per_device_token_budget=64,
         gradient_checkpointing=True,
         sample_size_train=30,
-        sample_size_val=20,
         num_logs=30,
-        num_saves=3,
+        num_checkpoints=3,
+        loss_type="sigmoid",  # only sigmoid loss has log_scale and bias params for the optimizer to group
     )
 
 
