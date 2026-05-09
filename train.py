@@ -107,6 +107,9 @@ def run(
         run_name = f"{timestamp}-{run_shortname or 'tiny-run'}"
     run_gcs_dir = f"gs://grouping-data/runs/{run_name}"
     run_console_url = run_gcs_dir.replace("gs://", "https://console.cloud.google.com/storage/browser/", 1)
+
+    gt.logging.configure_logging(run_name=run_name, process_type="training")
+
     logger.info(f"Run artifacts: {run_console_url}")
 
     if gpu is not None:
@@ -153,10 +156,6 @@ def run(
         )
 
     trainer = gt.train.make_trainer(model, training_config, run_name=run_name)
-    gt.logging.configure_logging(
-        run_name=trainer.args.run_name,
-        process_type="training",
-    )
 
     is_main_process = trainer.accelerator.is_main_process
     eval_was_launched = False

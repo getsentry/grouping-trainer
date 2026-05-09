@@ -65,7 +65,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
     ),
     "h100": GpuConfig(
         name="grouping-trainer-h100",
-        zone="us-east4-c",
+        zone="us-central1-a",
         machine_type="a3-highgpu-1g",
         accelerator="count=1,type=nvidia-h100-80gb",
         max_run="86400s",
@@ -95,7 +95,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
     ),
     "a100-ddp": GpuConfig(
         name="grouping-trainer-a100-ddp",
-        zone="us-east4-c",
+        zone="us-central1-a",
         machine_type="a2-ultragpu-2g",
         accelerator=None,
         max_run="172800s",
