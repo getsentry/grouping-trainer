@@ -51,7 +51,9 @@ base_model_to_per_device_token_budget_scale = {
     "jinaai/jina-embeddings-v5-text-nano-text-matching": 4,
 }
 
-TrainingGpuType = Literal[tuple(gpu_type for gpu_type in gt.launch.gpu_type_to_config.keys() if gpu_type != "l4")]
+TrainingGpuType = Literal[
+    tuple(gpu_type for gpu_type, config in gt.launch.gpu_type_to_config.items() if config.is_for_training)
+]
 
 
 def run(

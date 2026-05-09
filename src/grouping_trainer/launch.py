@@ -61,6 +61,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         install_nvidia_driver=False,
         reservation_affinity="any",
         wait_for_instance_creation=True,  # L4s come up fast. Block so errors surface promptly
+        is_for_training=False,
     ),
     "h100": GpuConfig(
         name="grouping-trainer-h100",
@@ -71,6 +72,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         install_nvidia_driver=True,
         reservation_affinity="none",
         wait_for_instance_creation=False,  # flex-start can queue for up to 1h
+        is_for_training=True,
     ),
     "h100-ddp": GpuConfig(
         name="grouping-trainer-h100-ddp",
@@ -81,6 +83,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         install_nvidia_driver=True,
         reservation_affinity="none",
         wait_for_instance_creation=False,
+        is_for_training=True,
     ),
     "a100": GpuConfig(
         name="grouping-trainer-a100",
@@ -91,6 +94,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         install_nvidia_driver=True,
         reservation_affinity="none",
         wait_for_instance_creation=False,
+        is_for_training=True,
     ),
     "a100-ddp": GpuConfig(
         name="grouping-trainer-a100-ddp",
@@ -101,6 +105,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         install_nvidia_driver=True,
         reservation_affinity="none",
         wait_for_instance_creation=False,
+        is_for_training=True,
     ),
 }
 
