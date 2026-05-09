@@ -6,6 +6,9 @@
     "autoDocstring.startOnNewLine": true,
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true,
+    "[markdown]": {
+        "editor.formatOnSave": false
+    },
     "editor.codeActionsOnSave": {
         "source.organizeImports.ruff": "explicit"
     },

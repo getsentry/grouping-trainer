@@ -40,28 +40,40 @@ You can use many H100s simultaneously as well. Takes 3 hours to train on 4 H100s
 more than it needs to.
 
 
-### Launch a GPU
+### Debug
 
-If you'd like to launch a bare instance to ssh into:
+<details>
+<summary>Launch a bare instance to ssh into</summary>
 
 ```bash
 python -m grouping_trainer.launch --gpu h100
 ```
 
+</details>
 
-### Check instance output
 
-From local:
+<details>
+<summary>Check instance output</summary>
+
+From local (use when you can't SSH in, e.g., the boot itself failed):
 
 ```bash
-gcloud compute instances get-serial-port-output grouping-trainer-l4-eval --zone=us-central1-a --project=ml-ai-420606 | tail -50
+gcloud compute instances get-serial-port-output grouping-trainer-l4-eval --zone=us-central1-a --project=ml-ai-420606 | tail -100
 ```
 
-In the instance:
+Or, SSH into the instance and run:
 
 ```bash
 sudo tail -f /var/log/grouping_trainer_run.log
 ```
+
+If that file doesn't exist, the startup script never reached the `eval $COMMAND` block. Check what it actually did:
+
+```bash
+sudo journalctl -u google-startup-scripts.service --no-pager
+```
+
+</details>
 
 
 ### Eval
