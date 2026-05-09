@@ -23,6 +23,8 @@ mkdir -p lightonai/modernbert-embed-large
 gcloud storage cp -r gs://grouping-data/base_models/lightonai/modernbert-embed-large/* lightonai/modernbert-embed-large
 
 uv sync --locked
+# shellcheck disable=SC1091
+source .venv/bin/activate  # so the eval $COMMAND below finds python/accelerate
 
 gcloud storage cp -r gs://grouping-data/final_csvs/ .
 
@@ -45,7 +47,7 @@ COMMAND=$(curl -fsS -H "Metadata-Flavor: Google" \
     http://metadata.google.internal/computeMetadata/v1/instance/attributes/command 2>/dev/null || true)
 if [ -n "$COMMAND" ]; then
     LOG_FILE="/var/log/grouping_trainer_run.log"
-    echo "Running command, output → $LOG_FILE"
+    echo "Running command, output -> $LOG_FILE"
     eval "$COMMAND" >>"$LOG_FILE" 2>&1 || true
     shutdown -h now
 fi

@@ -24,6 +24,7 @@ def config() -> gt.train.TrainingConfig:
         num_logs=30,
         num_checkpoints=3,
         loss_type="sigmoid",  # only sigmoid loss has log_scale and bias params for the optimizer to group
+        training_csvs=("tests/fixtures/train_tiny.csv",),
     )
 
 
