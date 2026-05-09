@@ -4,7 +4,10 @@
 # after SSH'ing in, run `sudo -i` first so $HOME=/root and paths line up.
 set -euo pipefail
 
-# Install uv (manages its own Python; respects .python-version in the repo).
+# GCP's metadata script runner doesn't export HOME
+export HOME="${HOME:-/root}"
+
+# Install uv (manages its own Python, respects .python-version in the repo).
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 

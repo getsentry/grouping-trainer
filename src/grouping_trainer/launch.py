@@ -41,15 +41,14 @@ class GpuConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str
-    zone: str  # default zone; flex-start capacity varies across regions, so this
-    # gets overridden via the --zone flag when the default is dry.
+    zone: str = "us-central1-a"
     machine_type: str
-    accelerator: str | None  # None for *-ddp variants — accelerators are built
-    # into the machine type, so passing --accelerator is redundant/erroneous.
+    accelerator: str | None  # None for *-ddp variants b/c accelerators are built into the machine type
     max_run: str
     install_nvidia_driver: bool
     reservation_affinity: Literal["none", "any"]
-    wait: bool  # whether to block locally on instance creation. False adds --async.
+    wait_for_instance_creation: bool
+    is_for_training: bool
 
 
 gpu_type_to_config: dict[GpuType, GpuConfig] = {
@@ -61,7 +60,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         max_run="86400s",
         install_nvidia_driver=False,
         reservation_affinity="any",
-        wait=True,  # L4s come up fast; block so errors surface promptly
+        wait_for_instance_creation=True,  # L4s come up fast. Block so errors surface promptly
     ),
     "h100": GpuConfig(
         name="grouping-trainer-h100",
@@ -71,7 +70,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         max_run="86400s",
         install_nvidia_driver=True,
         reservation_affinity="none",
-        wait=False,  # flex-start can queue for up to 1h; don't block the shell
+        wait_for_instance_creation=False,  # flex-start can queue for up to 1h
     ),
     "h100-ddp": GpuConfig(
         name="grouping-trainer-h100-ddp",
@@ -81,7 +80,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         max_run="172800s",
         install_nvidia_driver=True,
         reservation_affinity="none",
-        wait=False,
+        wait_for_instance_creation=False,
     ),
     "a100": GpuConfig(
         name="grouping-trainer-a100",
@@ -91,7 +90,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         max_run="86400s",
         install_nvidia_driver=True,
         reservation_affinity="none",
-        wait=False,
+        wait_for_instance_creation=False,
     ),
     "a100-ddp": GpuConfig(
         name="grouping-trainer-a100-ddp",
@@ -101,7 +100,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         max_run="172800s",
         install_nvidia_driver=True,
         reservation_affinity="none",
-        wait=False,
+        wait_for_instance_creation=False,
     ),
 }
 

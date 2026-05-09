@@ -51,6 +51,8 @@ base_model_to_per_device_token_budget_scale = {
     "jinaai/jina-embeddings-v5-text-nano-text-matching": 4,
 }
 
+TrainingGpuType = Literal[tuple(gpu_type for gpu_type in gt.launch.gpu_type_to_config.keys() if gpu_type != "l4")]
+
 
 def run(
     base_model: str = "lightonai/modernbert-embed-large",
@@ -60,7 +62,7 @@ def run(
     per_device_train_batch_size: int = 256,
     learning_rate: float = 1e-4,
     tiny_run: bool = False,
-    gpu: Literal["h100", "h100-ddp", "a100", "a100-ddp"] | None = None,
+    gpu: TrainingGpuType | None = None,
     zone: str | None = None,
 ):
     """
@@ -95,10 +97,8 @@ def run(
     if not tiny_run:
         assert run_shortname is not None, "run_shortname is required for full training runs"
 
-    # Generate run_name up front so we can log the artifact URL locally before
-    # auto-launching. On the remote, re-use the local run_name via env var so
-    # both sides log the same GCS path (rather than each generating its own
-    # timestamp).
+    # Generate run_name up front so we can log the artifact URL locally before auto-launching. On the remote, re-use the
+    # local run_name via env var so both sides log the same GCS path (rather than each generating its own timestamp).
     run_name_env = os.environ.get(_RUN_NAME_ENV_VAR)
     if run_name_env:
         run_name = run_name_env
