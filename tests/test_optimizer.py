@@ -72,7 +72,7 @@ def test_shared_param_groups_match_baseline(
     groups_custom: list[ParamGroup] = kwargs_custom["optimizer_dict"]
     groups_baseline: list[ParamGroup] = kwargs_baseline["optimizer_dict"]
 
-    for group_custom, group_baseline in zip(groups_custom[:-2], groups_baseline):
+    for group_custom, group_baseline in zip(groups_custom[:-2], groups_baseline, strict=True):
         assert len(group_custom["params"]) == len(group_baseline["params"])
         assert group_custom.keys() == group_baseline.keys()
 
@@ -83,7 +83,7 @@ def test_shared_param_groups_match_baseline(
                 f"mismatch on {key!r}"
             )
 
-        for param_custom, param_baseline in zip(group_custom["params"], group_baseline["params"]):
+        for param_custom, param_baseline in zip(group_custom["params"], group_baseline["params"], strict=True):
             assert isinstance(param_custom, torch.nn.Parameter)
             assert isinstance(param_baseline, torch.nn.Parameter)
             assert torch.allclose(param_custom, param_baseline)

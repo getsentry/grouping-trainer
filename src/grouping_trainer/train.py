@@ -5,11 +5,11 @@ import os
 import random
 import subprocess
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Literal, TypedDict, overload
+from typing import Any, Literal, TypedDict
 
 import numpy as np
 import polars as pl
@@ -344,10 +344,13 @@ class ModelForTraining(torch.nn.Module):
 
 class Trainer(SentenceTransformerTrainer):
     """
-    Unlike SentenceTransformerTrainer, this class inputs a module whose forward computes the loss. This makes things
-    like DDP and FSDP work out of the box (after I figure out how to make the subbatch backward stuff work w/ it...)
+    Unlike `SentenceTransformerTrainer`, this class inputs a module whose forward computes the loss. Makes things like
+    DDP and FSDP work out of the box (after I figure out how to make the subbatch backward stuff work w/ it...). This
+    choice also fixes a bug where loss parameters aren't saved and aren't picked up when resuming training from a
+    checkpoint.
 
-    Also fixes a bug where loss parameters aren't saved and aren't picked up when resuming training from a checkpoint.
+    Subclassing `SentenceTransformerTrainer` b/c it comes w/ very useful samplers, has optimizer param groups, and it
+    handles custom tokenization that we could hook into in the future.
 
     Note
     ----
@@ -436,7 +439,7 @@ class Trainer(SentenceTransformerTrainer):
         Stacktrace lengths are intentionally variant.
         Reduce the chance of OOM by splitting `inputs` into sub-batches and accumulating gradients.
 
-        Couldn't get flash-attn installed b/c of obscure GCC errors, so can't use varlen.
+        Couldn't get flash-attn installed b/c of obscure GCC errors, so can't use varlen. TODO: try again.
 
         NOTE: training_step corresponds to one optimizer.step call.
         """

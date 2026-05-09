@@ -436,7 +436,7 @@ def test_encode_preserves_input_order_after_internal_unique_sort(
 def test_encode_query_candidate_split_at_correct_boundary(
     model_for_training: gt.train.ModelForTraining,
 ) -> None:
-    """The `num_queries` split must produce shape (len(queries), D) and (len(candidates), D), not a swap or off-by-one."""
+    """The `num_queries` split must produce shape (len(queries), D) and (len(candidates), D), not a swap/off-by-one."""
     queries = ["query alpha text", "query beta text", "query gamma text"]
     candidates = ["candidate delta text", "candidate epsilon text", "candidate zeta text"]
     batch = _make_batch(queries=queries, candidates=candidates)

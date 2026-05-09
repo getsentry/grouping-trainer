@@ -22,7 +22,7 @@ biases above. Haven't studied it much yet.
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -75,7 +75,7 @@ def top_combos(
     indices_selected = indices[indices_sorted]  # back to raveled space
     top_indices = indices_selected[:num_combos]  # still in raveled space
     unraveled = np.unravel_index(top_indices, distances.shape)  # finally unravel
-    return list(zip(*unraveled))  # :-]
+    return list(zip(*unraveled, strict=True))  # :-]
 
 
 def mine_semi_easy_negatives_from_distance_matrix(
@@ -302,7 +302,7 @@ def main(
     subprocess.run(["gcloud", "storage", "rsync", "-r", gcs_model_folder, dir_model], check=True)
     model = gt.utils.SentenceTransformer(dir_model, trust_remote_code=True, text_prefix=text_prefix)
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M-%S")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d-%H-%M-%S")
     df = gt.data.load_train_df(paths=csv_paths)
     df = df.sort(pl.col("query_stacktrace_string").str.len_chars().mean().over("org_id", "project_id"))
     for (org_id, project_id), df_project in tqdm(

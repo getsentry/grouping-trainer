@@ -241,7 +241,7 @@ class MinPrecisionEvaluator(SentenceEvaluator):
         assert len(scores) == len(labels)
 
         # Sort by score descending (highest similarity first)
-        rows = list(zip(scores, labels))
+        rows = list(zip(scores, labels, strict=True))
         rows = sorted(rows, key=lambda x: x[0], reverse=True)
 
         total_positives = sum(labels)

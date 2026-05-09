@@ -24,7 +24,7 @@ dependencies = [
     "typed-argument-parser==1.11.0",
     "wandb==0.23.1",
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.13"
 authors = [
     { name = "Kush Dubey", email = "kushdubey63@gmail.com" },
 ]
@@ -61,7 +61,7 @@ indent-width = 4
 extend-include = ["*.ipynb"]
 
 [tool.ruff.lint]
-select = ["I"]
+select = ["I", "F", "E", "B", "UP"]
 
 [project.urls]
 Homepage = "https://github.com/getsentry/grouping-trainer"

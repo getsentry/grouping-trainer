@@ -349,7 +349,7 @@ def plot_metrics_by_platform(df: pl.DataFrame, model_names: list[str]) -> plt.Fi
     fig, axes = plt.subplots(1, len(metrics_to_plot), figsize=(4 * len(metrics_to_plot), 5))
     axes: list[plt.Axes] = list(axes)
 
-    for ax, metric in zip(axes, metrics_to_plot):
+    for ax, metric in zip(axes, metrics_to_plot, strict=True):
         pivot_df = metrics_pd.pivot(index="platform", columns="model", values=metric)
         pivot_df = pivot_df[model_names]  # ensure consistent column order
         pivot_df.plot(kind="bar", ax=ax, rot=45, legend=False, color=MODEL_COLORS)
@@ -388,7 +388,7 @@ def plot_similarity_distribution(
     if n == 1:
         axes = [axes]
 
-    for ax, platform in zip(axes, platforms):
+    for ax, platform in zip(axes, platforms, strict=True):
         data = df.filter(pl.col("platform") == platform)[sim_col].to_numpy()
         ax.hist(data, bins=bins, edgecolor="none", alpha=0.8)
         ax.set_ylabel(platform, rotation=0, labelpad=60, ha="right")
@@ -434,7 +434,7 @@ def plot_dumbbell_by_project(
     ).sort("_delta")
     y_labels = [f"{row['org_id']}|{row['project_id']}" for row in sorted_df.iter_rows(named=True)]
 
-    for ax, metric in zip(axes, metrics):
+    for ax, metric in zip(axes, metrics, strict=True):
         col1 = f"{model1}_{metric}"
         col2 = f"{model2}_{metric}"
 
@@ -443,7 +443,7 @@ def plot_dumbbell_by_project(
         y = range(len(sorted_df))
 
         # Draw lines colored by direction
-        for i, (v1, v2) in enumerate(zip(x1, x2)):
+        for i, (v1, v2) in enumerate(zip(x1, x2, strict=True)):
             color = "green" if v2 >= v1 else "red"
             ax.hlines(y=i, xmin=min(v1, v2), xmax=max(v1, v2), color=color, alpha=0.6)
 
@@ -485,7 +485,7 @@ def compare_models(
               used for platforms not explicitly listed.
             First key = model1 (baseline), second key = model2 (new model).
         output_dir: Directory for writing CSVs. Required if write_csvs is True.
-        min_group_rate_increase: Track projects where model2 GROUP rate is >= this value higher than model1. None to skip.
+        min_group_rate_increase: Track projects where model2 GROUP rate is >= this value higher than model1. None skips.
         min_group_rate_decrease: Track projects where model2 GROUP rate is >= this value lower than model1 (absolute).
             E.g., 0.10 means model2 has at least 10pp lower GROUP rate. None to skip.
         write_csvs: If True, write new.csv and merged.csv files for each project.
@@ -753,7 +753,7 @@ def compute_stacktrace_token_percentiles(df: pl.DataFrame) -> pl.DataFrame:
 def sweep_thresholds(
     df: pl.DataFrame,
     model_name: str,
-    thresholds: list[float] = [0.80, 0.85, 0.87, 0.90],
+    thresholds: list[float] | None = None,
 ) -> pl.DataFrame:
     """
     Show metrics for a single model at multiple similarity thresholds.
@@ -766,6 +766,8 @@ def sweep_thresholds(
     Returns:
         DataFrame with one row per threshold and metric columns.
     """
+    if thresholds is None:
+        thresholds = [0.80, 0.85, 0.87, 0.90]
     sim_col = f"cos_sim_{model_name}"
     rows = []
     for thresh in thresholds:
@@ -788,7 +790,7 @@ def sweep_thresholds(
 def sweep_thresholds_by_project(
     df: pl.DataFrame,
     model_name: str,
-    thresholds: list[float] = [0.80, 0.85, 0.87, 0.90],
+    thresholds: list[float] | None = None,
     precision_floor: float = 0.8,
     harm_threshold: float = 0.05,
     thresholds_platform: dict[str, float] | None = None,
@@ -811,8 +813,8 @@ def sweep_thresholds_by_project(
         baseline_threshold: Threshold for the baseline model. Can be a float or a
             per-platform dict (with a "default" key), same format as thresholds_platform.
     """
-    sim_col = f"cos_sim_{model_name}"
-    pred_col = f"pred_{model_name}"
+    if thresholds is None:
+        thresholds = [0.80, 0.85, 0.87, 0.90]
     thresholds_sorted = sorted(thresholds, reverse=True)
 
     def _compute_project_precisions(model: str, threshold: float) -> pl.DataFrame:

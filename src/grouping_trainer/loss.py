@@ -14,8 +14,6 @@ from typing import Protocol, TypedDict
 import torch
 from sentence_transformers.util import pairwise_cos_sim
 
-import grouping_trainer as gt
-
 
 class Features(TypedDict):
     query_embeddings: torch.Tensor
@@ -163,11 +161,13 @@ class SigmoidPairwiseLoss(PairwiseLoss):
         self,
         *,
         bias_init: float = 0.0,
-        log_of_scale_init: torch.Tensor = torch.tensor(5.0).log(),
+        log_of_scale_init: torch.Tensor | None = None,
         mrl_dim_to_weight: dict[int, float] | None = None,
         n_dims_per_step: int = -1,
     ):
         super().__init__()
+        if log_of_scale_init is None:
+            log_of_scale_init = torch.tensor(5.0).log()
         self.log_scale = torch.nn.Parameter(log_of_scale_init.clone().detach())
         self.bias = torch.nn.Parameter(torch.tensor(bias_init))
 

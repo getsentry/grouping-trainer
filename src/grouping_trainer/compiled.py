@@ -178,8 +178,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
     @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
-        # Only use the compiled forward if the sequence length matches one of our buckets. If we used the compiled forward
-        # for one that doesn't hit the bucket, we create a new CUDA graph for every unique sequence length above
+        # Only use the compiled forward if the sequence length matches one of our buckets. If we used the compiled
+        # forward for one that doesn't hit the bucket, we create a new CUDA graph for every unique sequence length above
         # 2048, which thrashes the cache.
 
         if self.training:

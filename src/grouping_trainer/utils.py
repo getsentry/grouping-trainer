@@ -12,10 +12,10 @@ and are inside `grouping/data`.
 """
 
 import gc
+from collections.abc import Callable, Iterable, Sequence
 from functools import wraps
 from itertools import zip_longest
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
 
 try:
     from IPython.display import display
@@ -54,7 +54,7 @@ def read_stacktrace_strings(org_id: int, project_id: int) -> dict[str, str]:
     event_id_to_stacktrace_string = {}
     stacktrace_strings_paths = (as_dataset_dir(org_id, project_id, root="dataset") / "stacktrace_strings").glob("*.txt")
     for stacktrace_path in tqdm(list(stacktrace_strings_paths), desc="Reading stacktrace strings", disable=True):
-        with open(stacktrace_path, "r") as f:
+        with open(stacktrace_path) as f:
             stacktrace_string = f.read()
         event_id = stacktrace_path.stem
         event_id_to_stacktrace_string[event_id] = stacktrace_string
@@ -215,7 +215,7 @@ def read(org_id: int, project_id: int, clean: bool = True) -> pl.DataFrame:
         # Sanity check: unique query-candidate stacktraces should imply unique query-candidate event pairs (not
         # necessarily the other way around b/c different events can have the same stacktraces)
         query_candidate_event_pairs: list[tuple[str, str]] = list(
-            zip(df["query_seer_event_sent"], df["candidate_seer_event_sent"])
+            zip(df["query_seer_event_sent"], df["candidate_seer_event_sent"], strict=True)
         )
         if len(query_candidate_event_pairs) != len(set(query_candidate_event_pairs)):
             raise ValueError("Duplicate query-candidate event pairs")

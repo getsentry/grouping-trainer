@@ -220,6 +220,7 @@ if __name__ == "__main__":
         export_for_load_test(sys.argv[1], **kwargs)
     else:
         print(
-            f"Usage: python {sys.argv[0]} <similarities_dir> [--load-test [keep_fraction_candidates=X] [keep_fraction_queries=X]]"
+            f"Usage: python {sys.argv[0]} <similarities_dir> "
+            f"[--load-test [keep_fraction_candidates=X] [keep_fraction_queries=X]]"
         )
         sys.exit(1)
