@@ -192,7 +192,7 @@ def flex(gpu: GpuType, command: str | None = None, zone: str | None = None) -> N
         args.append("--metadata=enable-osconfig=TRUE,install-nvidia-driver=True")
     if config.accelerator:
         args.append(f"--accelerator={config.accelerator}")
-    if not config.wait:
+    if not config.wait_for_instance_creation:
         args.append("--async")
 
     try:
