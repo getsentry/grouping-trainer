@@ -14,7 +14,6 @@ from typing import Any, Literal, TypedDict
 import numpy as np
 import polars as pl
 import torch
-import torch.distributed as dist
 from accelerate import DistributedType
 from datasets import Dataset, DatasetDict
 from pydantic import BaseModel, ConfigDict
@@ -50,6 +49,15 @@ class Batch(TypedDict):
     candidate_stacktrace_string: list[str]
     label: torch.Tensor
     sample_weight: torch.Tensor
+
+
+def make_dummy_batch() -> Batch:
+    return Batch(
+        query_stacktrace_string=["dummy"],
+        candidate_stacktrace_string=["dummy"],
+        label=torch.tensor([0], dtype=torch.float32),
+        sample_weight=torch.tensor([1.0], dtype=torch.float32),
+    )
 
 
 def _record_from_dict(record_dict: dict[str, Any]) -> Record:
@@ -398,7 +406,11 @@ class Trainer(SentenceTransformerTrainer):
         return loss
 
     def compute_loss(
-        self, model: ModelForTraining, inputs: Batch, return_outputs: bool = False, num_items_in_batch=None
+        self,
+        model: ModelForTraining,
+        inputs: Batch,
+        return_outputs: bool = False,
+        num_items_in_batch: int | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict]:
         loss = model(inputs, inputs["label"], sample_weight=inputs["sample_weight"])
         if return_outputs:
@@ -439,7 +451,7 @@ class Trainer(SentenceTransformerTrainer):
         Stacktrace lengths are intentionally variant.
         Reduce the chance of OOM by splitting `inputs` into sub-batches and accumulating gradients.
 
-        Couldn't get flash-attn installed b/c of obscure GCC errors, so can't use varlen. TODO: try again.
+        Couldn't get flash-attn installed b/c of obscure GCC errors, so can't use varlen.
 
         NOTE: training_step corresponds to one optimizer.step call.
         """
@@ -448,8 +460,31 @@ class Trainer(SentenceTransformerTrainer):
             self.optimizer.train()
 
         num_pairs_total = len(inputs["label"])
+        sub_batches = list(
+            batch_pairs_by_token_budget(
+                inputs, token_budget=self.per_device_token_budget, count_tokens=self._count_tokens
+            )
+        )
+        num_sub_batches = len(sub_batches)
+        rank = self.accelerator.process_index
+        logger.info(f"[rank {rank}] num_sub_batches={num_sub_batches}")
 
-        def _backward_on_sub_batch(sub_batch: Batch, *, no_sync: bool) -> torch.Tensor:
+        if self.accelerator.num_processes > 1:
+            local_stats = torch.tensor(
+                [num_pairs_total, num_sub_batches],
+                dtype=torch.long,
+                device=self.accelerator.device,
+            )
+            gathered_stats = self.accelerator.gather(local_stats)
+            global_total_pairs = gathered_stats[0::2].sum().item()
+            max_sub_batches = gathered_stats[1::2].max().item()
+            world_size = self.accelerator.num_processes
+        else:
+            global_total_pairs = num_pairs_total
+            max_sub_batches = num_sub_batches
+            world_size = 1
+
+        def _backward_on_sub_batch(sub_batch: Batch, *, no_sync: bool, is_dummy: bool = False) -> torch.Tensor:
             num_pairs_sub_batch = len(sub_batch["label"])
             if num_pairs_sub_batch == 0:
                 raise ValueError("Sub-batch has no pairs / label is empty")
@@ -460,6 +495,8 @@ class Trainer(SentenceTransformerTrainer):
             with sync_ctx:
                 with self.compute_loss_context_manager():
                     loss: torch.Tensor = self.compute_loss(model, sub_inputs, num_items_in_batch=num_items_in_batch)
+                    if is_dummy:
+                        loss = loss * 0.0
 
                 if (
                     self.args.torch_empty_cache_steps is not None
@@ -472,11 +509,11 @@ class Trainer(SentenceTransformerTrainer):
 
                 kwargs = {}
 
-                loss = loss * (num_pairs_sub_batch / num_pairs_total)
+                scale_factor = (num_pairs_sub_batch / global_total_pairs) * world_size
+                loss = loss * scale_factor
                 # Assume the loss is an average over the sub-batch. Re-scale to match averaging over the full batch.
-                #
-                # The rest of this is just loss.backward() w/ MP bells and whistles.
 
+                # The rest of this is loss.backward() w/ MP bells and whistles. Comments were copied from the base class
                 # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
                 if (
                     not self.model_accepts_loss_kwargs or num_items_in_batch is None
@@ -494,25 +531,37 @@ class Trainer(SentenceTransformerTrainer):
 
                 return loss.detach()
 
-        sub_batches = list(
-            batch_pairs_by_token_budget(
-                inputs, token_budget=self.per_device_token_budget, count_tokens=self._count_tokens
-            )
-        )
-        num_sub_batches = len(sub_batches)
+        logger.info(f"[rank {rank}] max_sub_batches={max_sub_batches}")
 
-        is_distributed = self.accelerator.num_processes > 1
         losses = []
-        for sub_batch_idx in range(num_sub_batches):
-            loss = _backward_on_sub_batch(sub_batches[sub_batch_idx], no_sync=True)
-            losses.append(loss)
+        dummy_batch = make_dummy_batch()  # unit-tested to work w/ ModelForTraining.forward()
 
-        if is_distributed:
-            # Hardcode for DDP. The dummy gather to account for variable # sub-batches across GPUs didn't work for some
-            # reason. TODO: figure out why to overlap all-reduce w/ final / no_sync=False backward
-            for param in model.parameters():
-                if param.grad is not None:
-                    dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        # Each GPU can have a different number of sub-batches. Need all to call backward() the same number of times w/
+        # the same no_sync pattern so that all GPUs always agree on the communication op. Otherwise, e.g., GPU 1 w/ too
+        # few subbatches will want to AllReduce while GPU wants to broadcast buffers (or something) -> deadlock.
+        # To fix, pad to the max sub-batch count with dummy backward passes.
+        # An alternate approach is to manually call all-reduce after the last sub-batch, but that removes overlap b/t
+        # all-reduce and backward.
+        for sub_batch_idx in range(max_sub_batches):
+            if self.accelerator.sync_gradients:
+                # accelerate syncs on the final batch in the grad acc loop. Override to not sync until the last
+                # sub-batch of the last batch
+                is_last_sub_batch = sub_batch_idx == max_sub_batches - 1
+                no_sync = not is_last_sub_batch
+            else:
+                # accelerate already wrapped this entire training_step in a no_sync context. Nesting another no_sync
+                # would break FSDP2, as its __exit__ unconditionally re-enables syncing.
+                no_sync = False
+
+            logger.info(
+                f"[rank {rank}] sub_batch {sub_batch_idx}/{max_sub_batches}, no_sync={no_sync}, "
+                f"is_dummy={sub_batch_idx >= num_sub_batches}"
+            )
+
+            is_dummy = sub_batch_idx >= num_sub_batches
+            sub_batch = sub_batches[sub_batch_idx] if not is_dummy else dummy_batch
+            loss = _backward_on_sub_batch(sub_batch, no_sync=no_sync, is_dummy=is_dummy)
+            losses.append(loss)
 
         return sum(losses)  # we already re-scaled each loss
 

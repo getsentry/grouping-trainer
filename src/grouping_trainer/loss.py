@@ -24,9 +24,6 @@ class _ComputeLossFromEmbeddings(Protocol):
     def __call__(self, all_embeddings: tuple[torch.Tensor, ...], *args, **kwargs) -> torch.Tensor: ...
 
 
-_mrl_call_counter = 0
-
-
 def _mrl_loss(
     mrl_dim_to_weight: dict[int, float],
     n_dims_per_step: int,
@@ -35,7 +32,6 @@ def _mrl_loss(
     *args,
     **kwargs,
 ) -> torch.Tensor:
-    global _mrl_call_counter
     embedding_dim = all_embeddings[0].shape[-1]
     device = all_embeddings[0].device
     if any(mrl_dim > embedding_dim for mrl_dim in mrl_dim_to_weight.keys()):
@@ -44,10 +40,7 @@ def _mrl_loss(
     mrl_dims = list(mrl_dim_to_weight.keys())
     dim_indices = list(range(len(mrl_dims)))
     if n_dims_per_step > 0 and n_dims_per_step < len(dim_indices):
-        # Use a call counter as seed so all DDP processes select the same dims
-        gen = torch.Generator(device="cpu").manual_seed(_mrl_call_counter)
-        _mrl_call_counter += 1
-        dim_indices = torch.randperm(len(mrl_dims), generator=gen)[:n_dims_per_step].tolist()
+        dim_indices = torch.randperm(len(mrl_dims))[:n_dims_per_step].tolist()
 
     loss_total = torch.zeros((), device=device)
     for idx in dim_indices:
