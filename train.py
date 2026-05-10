@@ -61,7 +61,7 @@ def run(
     run_shortname: str | None = None,
     use_text_prefix: bool = False,
     per_device_token_budget_scale: int | None = None,
-    per_device_train_batch_size: int = 256,
+    global_train_batch_size: int = 256,
     learning_rate: float = 1e-4,
     tiny_run: bool = False,
     gpu: TrainingGpuType | None = None,
@@ -83,11 +83,12 @@ def run(
     per_device_token_budget_scale
         Sets per_device_token_budget = per_device_token_budget_scale * 8192. This is the memory and throughput knob.
         By default, if the base_model has a historically known good scale, we use that, o.w. uses 3.
-    per_device_train_batch_size
-        Training batch size per device. Be intentional about this when doing DDP. Only used for non-tiny runs.
-        Technically this can be arbitrarily high b/c we accumulate the gradient based on per_device_token_budget_scale.
+    global_train_batch_size
+        Total training batch size across all devices. Divided by num_devices to get per-device batch size.
+        Only used for non-tiny runs. Technically this can be arbitrarily high b/c we accumulate the gradient based
+        on per_device_token_budget_scale.
     learning_rate
-        Should consider scaling this in proportion to per_device_train_batch_size.
+        Should consider scaling this in proportion to global_train_batch_size.
     tiny_run
         Run a tiny training run to sanity check plumbing.
     gpu
@@ -117,7 +118,7 @@ def run(
     if gpu is not None:
         gt.launch.remote(
             gpu,
-            ddp=gpu.endswith("-ddp"),
+            ddp="-ddp-" in gpu,
             zone=zone,
             extra_env={_RUN_NAME_ENV_VAR: run_name},
         )
@@ -134,7 +135,7 @@ def run(
     if tiny_run:
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname or "tiny-run",
-            per_device_train_batch_size=2,
+            global_train_batch_size=2,
             per_device_token_budget=64,
             gradient_checkpointing=True,
             sample_size_train=30,
@@ -149,7 +150,7 @@ def run(
         )
         training_config = gt.train.TrainingConfig(
             run_shortname=run_shortname,
-            per_device_train_batch_size=per_device_train_batch_size,
+            global_train_batch_size=global_train_batch_size,
             per_device_token_budget=8192 * per_device_token_budget_scale,
             learning_rate=learning_rate,
             loss_type="contrastive",

@@ -531,8 +531,6 @@ class Trainer(SentenceTransformerTrainer):
 
                 return loss.detach()
 
-        logger.info(f"[rank {rank}] max_sub_batches={max_sub_batches}")
-
         losses = []
         dummy_batch = make_dummy_batch()  # unit-tested to work w/ ModelForTraining.forward()
 
@@ -552,11 +550,6 @@ class Trainer(SentenceTransformerTrainer):
                 # accelerate already wrapped this entire training_step in a no_sync context. Nesting another no_sync
                 # would break FSDP2, as its __exit__ unconditionally re-enables syncing.
                 no_sync = False
-
-            logger.info(
-                f"[rank {rank}] sub_batch {sub_batch_idx}/{max_sub_batches}, no_sync={no_sync}, "
-                f"is_dummy={sub_batch_idx >= num_sub_batches}"
-            )
 
             is_dummy = sub_batch_idx >= num_sub_batches
             sub_batch = sub_batches[sub_batch_idx] if not is_dummy else dummy_batch
@@ -656,11 +649,11 @@ class TrainingConfig(BaseModel):
     run_shortname: str
 
     # Training args
-    per_device_train_batch_size: int
+    global_train_batch_size: int
     per_device_token_budget: int
     gradient_checkpointing: bool = False
     gradient_accumulation_steps: int = 1
-    # The gradient is an average over per_device_train_batch_size pairs from gradient_accumulation_steps projects.
+    # The gradient is an average over global_train_batch_size pairs from gradient_accumulation_steps projects.
     training_csvs: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS
     sample_size_train: int | None = None  # downsample for CPU sanity check runs
     log_of_scale_init: float = math.log(10)
@@ -715,6 +708,9 @@ def make_trainer(
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         run_name = f"{timestamp}-{training_config.run_shortname}"
 
+    num_devices = max(1, torch.cuda.device_count())
+    per_device_train_batch_size = max(1, training_config.global_train_batch_size // num_devices)
+
     # Load data
     load_kwargs = dict(
         sample_size=training_config.sample_size_train,
@@ -723,12 +719,12 @@ def make_trainer(
     )
     if training_config.group_by_query_stacktrace_string:
         train_dataset, frac_positive, num_projects = load_train_dataset_dict(
-            **load_kwargs, min_dataset_size=training_config.per_device_train_batch_size
+            **load_kwargs, min_dataset_size=per_device_train_batch_size
         )
         if "__packed__" in train_dataset:
             logger.info(
                 f"Packed {len(train_dataset['__packed__'])} pairs from projects w/ fewer than "
-                f"{training_config.per_device_train_batch_size} rows into a single dataset."
+                f"{per_device_train_batch_size} rows into a single dataset."
             )
         num_rows = sum(train_dataset.num_rows.values())
     else:
@@ -738,9 +734,8 @@ def make_trainer(
     logger.info(f"Training dataset: {num_projects:,} projects, {num_rows:,} pairs")
 
     # Turn num_logs and num_checkpoints into log_steps and save_steps
-    num_devices = max(1, torch.cuda.device_count())
     rows_per_device = math.ceil(num_rows / num_devices)  # DistributedSampler pads
-    num_batches = math.ceil(rows_per_device / training_config.per_device_train_batch_size)
+    num_batches = math.ceil(rows_per_device / per_device_train_batch_size)
     steps_total = math.ceil(num_batches / training_config.gradient_accumulation_steps)
     logging_steps = max(1, steps_total // training_config.num_logs)
     save_steps = max(1, steps_total // training_config.num_checkpoints)
@@ -793,7 +788,7 @@ def make_trainer(
             multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL,
             # Each iter, pick a project randomly, sample from it.
             # Next iter, pick another project randomly, sample from it, etc.
-            per_device_train_batch_size=training_config.per_device_train_batch_size,
+            per_device_train_batch_size=per_device_train_batch_size,
             seed=42,  # passed to batch sampler
             #
             # Optimizer

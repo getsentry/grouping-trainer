@@ -40,6 +40,7 @@ def _mrl_loss(
     mrl_dims = list(mrl_dim_to_weight.keys())
     dim_indices = list(range(len(mrl_dims)))
     if n_dims_per_step > 0 and n_dims_per_step < len(dim_indices):
+        # Randomizing over dims across subbatches, batches, and ranks is fine
         dim_indices = torch.randperm(len(mrl_dims))[:n_dims_per_step].tolist()
 
     loss_total = torch.zeros((), device=device)

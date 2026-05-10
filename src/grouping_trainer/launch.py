@@ -21,7 +21,7 @@ from tap import tapify
 
 logger = logging.getLogger(__name__)
 
-GpuType = Literal["l4", "h100", "h100-ddp", "a100", "a100-ddp"]
+GpuType = Literal["l4", "h100", "h100-ddp-2", "h100-ddp-4", "a100", "a100-ddp-2", "a100-ddp-4"]
 
 _REMOTE_ENV_VAR = "GROUPING_TRAINER_REMOTE"
 """
@@ -44,7 +44,7 @@ class GpuConfig(BaseModel):
     zone: str = "us-central1-a"
     machine_type: str
     accelerator: str | None  # None for *-ddp variants b/c accelerators are built into the machine type
-    max_run: str
+    max_run_duration: str
     install_nvidia_driver: bool
     reservation_affinity: Literal["none", "any"]
     wait_for_instance_creation: bool
@@ -57,7 +57,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         zone="us-central1-a",
         machine_type="g2-standard-4",
         accelerator="count=1,type=nvidia-l4",
-        max_run="86400s",
+        max_run_duration="86400s",
         install_nvidia_driver=False,
         reservation_affinity="any",
         wait_for_instance_creation=True,  # L4s come up fast. Block so errors surface promptly
@@ -68,40 +68,67 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         zone="us-central1-a",
         machine_type="a3-highgpu-1g",
         accelerator="count=1,type=nvidia-h100-80gb",
-        max_run="86400s",
+        max_run_duration="86400s",
         install_nvidia_driver=True,
         reservation_affinity="none",
         wait_for_instance_creation=False,  # flex-start can queue for up to 1h
         is_for_training=True,
     ),
-    "h100-ddp": GpuConfig(
-        name="grouping-trainer-h100-ddp",
+    "h100-ddp-2": GpuConfig(
+        name="grouping-trainer-h100-ddp-2",
         zone="us-central1-a",
         machine_type="a3-highgpu-2g",
         accelerator=None,
-        max_run="172800s",
+        max_run_duration="172800s",
         install_nvidia_driver=True,
         reservation_affinity="none",
         wait_for_instance_creation=False,
         is_for_training=True,
     ),
+    "h100-ddp-4": GpuConfig(
+        name="grouping-trainer-h100-ddp-4",
+        zone="us-central1-a",
+        machine_type="a3-highgpu-4g",
+        accelerator=None,
+        max_run_duration="172800s",
+        install_nvidia_driver=True,
+        reservation_affinity="none",
+        wait_for_instance_creation=False,
+        is_for_training=True,
+    ),
+    #
+    # Our quota allows 4 A100 80 GB GPUs for DDP in the following zones:
+    # - [us-central1-a](https://console.cloud.google.com/iam-admin/quotas?project=ml-ai-420606&pageState=(%22allQuotasTable%22:(%22f%22:%22%255B%257B_22k_22_3A_22Name_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22NVIDIA%2520A100%252080GB%2520GPUs_5C_22_22_2C_22s_22_3Atrue_2C_22i_22_3A_22displayName_22%257D_2C%257B_22k_22_3A_22Dimensions%2520%2528e.g.%2520location%2529_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22region_3Aus-central1_5C_22_22_2C_22i_22_3A_22displayDimensions_22%257D%255D%22,%22p%22:0,%22r%22:200)))
+    # - [europe-west4-a](https://console.cloud.google.com/iam-admin/quotas?project=ml-ai-420606&pageState=(%22allQuotasTable%22:(%22f%22:%22%255B%257B_22k_22_3A_22Dimensions%2520%2528e.g.%2520location%2529_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22region_3Aeurope-west4_5C_22_22_2C_22s_22_3Atrue_2C_22i_22_3A_22displayDimensions_22%257D_2C%257B_22k_22_3A_22Name_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22NVIDIA%2520A100%252080GB%2520GPUs_5C_22_22_2C_22s_22_3Atrue_2C_22i_22_3A_22displayName_22%257D%255D%22,%22p%22:0,%22r%22:200)))
+    # - [us-east4-c](https://console.cloud.google.com/iam-admin/quotas?project=ml-ai-420606&pageState=(%22allQuotasTable%22:(%22f%22:%22%255B%257B_22k_22_3A_22Name_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22NVIDIA%2520A100%252080GB%2520GPUs_5C_22_22_2C_22s_22_3Atrue_2C_22i_22_3A_22displayName_22%257D_2C%257B_22k_22_3A_22_22_2C_22t_22_3A10_2C_22v_22_3A_22_5C_22region_3Aus-east4_5C_22_22%257D%255D%22,%22p%22:0,%22r%22:200))).
     "a100": GpuConfig(
         name="grouping-trainer-a100",
         zone="us-central1-a",
         machine_type="a2-ultragpu-1g",
         accelerator="count=1,type=nvidia-a100-80gb",
-        max_run="86400s",
+        max_run_duration="86400s",
         install_nvidia_driver=True,
         reservation_affinity="none",
         wait_for_instance_creation=False,
         is_for_training=True,
     ),
-    "a100-ddp": GpuConfig(
-        name="grouping-trainer-a100-ddp",
+    "a100-ddp-2": GpuConfig(
+        name="grouping-trainer-a100-ddp-2",
         zone="us-central1-a",
         machine_type="a2-ultragpu-2g",
         accelerator=None,
-        max_run="172800s",
+        max_run_duration="172800s",
+        install_nvidia_driver=True,
+        reservation_affinity="none",
+        wait_for_instance_creation=False,
+        is_for_training=True,
+    ),
+    "a100-ddp-4": GpuConfig(
+        name="grouping-trainer-a100-ddp-4",
+        zone="us-central1-a",
+        machine_type="a2-ultragpu-4g",
+        accelerator=None,
+        max_run_duration="172800s",
         install_nvidia_driver=True,
         reservation_affinity="none",
         wait_for_instance_creation=False,
@@ -139,11 +166,11 @@ def flex(gpu: GpuType, command: str | None = None, zone: str | None = None) -> N
     Parameters
     ----------
     gpu
-        One of l4, h100, h100-ddp, a100, a100-ddp.
+        The name of the GPU type to launch.
     command
         Shell command to run on the instance after env setup.
     zone
-        Override the default zone (use this when flex-start capacity is dry).
+        Override the default zone for the GPU type.
     """
     config = gpu_type_to_config[gpu]
 
@@ -153,13 +180,13 @@ def flex(gpu: GpuType, command: str | None = None, zone: str | None = None) -> N
     # And we use --metadata-from-file=command=<tempfile> rather than
     # --metadata=command=<cmd> because gcloud splits --metadata values on
     # commas to find KEY=VAL pairs, so any comma in the cmd would break it.
-    metadata_files = {"startup-script": f"{_repo_root()}/bin/_startup.sh"}
+    path_to_metadata_script = {"startup-script": f"{_repo_root()}/bin/_startup.sh"}
     cmd_file: tempfile._TemporaryFileWrapper | None = None
     if command:
         cmd_file = tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".cmd", encoding="utf-8")
         cmd_file.write(command)
         cmd_file.close()
-        metadata_files["command"] = cmd_file.name
+        path_to_metadata_script["command"] = cmd_file.name
 
     args = [
         "gcloud",
@@ -171,12 +198,12 @@ def flex(gpu: GpuType, command: str | None = None, zone: str | None = None) -> N
         f"--zone={zone or config.zone}",
         f"--machine-type={config.machine_type}",
         "--network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default",
-        f"--metadata-from-file={','.join(f'{k}={v}' for k, v in metadata_files.items())}",
+        f"--metadata-from-file={','.join(f'{k}={v}' for k, v in path_to_metadata_script.items())}",
         "--maintenance-policy=TERMINATE",
         "--provisioning-model=FLEX_START",
         "--request-valid-for-duration=1h",
         "--instance-termination-action=DELETE",
-        f"--max-run-duration={config.max_run}",
+        f"--max-run-duration={config.max_run_duration}",
         "--service-account=996102297610-compute@developer.gserviceaccount.com",
         "--scopes=https://www.googleapis.com/auth/cloud-platform",
         (
