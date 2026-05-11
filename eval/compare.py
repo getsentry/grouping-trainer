@@ -8,28 +8,38 @@ Example usage:
 
 python eval/compare.py \
     --name_model1 v1 \
-    --name_model2 large-con \
-    --gcs_model1 gs://grouping-data/runs/issue_grouping_v1/similarities/test_full2 \
-    --gcs_model2 gs://grouping-data/runs/2026-04-07-11-56-28-large-con/similarities/test_full2 \
+    --name_model2 large-no-prefix \
+    --gcs_model1 gs://grouping-data/runs/issue_grouping_v1/similarities/test_full3 \
+    --gcs_model2 gs://grouping-data/runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3 \
     --threshold_model1 0.99 \
     --threshold_model2 0.90 \
     --dim_model2 64
 
 # Platform-specific thresholds (comma-separated platform=value, must include "default"):
 python eval/compare.py \
-    --name_model1 v2 \
-    --name_model2 large-con \
-    --gcs_model1 gs://grouping-data/runs/issue_grouping_v2/similarities/test_full2 \
-    --gcs_model2 gs://grouping-data/runs/2026-04-07-11-56-28-large-con/similarities/test_full2 \
-    --threshold_model1 default=0.92,cocoa=0.80,csharp=0.75,go=0.80,node=0.90 \
-    --threshold_model2 0.90 \
+    --name_model1 v1 \
+    --name_model2 large-no-prefix \
+    --gcs_model1 gs://grouping-data/runs/issue_grouping_v2/similarities/test_full3 \
+    --gcs_model2 gs://grouping-data/runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3 \
+    --threshold_model1 0.99 \
+    --threshold_model2 default=0.92,cocoa=0.94,native=0.94,ruby=0.94 \
     --dim_model2 64
+
+Similarity accuracy is computed over already-labeled pairs. An alternative is to have an LLM cluster each project's
+stacktraces. I don't think there's much of a benefit to measuring clustering accuracy, as the labeled pairs were sampled
+to be around v1's decision boundary. So the comparison over new pairs introduced in a clustering dataset prolly isn't
+interesting. The prod service also isn't doing batch clustering: it makes a new grouping record if a new stacktrace
+isn't similar to existing records, o.w. it returns the match w/ no side effect. So there aren't as many transitive
+dependencies b/t matches in prod as there would be in a batch or online k-means clustering service.
+
+B/c of the sampling bias, pred_GROUP_rate is underestimated. Differences b/t models are amplified. There are many easy
+positives missing from the test set. The only reliable way to estimate merge rate is to randomly sample a continguous
+stream of stacktraces for each project and simulate the grouping service using the load test in
+https://github.com/getsentry/seer/pull/5706.
 """
 
 import json
-import shlex
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from itertools import zip_longest
@@ -40,7 +50,7 @@ import matplotlib.pyplot as plt
 import polars as pl
 import seaborn as sns
 from google.auth import default as google_auth_default
-from tap import tapify
+from tap import Tap, tapify
 from tqdm.auto import tqdm
 
 sns.set_theme(style="darkgrid")
@@ -89,9 +99,9 @@ def _df_to_markdown(df: pl.DataFrame) -> str:
         return str(df)
 
 
-def report(*args, **kwargs):
-    """Print to console AND buffer for the markdown report."""
-    print(*args, **kwargs)
+def report(*args, **print_kwargs):
+    """Print to console and buffer for the markdown report."""
+    print(*args, **print_kwargs)
     parts = []
     for a in args:
         if isinstance(a, pl.DataFrame):
@@ -1313,19 +1323,7 @@ def main(
     }
 
     report(f"# {name_model1} (dim={label_dim1}) vs {name_model2} (dim={label_dim2}), dataset: {name_dataset}\n")
-    # Group --flag value pairs onto the same line
-    raw_args = sys.argv[1:]
-    cmd_parts = []
-    i = 0
-    while i < len(raw_args):
-        arg = shlex.quote(raw_args[i])
-        if raw_args[i].startswith("--") and i + 1 < len(raw_args) and not raw_args[i + 1].startswith("--"):
-            arg += " " + shlex.quote(raw_args[i + 1])
-            i += 2
-        else:
-            i += 1
-        cmd_parts.append(arg)
-    cmd = "python " + shlex.quote(sys.argv[0]) + " \\\n    " + " \\\n    ".join(cmd_parts)
+    cmd = Tap.get_reproducibility_info()["command_line"].replace(" --", " \\\n    --")
     report("Command to repro:\n\n```bash\n" + cmd + "\n```\n")
 
     report(

@@ -44,6 +44,10 @@ sheets = [
     "gspread>=6.0.0",
     "google-auth>=2.0.0",
 ]
+eval-gemini = [
+    "google-genai==2.0.1",
+    "more-itertools==11.0.2",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

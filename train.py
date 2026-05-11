@@ -94,8 +94,8 @@ def run(
     gpu
         Flex-start a GPU instance and train on that machine.
     zone
-        Override the default GCP zone when launching the GPU instance. Useful when
-        flex-start capacity is dry in the default zone for the requested gpu type.
+        Override the default GCP zone when launching the GPU instance. Useful when flex-start capacity is dry in the
+        default zone for the requested gpu type.
     """
     if not tiny_run:
         assert run_shortname is not None, "run_shortname is required for full training runs"

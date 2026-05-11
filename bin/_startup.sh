@@ -2,10 +2,16 @@
 # Sets up the environment for grouping-trainer instances.
 # Normally invoked as root via GCP instance startup. To step through manually
 # after SSH'ing in, run `sudo -i` first so $HOME=/root and paths line up.
+
 set -euo pipefail
 
 # GCP's metadata script runner doesn't export HOME
 export HOME="${HOME:-/root}"
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Set up python env
+# ----------------------------------------------------------------------------------------------------------------------
 
 # Install uv (manages its own Python, respects .python-version in the repo).
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -21,21 +27,38 @@ export WANDB_API_KEY
 git clone "https://${GITHUB_TOKEN}@github.com/getsentry/grouping-trainer.git" "$REPO_DIR"
 cd "$REPO_DIR"
 
-# Sometimes the Huggingface API hangs when we download the base model, so download from GCS:
-mkdir -p lightonai/modernbert-embed-large
-gcloud storage cp -r gs://grouping-data/base_models/lightonai/modernbert-embed-large/* lightonai/modernbert-embed-large
-
 uv sync --locked
 # shellcheck disable=SC1091
 source .venv/bin/activate  # so the eval $COMMAND below finds python/accelerate
 
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Download data
+# ----------------------------------------------------------------------------------------------------------------------
+
 gcloud storage cp -r gs://grouping-data/final_csvs/ .
 
-# Auto-cd into the repo, put uv on PATH, and activate the venv on `sudo -i`.
+# Sometimes the Huggingface API hangs when we download the base model, so download from GCS:
+mkdir -p lightonai/modernbert-embed-large
+gcloud storage cp -r gs://grouping-data/base_models/lightonai/modernbert-embed-large/* lightonai/modernbert-embed-large
+
+
+# ----------------------------------------------------------------------------------------------------------------------
+# SSH niceties
+# ----------------------------------------------------------------------------------------------------------------------
+
+# Auto-cd into the repo, put uv on PATH, and activate the venv on `sudo -i`
 {
     echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
     echo "cd $REPO_DIR && source .venv/bin/activate"
 } >> /root/.bashrc
+
+# logs cmd = shortcut for tailing the run log from any SSH session
+cat > /usr/local/bin/logs <<'EOF'
+#!/bin/bash
+exec sudo tail -f /var/log/grouping_trainer_run.log "$@"
+EOF
+chmod +x /usr/local/bin/logs
 
 # screen -S run
 # ctrl+a d
@@ -44,7 +67,11 @@ gcloud storage cp -r gs://grouping-data/final_csvs/ .
 
 echo "Setup complete."
 
-# Run any command passed via instance metadata (set by gt.launch.flex).
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Run the command passed via instance metadata (set by gt.launch.flex) and shutdown
+# ----------------------------------------------------------------------------------------------------------------------
+
 # No-op when the attribute is unset or the metadata server is unreachable.
 COMMAND=$(curl -fsS -H "Metadata-Flavor: Google" \
     http://metadata.google.internal/computeMetadata/v1/instance/attributes/command 2>/dev/null || true)
@@ -54,5 +81,3 @@ if [ -n "$COMMAND" ]; then
     eval "$COMMAND" >>"$LOG_FILE" 2>&1 || true
     shutdown -h now
 fi
-# To follow the log:
-# sudo tail -f /var/log/grouping_trainer_run.log
