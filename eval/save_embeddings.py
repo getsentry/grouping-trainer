@@ -16,10 +16,6 @@ python eval/save_embeddings.py \
     --run_gcs_dir gs://grouping-data/runs/2026-04-10-12-39-45-large-no-prefix \
     --truncate_dims 64 128 256 512 768 \
     --use_compiled
-
-python eval/save_embeddings.py \
-    --run_gcs_dir gs://grouping-data/runs/issue_grouping_v2 \
-    --truncate_dims 64 128 256 512 768
 """
 
 import json
@@ -104,13 +100,14 @@ def _check_no_train_test_overlap(run_gcs_dir: str, df_test: pl.DataFrame) -> Non
 def main(
     run_gcs_dir: str,
     text_prefix: str = "",
-    df_path: str = "final_csvs/test_full2.csv",
+    df_path: str = "final_csvs/test_full3.csv",
     truncate_dims: tuple[int, ...] | None = None,
     batch_size: int = 2,
     sample_size: int | None = None,
     does_not_support_sdpa: bool = False,
     use_compiled: bool = False,
     gpu: bool = True,
+    zone: str | None = None,
 ):
     """
     Download a model from GCS, encode df_path texts, and save embeddings + cosine similarities.
@@ -135,9 +132,12 @@ def main(
     gpu
         If True (default) and CUDA is not locally available, flex-start an L4 and run this same
         invocation there. Pass `--no_gpu` to force a local run (e.g., quick CPU sanity check).
+    zone
+        Override the default GCP zone when launching the GPU instance. Useful when flex-start capacity is dry in the
+        default zone for the requested gpu type.
     """
     if gpu and not torch.cuda.is_available() and not gt.launch.is_on_remote():
-        gt.launch.remote("l4")
+        gt.launch.remote("l4", zone=zone)
         return
 
     gt.logging.configure_logging(process_type="save_embeddings")
