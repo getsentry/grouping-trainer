@@ -1,22 +1,20 @@
 """
 Mine synthetic positives and negatives from labeled pair CSVs.
 
-For example:
-
 python -m grouping_trainer.synthetic \
     --gcs_model_folder gs://grouping-data/runs/issue_grouping_v1/inference \
     --csv_paths final_csvs/train_more.csv final_csvs/train_more2.csv \
     --positives --negatives
 
-The sampling code intentionally samples somewhat around the border to get the biggest bang for our buck. This bias may
-not be good b/c:
+This script exists to mitigate a bias in the labeled pairs. The sampling code intentional samples somewhat around the
+border to get the biggest bang for our buck. This bias may not be good b/c:
 - The model won't see easy negatives during training that it will see while crawling the index
 - The label for pairs whose v1 distance is in [0.001, 0.01) can only change from GROUP to SEPARATE, which might cause
   the trained model to over-emphasize subtle differences. Seeing easy positives should counteract this bias.
 
 In practice, including these easier examples makes training a bit more stable. It's not a big impact. Excluding it is
 prolly fine if you wanna make training runs complete faster. I typically include them to theoretically counter the
-biases above. Haven't studied it much yet.
+biases above. Haven't studied it much.
 """
 
 import subprocess
@@ -130,7 +128,7 @@ def record_from_pair(
     distance: float,
     source: str,
     synthetic_label: Literal["GROUP", "SEPARATE"],
-    seer_threshold: float = gt.utils.SEER_THRESHOLD,
+    seer_threshold: float = 0.01,  # v1 grouping threshold in prod
 ):
     # GroupHash-specific info
     query_kv = {k: v for k, v in record_query.items() if k.startswith("query_")}

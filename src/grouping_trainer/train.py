@@ -353,9 +353,8 @@ class ModelForTraining(torch.nn.Module):
 class Trainer(SentenceTransformerTrainer):
     """
     Unlike `SentenceTransformerTrainer`, this class inputs a module whose forward computes the loss. Makes things like
-    DDP and FSDP work out of the box (after I figure out how to make the subbatch backward stuff work w/ it...). This
-    choice also fixes a bug where loss parameters aren't saved and aren't picked up when resuming training from a
-    checkpoint.
+    DDP and FSDP work out of the box. This choice also fixes a bug where loss parameters aren't saved and aren't picked
+    up when resuming training from a checkpoint.
 
     Subclassing `SentenceTransformerTrainer` b/c it comes w/ very useful samplers, has optimizer param groups, and it
     handles custom tokenization that we could hook into in the future.
@@ -441,6 +440,62 @@ class Trainer(SentenceTransformerTrainer):
         # profile_dataloading.ipynb shows this is fast enough to not be a bottleneck.
         return self.model.encoder.tokenize([text])["input_ids"].shape[1]
 
+    def _backward_on_sub_batch(
+        self,
+        model: ModelForTraining,
+        sub_batch: Batch,
+        global_total_pairs: int,
+        world_size: int,
+        *,
+        no_sync: bool,
+        is_dummy: bool = False,
+        num_items_in_batch: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        num_pairs_sub_batch = len(sub_batch["label"])
+        if num_pairs_sub_batch == 0:
+            raise ValueError("Sub-batch has no pairs / label is empty")
+
+        sub_inputs = self._prepare_inputs(sub_batch)
+
+        sync_ctx = self.accelerator.no_sync(model) if no_sync else nullcontext()
+        with sync_ctx:
+            with self.compute_loss_context_manager():
+                loss: torch.Tensor = self.compute_loss(model, sub_inputs, num_items_in_batch=num_items_in_batch)
+                if is_dummy:
+                    loss = loss * 0.0
+
+            if (
+                self.args.torch_empty_cache_steps is not None
+                and self.state.global_step % self.args.torch_empty_cache_steps == 0
+            ):
+                if is_torch_mps_available():
+                    torch.mps.empty_cache()
+                elif is_torch_cuda_available():
+                    torch.cuda.empty_cache()
+
+            kwargs = {}
+
+            scale_factor = (num_pairs_sub_batch / global_total_pairs) * world_size
+            loss = loss * scale_factor
+            # Assume the loss is an average over the sub-batch. Re-scale to match averaging over the full batch.
+
+            # The rest of this is loss.backward() w/ MP bells and whistles. Comments were copied from the base class.
+
+            # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
+            if (not self.model_accepts_loss_kwargs or num_items_in_batch is None) and self.compute_loss_func is None:
+                # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient
+                # accumulation steps
+                loss = loss / self.current_gradient_accumulation_steps
+
+            # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
+            # https://github.com/huggingface/transformers/pull/35808
+            if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
+                kwargs["scale_wrt_gas"] = False
+
+            self.accelerator.backward(loss, **kwargs)
+
+            return loss.detach()
+
     def training_step(
         self,
         model: torch.nn.Module,
@@ -453,7 +508,7 @@ class Trainer(SentenceTransformerTrainer):
 
         Couldn't get flash-attn installed b/c of obscure GCC errors, so can't use varlen.
 
-        NOTE: training_step corresponds to one optimizer.step call.
+        NOTE: training_step corresponds to one optimizer.step call and is wrapped in a no_sync context by accelerate.
         """
         model.train()
         if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
@@ -484,62 +539,15 @@ class Trainer(SentenceTransformerTrainer):
             max_sub_batches = num_sub_batches
             world_size = 1
 
-        def _backward_on_sub_batch(sub_batch: Batch, *, no_sync: bool, is_dummy: bool = False) -> torch.Tensor:
-            num_pairs_sub_batch = len(sub_batch["label"])
-            if num_pairs_sub_batch == 0:
-                raise ValueError("Sub-batch has no pairs / label is empty")
-
-            sub_inputs = self._prepare_inputs(sub_batch)
-
-            sync_ctx = self.accelerator.no_sync(model) if no_sync else nullcontext()
-            with sync_ctx:
-                with self.compute_loss_context_manager():
-                    loss: torch.Tensor = self.compute_loss(model, sub_inputs, num_items_in_batch=num_items_in_batch)
-                    if is_dummy:
-                        loss = loss * 0.0
-
-                if (
-                    self.args.torch_empty_cache_steps is not None
-                    and self.state.global_step % self.args.torch_empty_cache_steps == 0
-                ):
-                    if is_torch_mps_available():
-                        torch.mps.empty_cache()
-                    elif is_torch_cuda_available():
-                        torch.cuda.empty_cache()
-
-                kwargs = {}
-
-                scale_factor = (num_pairs_sub_batch / global_total_pairs) * world_size
-                loss = loss * scale_factor
-                # Assume the loss is an average over the sub-batch. Re-scale to match averaging over the full batch.
-
-                # The rest of this is loss.backward() w/ MP bells and whistles. Comments were copied from the base class
-                # Finally we need to normalize the loss for reporting if GA loss bug is not fixed during compute loss
-                if (
-                    not self.model_accepts_loss_kwargs or num_items_in_batch is None
-                ) and self.compute_loss_func is None:
-                    # If the model does not accept loss kwargs, we need to normalize the loss by the number of gradient
-                    # accumulation steps
-                    loss = loss / self.current_gradient_accumulation_steps
-
-                # Turning off loss scaling w.r.t. gradient accumulation when DeepSpeed is enabled
-                # https://github.com/huggingface/transformers/pull/35808
-                if self.accelerator.distributed_type == DistributedType.DEEPSPEED:
-                    kwargs["scale_wrt_gas"] = False
-
-                self.accelerator.backward(loss, **kwargs)
-
-                return loss.detach()
-
         losses = []
         dummy_batch = make_dummy_batch()  # unit-tested to work w/ ModelForTraining.forward()
 
         # Each GPU can have a different number of sub-batches. Need all to call backward() the same number of times w/
         # the same no_sync pattern so that all GPUs always agree on the communication op. Otherwise, e.g., GPU 1 w/ too
-        # few subbatches will want to AllReduce while GPU wants to broadcast buffers (or something) -> deadlock.
-        # To fix, pad to the max sub-batch count with dummy backward passes.
+        # few subbatches will want to AllReduce while GPU 2 wants to broadcast buffers (or something) -> deadlock.
+        # To fix, pad GPU 1's training step to the max sub-batch count with dummy backward passes.
         # An alternate approach is to manually call all-reduce after the last sub-batch, but that removes overlap b/t
-        # all-reduce and backward.
+        # all-reduce and backward and hardcodes this method to DDP.
         for sub_batch_idx in range(max_sub_batches):
             if self.accelerator.sync_gradients:
                 # accelerate syncs on the final batch in the grad acc loop. Override to not sync until the last
@@ -553,10 +561,18 @@ class Trainer(SentenceTransformerTrainer):
 
             is_dummy = sub_batch_idx >= num_sub_batches
             sub_batch = sub_batches[sub_batch_idx] if not is_dummy else dummy_batch
-            loss = _backward_on_sub_batch(sub_batch, no_sync=no_sync, is_dummy=is_dummy)
+            loss = self._backward_on_sub_batch(
+                model,
+                sub_batch,
+                global_total_pairs,
+                world_size,
+                no_sync=no_sync,
+                is_dummy=is_dummy,
+                num_items_in_batch=num_items_in_batch,
+            )
             losses.append(loss)
 
-        return sum(losses)  # we already re-scaled each loss
+        return sum(losses)
 
     def get_default_decay_parameter_names(self, model: ModelForTraining) -> list[str]:
         # Rename the method `get_decay_parameter_names` for clarity. The `forbidden_name_patterns` list is hardcoded.
@@ -665,12 +681,12 @@ class TrainingConfig(BaseModel):
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
     resume_from_checkpoint: str | bool | None = None
-    source_to_sample_weight: dict[str, float] = {
+    source_to_sample_weight: dict[str, float] = {  # TODO: Literal. source values aren't documented anywhere yet.
         "synthetic-negative-semi-easy": 1.0,
         "unmatched": 1.0,
         "matched": 1.0,
         "synthetic-hard-negative-llm": 2.0,
-    }  # TODO: Literal. source values aren't documented anywhere yet.
+    }
 
     # Default for cache hits. 2x overall training speedup w/o increasing gradient var
     group_by_query_stacktrace_string: bool = True
