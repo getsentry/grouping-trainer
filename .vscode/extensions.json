@@ -1,0 +1,9 @@
+{
+    "recommendations": [
+        "charliermarsh.ruff",
+        "meta.pyrefly"
+    ],
+    "unwantedRecommendations": [
+        "ms-python.mypy-type-checker"
+    ]
+}

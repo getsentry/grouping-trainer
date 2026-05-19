@@ -1,0 +1,29 @@
+{
+    "editor.rulers": [
+        120
+    ],
+    "autoDocstring.docstringFormat": "numpy",
+    "autoDocstring.startOnNewLine": true,
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "[markdown]": {
+        "editor.formatOnSave": false
+    },
+    "editor.codeActionsOnSave": {
+        "source.organizeImports.ruff": "explicit"
+    },
+    "rewrap.autoWrap.enabled": true,
+    "notebook.formatOnSave.enabled": true,
+    "notebook.defaultFormatter": "charliermarsh.ruff",
+    "python.defaultInterpreterPath": ".venv/bin/python",
+    // NOTE: the pyrefly extension seems to globally add
+    //
+    // "python.languageServer": "None",
+    // "cursorpyright.disableLanguageServices": true,
+    //
+    // to /Users/.../Library/Application Support/Cursor/User/settings.json
+    // even when it's only enabled in one workspace.
+    //
+    // "python.pyrefly.typeCheckingMode": "default",
+    // "python.pyrefly.diagnosticMode": "workspace",
+}
