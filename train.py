@@ -49,8 +49,9 @@ def run(
     Parameters
     ----------
     base_model
-        HuggingFace model ID or local path for the base encoder. Others we've tried: Alibaba-NLP/gte-modernbert-base,
-        Qwen/Qwen3-Embedding-0.6B, jinaai/jina-embeddings-v5-text-nano-text-matching
+        HuggingFace model ID or local path for the base encoder, or a `gs://...` path to a custom model directory in our
+        bucket (downloaded into `_base_models/` on the instance). Others we've tried:
+        Alibaba-NLP/gte-modernbert-base, Qwen/Qwen3-Embedding-0.6B, jinaai/jina-embeddings-v5-text-nano-text-matching
     run_shortname
         Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp.
     per_device_token_budget_scale
@@ -78,6 +79,10 @@ def run(
     """
     if not tiny_run:
         assert run_shortname is not None, "run_shortname is required for full training runs"
+
+    # Fail fast on a typo'd gs:// model URI before wasting time launching training.
+    if gt.utils.is_gcs_uri(base_model):
+        gt.utils.assert_gcs_path_exists(base_model)
 
     # Generate run_name up front so we can log the artifact URL locally before auto-launching. On the remote, re-use the
     # local run_name via env var so both sides log the same GCS path (rather than each generating its own timestamp).

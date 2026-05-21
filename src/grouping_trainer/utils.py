@@ -1,4 +1,7 @@
+import logging
 import math
+import os
+import subprocess
 from collections.abc import Iterable
 from typing import Literal, cast, overload
 
@@ -8,6 +11,11 @@ import torch
 from polars._typing import ConcatMethod
 from sentence_transformers import SentenceTransformer as SentenceTransformerOriginal
 from transformers import PreTrainedTokenizerBase
+
+logger = logging.getLogger(__name__)
+
+_GCS_PREFIX = "gs://"
+_DIR_BASE_MODELS_LOCAL = "_base_models"
 
 
 def concat_vertical_unordered(
@@ -122,13 +130,45 @@ class SentenceTransformer(SentenceTransformerOriginal):
         return embeddings[[text_to_idx[text] for text in texts]]  # assume numpy or torch
 
 
+def is_gcs_uri(uri: str) -> bool:
+    return uri.startswith(_GCS_PREFIX)
+
+
+def assert_gcs_path_exists(uri: str) -> None:
+    """
+    Raises `CalledProcessError` if `uri` doesn't exist (or matches no objects) in GCS.
+    """
+    subprocess.run(
+        ["gcloud", "storage", "ls", uri.rstrip("/") + "/"],
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+
+
+def _download_base_model_from_gcs(uri: str) -> str:
+    """
+    Rsync `uri` (a `gs://...` directory) into `_base_models/<basename>/` relative to CWD and return the local path.
+    """
+    basename = uri.rstrip("/").rsplit("/", 1)[-1]
+    path_local = os.path.join(_DIR_BASE_MODELS_LOCAL, basename)
+    logger.info(f"Downloading base model: {uri} -> {path_local}")
+    subprocess.run(["gcloud", "storage", "rsync", "-r", uri.rstrip("/"), path_local], check=True)
+    return path_local
+
+
 def encoder_from_base(base_model: str, use_text_prefix: bool = True) -> SentenceTransformer:
     """
     Build a SentenceTransformer encoder with standard dtype/attention settings.
 
+    `base_model` is a HuggingFace model ID, a local path, or a `gs://...` path to a custom model directory. gs:// models
+    are downloaded into `_base_models/` (relative to CWD) on first call.
+
     Handles model-specific quirks (e.g. jina v5's config_kwargs and trust_remote_code) and enables bfloat16 + SDPA when
     supported.
     """
+    if is_gcs_uri(base_model):
+        base_model = _download_base_model_from_gcs(base_model)
+
     if base_model == "jinaai/jina-embeddings-v5-text-nano-text-matching":
         return SentenceTransformer(
             base_model,
