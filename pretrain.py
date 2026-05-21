@@ -142,7 +142,6 @@ def run(
         wandb.login()
         wandb.init(
             id=run_name,
-            project=pretraining_config.wandb_project,
             name=pretrainer.args.run_name,
             group=pretrainer.args.run_name,
             settings=wandb.Settings(mode="shared", x_primary=True, x_label="pretrain"),

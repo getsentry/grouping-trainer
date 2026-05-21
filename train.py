@@ -154,17 +154,16 @@ def run(
         wandb.login()
         wandb.init(
             id=run_name,
-            project=training_config.wandb_project,
             name=trainer.args.run_name,
             group=trainer.args.run_name,
             settings=wandb.Settings(mode="shared", x_primary=True, x_label="train"),
         )
         assert wandb.run is not None
 
-        # Start eval poller on a separate machine
+        # Start eval poller on a separate machine. WANDB_ENTITY/WANDB_PROJECT are forwarded by gce_vm.
         eval_command = (
             f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} "
-            f"--wandb_run_id {wandb.run.id} --wandb_project {training_config.wandb_project} "
+            f"--wandb_run_id {wandb.run.id} "
             f"--loss_type {training_config.loss_type} --contrastive_margin {training_config.contrastive_margin}"
         )
         if use_text_prefix:

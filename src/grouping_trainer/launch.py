@@ -466,6 +466,18 @@ def _gce_multi_flex_start(
     logger.info("Run bin/gtlist to list statuses. Run bin/gtssh <name> <zone> to SSH into the one that's running.")
 
 
+def _wandb_env_prefix() -> str:
+    """
+    Returns `WANDB_ENTITY=... WANDB_PROJECT=...` prefix to splice into a remote shell command, if those vars are set
+    locally.
+    """
+    parts: list[str] = []
+    for env_var in ("WANDB_ENTITY", "WANDB_PROJECT"):
+        if value := os.environ.get(env_var):
+            parts.append(f"{env_var}={shlex.quote(value)}")
+    return " ".join(parts)
+
+
 def gce_vm(
     *,
     gpu: GpuType,
@@ -544,6 +556,10 @@ def gce_vm(
 
     with contextlib.ExitStack() as stack:
         if command:
+            # Forward W&B config so the remote logs the same wandb URL and `wandb.init` pins to the same entity/project.
+            # bin/_startup.sh only sets WANDB_API_KEY; entity/project come from the launcher's local env.
+            if env_prefix := _wandb_env_prefix():
+                command = f"{env_prefix} {command}"
             cmd_file = stack.enter_context(tempfile.NamedTemporaryFile(mode="w", suffix=".cmd", encoding="utf-8"))
             cmd_file.write(command)
             cmd_file.flush()
@@ -627,14 +643,7 @@ def run_argv_remotely(
 
     command_parts: list[str] = []
 
-    # Env vars
     command_parts.append(f"{_REMOTE_ENV_VAR}=1")
-    maybe_env_vars = ("WANDB_ENTITY", "WANDB_PROJECT")
-    # Forward W&B config so the remote logs the same wandb URL and `wandb.init` pins to the same entity/project.
-    # bin/_startup.sh only sets WANDB_API_KEY; entity/project come from the launcher's local env.
-    for env_var in maybe_env_vars:
-        if value := os.environ.get(env_var):
-            command_parts.append(f"{env_var}={shlex.quote(value)}")
     for env_var, value in (env_var_to_value or {}).items():
         command_parts.append(f"{env_var}={shlex.quote(value)}")
 

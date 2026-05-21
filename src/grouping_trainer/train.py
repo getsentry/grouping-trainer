@@ -711,7 +711,6 @@ class TrainingConfig(BaseModel):
     # the same query stacktrace strings in a batch, while still generating pairs from 1 project per batch.
 
     # Logging
-    wandb_project: str = "grouping-trainer"
     num_logs: int = 100
     num_checkpoints: int = 10  # also the number of eval runs
 

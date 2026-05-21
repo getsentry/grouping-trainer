@@ -130,7 +130,6 @@ class PretrainingConfig(BaseModel):
     eval_sample_size: int | None = 2000
 
     # Logging / checkpointing
-    wandb_project: str = "grouping-trainer"
     num_logs: int = 2000
     num_checkpoints: int = 50
 
@@ -260,6 +259,7 @@ def make_pretrainer(
             ddp_find_unused_parameters=False,
             eval_strategy="steps" if eval_enabled else "no",
             eval_steps=save_steps if eval_enabled else None,
+            eval_on_start=eval_enabled,
             per_device_eval_batch_size=per_device_train_batch_size,
         ),
         train_dataset=dataset_train,

@@ -237,7 +237,6 @@ def main(
     run_gcs_dir: str,
     base_model: str,
     wandb_run_id: str,
-    wandb_project: str = "grouping-trainer",
     poll_interval_sec: int = 60 * 2,
     sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
     truncate_dims: tuple[int, ...] = (64, 768),
@@ -258,8 +257,6 @@ def main(
         Example: "Qwen/Qwen3-Embedding-0.6B"
     wandb_run_id
         W&B run ID of the training run. Eval metrics are logged to the same run using shared mode.
-    wandb_project
-        W&B project name.
     poll_interval_sec
         Seconds to sleep between polling cycles when no new checkpoints are found.
     sample_val
@@ -283,7 +280,6 @@ def main(
 
     wandb.login()
     wandb.init(
-        project=wandb_project,
         id=wandb_run_id,
         settings=wandb.Settings(mode="shared", x_primary=False, x_label="eval", x_update_finish_state=False),
     )
