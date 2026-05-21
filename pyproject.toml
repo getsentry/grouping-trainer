@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grouping-trainer"
+dynamic = ["version"]
+description = "Training and evaluation for Sentry AI grouping"
+readme = "README.md"
+license = { file = "LICENSE" }
+dependencies = [
+    "accelerate==1.12.0",
+    "datasets==4.4.1",
+    "optimum==1.27.0",
+    "polars==1.32.0",  # cudf lol
+    "pydantic==2.11.9",
+    "sentence-transformers==5.1.0",
+    # torch 2.8+ requires NCCL 2.27+, which fails on GCP DL VM images: the image sets NCCL_NET=gIB but a2/a3 (at least
+    # non-mega ones) lack InfiniBand, and NCCL 2.27+ no longer has a built-in Socket fallback. NCCL 2.26.2 (bundled with
+    # torch 2.7.1) is the last version that works without an external NET plugin.
+    "torch==2.7.1",
+    "torchvision==0.22.1",
+    "transformers==4.56.2",
+    "typed-argument-parser==1.11.0",
+    "wandb==0.23.1",
+]
+requires-python = ">=3.13"
+authors = [
+    { name = "Kush Dubey", email = "kushdubey63@gmail.com" },
+]
+maintainers = [
+    { name = "Kush Dubey", email = "kushdubey63@gmail.com" },
+]
+
+[project.optional-dependencies]
+dev = [
+    "google-auth-stubs>=0.3.0",
+    "jupyter>=1.0.0",
+    "pre-commit>=3.7.0",
+    "pyrefly>=1.0.0",
+    "pytest>=8.4.2",
+    "ruff>=0.14.0",
+    "seaborn>=0.13.2",
+    "types-seaborn>=0.13.2.20260509",
+    "types-tqdm>=4.67.3.20260508",
+]
+sheets = [
+    "gspread>=6.0.0",
+    "google-auth>=2.0.0",
+]
+eval-gemini = [
+    "google-genai==2.0.1",
+    "more-itertools==11.0.2",
+]
+eval-bm25 = [
+    "bm25s==0.2.13",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "grouping_trainer.__version__"}
+
+[tool.ruff]
+include = ["*.py"]
+line-length = 120
+indent-width = 4
+extend-include = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = ["I", "F", "E", "B", "UP"]
+
+[tool.pyrefly]
+project-includes = ["src", "tests", "benchmark", "eval", "bin", "train.py"]
+search-path = ["src", "."]
+python-version = "3.13"
+check-unannotated-defs = true
+
+[project.urls]
+Repository = "https://github.com/getsentry/grouping-trainer"
+Homepage = "https://github.com/getsentry/grouping-trainer"
+Issues = "https://github.com/getsentry/grouping-trainer/issues"

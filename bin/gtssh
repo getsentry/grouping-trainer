@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ $# -lt 1 ]; then
+    echo "Usage: bin/gtssh <instance> [zone]" >&2
+    exit 1
+fi
+
+gcloud compute ssh "$1" --zone="${2:-us-central1-a}" --tunnel-through-iap

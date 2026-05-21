@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+set -eu
+
+gcloud compute instances list --filter="name~gt-" "$@"

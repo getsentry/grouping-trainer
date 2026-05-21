@@ -1,0 +1,13 @@
+.DS_Store
+*.pyc
+*.egg-info/
+__pycache__/
+.venv/
+.env
+
+# Data
+wandb/
+*.csv
+!tests/fixtures/train_tiny.csv
+eval/similarities/
+eval/similarities-uncompiled/
