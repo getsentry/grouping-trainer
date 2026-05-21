@@ -137,6 +137,7 @@ def run(
             run_shortname=run_shortname,
             global_train_batch_size=global_train_batch_size,
             per_device_token_budget=8192 * per_device_token_budget_scale,
+            warmup_ratio=0.25,
             learning_rate=learning_rate,
             loss_type="contrastive",
             contrastive_margin=0.5,
