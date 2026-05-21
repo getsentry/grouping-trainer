@@ -156,7 +156,7 @@ def _download_base_model_from_gcs(uri: str) -> str:
     return path_local
 
 
-def encoder_from_base(base_model: str, use_text_prefix: bool = True) -> SentenceTransformer:
+def encoder_from_base(base_model: str, use_text_prefix: bool = False) -> SentenceTransformer:
     """
     Build a SentenceTransformer encoder with standard dtype/attention settings.
 

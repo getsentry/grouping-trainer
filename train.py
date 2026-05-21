@@ -70,7 +70,7 @@ def run(
         Override the default GCP zone for the gpu type when launching the GPU instance. Useful when flex-start capacity
         is dry in the default zone for the requested gpu type.
     sync_start
-        If False (default), flex-starts the instance—GCP waits up to 1h to find one. `--sync_start` uses on-demand
+        If False (default), flex-starts the instance—GCP waits up to 2h to find one. `--sync_start` uses on-demand
         pricing and finds an instance in any zone, as flex-starting often can't find instances in time.
     multi_flex_start
         Fan out async flex-start submits across 10 zones simultaneously; first VM to boot claims a GCS lock and the rest

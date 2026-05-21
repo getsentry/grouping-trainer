@@ -425,7 +425,7 @@ def _gce_multi_flex_start(
     """
     launch_id = uuid.uuid4().hex[:12]
     zones = config.standard_zones[:num_zones]
-    logger.info(f"Multi-flex-start launch-id={launch_id}, fanning out to {len(zones)} zones: {zones}")
+    logger.info(f"Multi-flex-start launch-id={launch_id} is fanning out to {len(zones)} zones: {zones}")
     n_submitted = 0
     last_stockout_stderr = ""
     for zone in zones:
@@ -460,10 +460,10 @@ def _gce_multi_flex_start(
         suffix = f" Last stderr:\n{last_stockout_stderr}" if last_stockout_stderr else ""
         raise RuntimeError(f"Multi-flex-start: all {len(zones)} zones stocked out.{suffix}")
     logger.info(
-        f"Multi-flex-start launched {n_submitted}/{len(zones)} VMs (launch-id={launch_id}). "
+        f"Multi-flex-start launch-id={launch_id} submitted {n_submitted}/{len(zones)} VMs. "
         f"First to boot w/in {_FLEX_START_REQUEST_VALID_FOR_DURATION} will stay running, others self-delete."
     )
-    logger.info("Run bin/gtlist to list statuses. Run bin/gtssh <name> <zone> to SSH into the one that's running.")
+    logger.info("Run bin/gtlist to list statuses, and bin/gtssh <name> <zone> to SSH into the one that's running.")
 
 
 def _wandb_env_prefix() -> str:
