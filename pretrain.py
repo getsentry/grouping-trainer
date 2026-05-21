@@ -122,6 +122,7 @@ def run(
             run_shortname=run_shortname,
             base_model=base_model,
             global_train_batch_size=global_train_batch_size,
+            mlm_probability=0.5,
             learning_rate=learning_rate,
             num_train_epochs=num_train_epochs,
             max_seq_length=max_seq_length,
