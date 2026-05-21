@@ -42,6 +42,8 @@ _IMAGE = "projects/ml-images/global/images/pytorch-2-7-cu128-ubuntu-2404-nvidia-
 
 _INSTANCE_NAME_PREFIX = "gt"
 
+_FLEX_START_REQUEST_VALID_FOR_DURATION = "2h"
+
 
 class JobType(StrEnum):
     TRAIN = "train"
@@ -80,7 +82,7 @@ class GpuConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     flex_start_zone: str | None
-    """Single zone for FLEX_START launches (DWS queues the request for up to 1h). None disables FLEX_START (L4)."""
+    """Single zone for FLEX_START launches (DWS queues the request for up to 2h). None disables FLEX_START (L4)."""
     standard_zones: tuple[str, ...]
     """Zones to try in order for STANDARD launches (multi-zone fail-fast fallback on stockout)."""
     machine_type: str
@@ -402,7 +404,7 @@ def _gce_create_cmd(
         f"--reservation-affinity={config.reservation_affinity}",
     ]
     if provisioning_model == "FLEX_START":
-        args.append("--request-valid-for-duration=2h")
+        args.append(f"--request-valid-for-duration={_FLEX_START_REQUEST_VALID_FOR_DURATION}")
     if config.accelerator:
         args.append(f"--accelerator={config.accelerator}")
     if not wait_for_instance_creation:
@@ -459,7 +461,7 @@ def _gce_multi_flex_start(
         raise RuntimeError(f"Multi-flex-start: all {len(zones)} zones stocked out.{suffix}")
     logger.info(
         f"Multi-flex-start launched {n_submitted}/{len(zones)} VMs (launch-id={launch_id}). "
-        f"First to boot w/in 1h will stay running, others self-delete."
+        f"First to boot w/in {_FLEX_START_REQUEST_VALID_FOR_DURATION} will stay running, others self-delete."
     )
     logger.info("Run bin/gtlist to list statuses. Run bin/gtssh <name> <zone> to SSH into the one that's running.")
 
@@ -496,7 +498,7 @@ def gce_vm(
         Optional suffix appended to the instance name for collision avoidance between concurrent launches. Empty
         (default) for the SSH-in-and-iterate CLI use case; programmatic callers should pass `run_shortname` or similar.
     sync_start
-        If False (default), flex-starts the instance—GCP waits up to 1h to find one. `--sync_start` uses on-demand
+        If False (default), flex-starts the instance—GCP waits up to 2h to find one. `--sync_start` uses on-demand
         pricing and finds an instance in any zone, as flex-starting often can't find instances in time.
     multi_flex_start
         Fan out async FLEX_START submits across the first `multi_flex_start_num_zones` zones of `standard_zones`. First
