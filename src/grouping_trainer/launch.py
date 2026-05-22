@@ -346,6 +346,10 @@ def _is_stockout(stderr: str) -> bool:
     return "ZONE_RESOURCE_POOL_EXHAUSTED" in stderr
 
 
+def _is_phantom_already_exists(stderr: str) -> bool:
+    return "HTTPError 409" in stderr and "already exists" in stderr
+
+
 def _raise_gce_create_failure(result: subprocess.CompletedProcess[str], args: list[str]) -> NoReturn:
     """Log the gcloud stderr (CalledProcessError's repr drops it) and raise."""
     logger.error(f"gcloud failed (exit {result.returncode}):\n{result.stderr}")
@@ -440,13 +444,17 @@ def _gce_multi_flex_start(
         )
         result = subprocess.run(gce_create_args, capture_output=True, text=True)
         if result.returncode == 0:
-            logger.info(f"Flex-started {base_instance_name} in zone {zone}")
+            logger.info(f"Submitted flex-start for {base_instance_name} in zone {zone}")
             n_submitted += 1
             continue
 
         if _is_stockout(result.stderr):  # I've gotten a stockout on flex-starts before
             logger.warning(f"Stockout in {zone}. Continuing with remaining zones")
             last_stockout_stderr = result.stderr
+            continue
+
+        if _is_phantom_already_exists(result.stderr):
+            logger.warning(f"409: already-exists on {zone}. Continuing with remaining zones")
             continue
 
         if n_submitted > 0:
