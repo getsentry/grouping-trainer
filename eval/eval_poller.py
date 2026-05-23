@@ -237,7 +237,7 @@ def main(
     run_gcs_dir: str,
     base_model: str,
     wandb_run_id: str,
-    poll_interval_sec: int = 60 * 2,
+    poll_interval_sec: int = 60 * 1,
     sample_val: int | None = None,  # may be fast enough to encode everything b/t saves. big enough to stay busy.
     truncate_dims: tuple[int, ...] = (64, 768),
     use_simple_precisions: bool = False,
