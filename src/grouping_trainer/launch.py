@@ -3,8 +3,8 @@ Helpers for launching remote GCE instances that run a Python entry-point.
 
 The instance's startup script does bin/_startup.sh to set up the python env and then `eval`s an inputted command.
 
-Training jobs don't need to start in time, so by default they're launched async via flex-start w/ a max wait time of 1
-hour. Also saves some money.
+Training jobs don't need to start in time, so by default they're launched async via flex-start w/ a max wait time of 2
+hours. Also saves some money.
 
 Eval jobs (on cheap L4 GPUs) are launched by sync-looping through zones ourselves b/c eval ideally does start in time,
 e.g., training shouldn't start w/o an eval poller. L4s are cheap-enough that the flex-start discount isn't worth the
