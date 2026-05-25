@@ -3,7 +3,7 @@ import math
 import os
 import subprocess
 from collections.abc import Iterable
-from typing import Literal, cast, overload
+from typing import Literal, NoReturn, cast, overload
 
 import numpy as np
 import polars as pl
@@ -128,6 +128,19 @@ class SentenceTransformer(SentenceTransformerOriginal):
         text_to_idx = {text: idx for idx, text in enumerate(unique)}
         embeddings = super().encode(unique, **kwargs)
         return embeddings[[text_to_idx[text] for text in texts]]  # assume numpy or torch
+
+
+def log_and_raise_subprocess(
+    result: subprocess.CompletedProcess[str], args: list[str], log_prefix: str = ""
+) -> NoReturn:
+    # CalledProcessError's repr drops stderr
+    logger.error(f"{log_prefix}(exit {result.returncode}):\n{result.stderr}")
+    raise subprocess.CalledProcessError(
+        result.returncode,
+        args,
+        output=result.stdout,
+        stderr=result.stderr,
+    )
 
 
 def is_gcs_uri(uri: str) -> bool:

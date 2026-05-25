@@ -1,10 +1,6 @@
 """
 GCP Cloud Logging compatible JSON formatter.
 Adapted from https://github.com/getsentry/seer/blob/main/src/seer/logging.py by @JoshFerge
-
-Usage:
-    from grouping_trainer.logging import configure_logging
-    configure_logging(run_name="2026-03-08-my-run", process_type="training")
 """
 
 import json

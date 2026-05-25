@@ -1,12 +1,13 @@
 """
-Helpers for launching remote GCE instances that run a Python entry-point.
-
-The instance's startup script does bin/_startup.sh to set up the python env and then `eval`s an inputted command.
+Launch GCE instances. The instance's startup script does bin/_startup.sh to set up the Python env and then `eval`s
+whatever `python` command was locally run.
 
 Training jobs don't need to start in time, so by default they're launched async via flex-start w/ a max wait time of 2
-hours. Also saves some money.
+hours. Also saves some money. https://docs.cloud.google.com/compute/docs/instances/about-flex-start-vms. Specifically,
+an instance is flex-started in every zone and races to write a lock in GCS identifying this launch. The first to write
+it wins, the rest self-delete.
 
-Eval jobs (on cheap L4 GPUs) are launched by sync-looping through zones ourselves b/c eval ideally does start in time,
+Eval jobs which use cheap L4 GPUs are launched by sync-looping through zones ourselves b/c eval ideally starts in time,
 e.g., training shouldn't start w/o an eval poller. L4s are cheap-enough that the flex-start discount isn't worth the
 flex-start headache. In current year, GCE doesn't have a simple, built-in cross-region fallback mechanism. Our jobs have
 no networking or region dependence. They communicate via GCS if at all.
@@ -23,19 +24,20 @@ import time
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal, NoReturn
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from tap import tapify
 
-from grouping_trainer.logging import configure_logging
+import grouping_trainer as gt
 
 logger = logging.getLogger(__name__)
 
 _REMOTE_ENV_VAR = "GROUPING_TRAINER_REMOTE"
 """
 Env var set by `run_argv_remotely()` in the cmd that runs on the remote instance, so the remote knows it shouldn't try
-to re-launch. Callers can check `is_on_remote()` before deciding to launch.
+to re-launch. Callers can check `is_on_remote()` if it wants to avoid launch from remote. The main training job doesn't
+check `is_on_remote()` so that it can launch the eval poller.
 """
 
 _IMAGE = "projects/ml-images/global/images/pytorch-2-7-cu128-ubuntu-2404-nvidia-570-v20260323"
@@ -43,6 +45,8 @@ _IMAGE = "projects/ml-images/global/images/pytorch-2-7-cu128-ubuntu-2404-nvidia-
 _INSTANCE_NAME_PREFIX = "gt"
 
 _FLEX_START_REQUEST_VALID_FOR_DURATION = "2h"
+
+_TIMESTAMP_FORMAT = "%Y-%m-%d-%H-%M-%S"
 
 
 class JobType(StrEnum):
@@ -60,20 +64,21 @@ def is_on_remote() -> bool:
 
 
 def run_name_from_shortname(shortname: str) -> str:
-    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    timestamp = datetime.now().strftime(_TIMESTAMP_FORMAT)
     return f"{timestamp}-{shortname}"
 
 
 def shortname_from_run_name(run_name: str) -> str:
     """
-    Extract the shortname from a run_name formatted as 'YYYY-MM-DD-HH-MM-SS-<shortname>'.
+    Extract the shortname from a run_name formatted as `YYYY-MM-DD-HH-MM-SS-<shortname>`.
     Returns `run_name` unchanged if it isn't in that format.
     """
-    parts = run_name.split("-", maxsplit=6)
-    return parts[-1] if len(parts) == 7 else run_name
+    maxsplit = len(_TIMESTAMP_FORMAT.split("-"))
+    parts = run_name.split("-", maxsplit=maxsplit)
+    return parts[-1] if len(parts) == (maxsplit + 1) else run_name
 
 
-def validate_run_gcs_dir(run_gcs_dir: str) -> None:
+def check_run_has_model_for_inference(run_gcs_dir: str) -> None:
     path_inference = f"{run_gcs_dir.rstrip('/')}/inference/"
     subprocess.run(["gcloud", "storage", "ls", path_inference], check=True, stdout=subprocess.DEVNULL)
 
@@ -81,10 +86,9 @@ def validate_run_gcs_dir(run_gcs_dir: str) -> None:
 class GpuConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    flex_start_zone: str | None
-    """Single zone for FLEX_START launches (DWS queues the request for up to 2h). None disables FLEX_START (L4)."""
-    standard_zones: tuple[str, ...]
-    """Zones to try in order for STANDARD launches (multi-zone fail-fast fallback on stockout)."""
+    default_zone_for_flex_start: str | None
+    "`None` disables FLEX_START launches (currently just for L4)."
+    zones: tuple[str, ...]
     machine_type: str
     accelerator: str | None  # None for multi-GPU variants b/c accelerators are built into the machine type
     max_run_duration: str
@@ -93,10 +97,9 @@ class GpuConfig(BaseModel):
     is_for_training: bool
     n_gpu: int
     boot_disk_type: str = "pd-balanced"
-    """Boot disk type. A3 Ultra (a3-ultragpu-8g) rejects pd-balanced and needs hyperdisk-balanced."""
 
 
-# gcloud compute accelerator-types list --filter="name=nvidia-l4" --format='value(zone)' | sort -u
+# gcloud compute accelerator-types list --filter="name=nvidia-l4" --format='value(zone)'
 L4_ZONES = (
     "us-central1-a",
     "us-central1-b",
@@ -201,8 +204,8 @@ GpuType = Literal[
 
 gpu_type_to_config: dict[GpuType, GpuConfig] = {
     "l4": GpuConfig(
-        flex_start_zone=None,
-        standard_zones=L4_ZONES,
+        default_zone_for_flex_start=None,
+        zones=L4_ZONES,
         machine_type="g2-standard-4",
         accelerator="count=1,type=nvidia-l4",
         max_run_duration="172800s",
@@ -212,8 +215,8 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         n_gpu=1,
     ),
     "h100": GpuConfig(
-        flex_start_zone="us-central1-a",
-        standard_zones=H100_ZONES,
+        default_zone_for_flex_start="us-central1-a",
+        zones=H100_ZONES,
         machine_type="a3-highgpu-1g",
         accelerator="count=1,type=nvidia-h100-80gb",
         max_run_duration="172800s",
@@ -223,8 +226,8 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         n_gpu=1,
     ),
     "h100-2": GpuConfig(
-        flex_start_zone="us-central1-a",
-        standard_zones=H100_ZONES,
+        default_zone_for_flex_start="us-central1-a",
+        zones=H100_ZONES,
         machine_type="a3-highgpu-2g",
         accelerator=None,
         max_run_duration="172800s",
@@ -234,8 +237,8 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         n_gpu=2,
     ),
     "h100-4": GpuConfig(
-        flex_start_zone="us-central1-a",
-        standard_zones=H100_ZONES,
+        default_zone_for_flex_start="us-central1-a",
+        zones=H100_ZONES,
         machine_type="a3-highgpu-4g",
         accelerator=None,
         max_run_duration="172800s",
@@ -245,8 +248,8 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         n_gpu=4,
     ),
     "a100": GpuConfig(
-        flex_start_zone="us-central1-a",
-        standard_zones=A100_ZONES,
+        default_zone_for_flex_start="us-central1-a",
+        zones=A100_ZONES,
         machine_type="a2-ultragpu-1g",
         accelerator="count=1,type=nvidia-a100-80gb",
         max_run_duration="172800s",
@@ -256,8 +259,8 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         n_gpu=1,
     ),
     "a100-2": GpuConfig(
-        flex_start_zone="us-central1-a",
-        standard_zones=A100_ZONES,
+        default_zone_for_flex_start="us-central1-a",
+        zones=A100_ZONES,
         machine_type="a2-ultragpu-2g",
         accelerator=None,
         max_run_duration="172800s",
@@ -267,8 +270,8 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         n_gpu=2,
     ),
     "a100-4": GpuConfig(
-        flex_start_zone="us-central1-a",
-        standard_zones=A100_ZONES,
+        default_zone_for_flex_start="us-central1-a",
+        zones=A100_ZONES,
         machine_type="a2-ultragpu-4g",
         accelerator=None,
         max_run_duration="172800s",
@@ -278,8 +281,8 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         n_gpu=4,
     ),
     "h200-8": GpuConfig(
-        flex_start_zone="us-central1-a",
-        standard_zones=H200_ZONES,
+        default_zone_for_flex_start="us-central1-a",
+        zones=H200_ZONES,
         machine_type="a3-ultragpu-8g",
         accelerator=None,
         max_run_duration="172800s",
@@ -287,7 +290,7 @@ gpu_type_to_config: dict[GpuType, GpuConfig] = {
         reservation_affinity="none",
         is_for_training=True,
         n_gpu=8,
-        boot_disk_type="hyperdisk-balanced",
+        boot_disk_type="hyperdisk-balanced",  # doesn't support pd-balanced
     ),
 }
 
@@ -299,7 +302,7 @@ TrainingGpuType = Literal[
 
 def upload_run_metadata(run_gcs_dir: str, config: BaseModel, config_filename: str = "config.json") -> None:
     """
-    Save `config` (as JSON) and the git commit to a local temp dir, then upload to `<run_gcs_dir>/metadata/`.
+    Upload `config` and the git commit to `<run_gcs_dir>/metadata/`.
     """
     with tempfile.TemporaryDirectory() as dir_metadata:
         with open(os.path.join(dir_metadata, config_filename), "w") as f:
@@ -320,45 +323,14 @@ def _repo_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 
 
-def _strip_flags_and_their_values(argv: list[str], flags: tuple[str, ...]) -> list[str]:
-    out: list[str] = []
-    skip = False
-    for arg in argv:
-        if skip:
-            skip = False
-            continue
-        if arg in flags:
-            skip = True
-            continue
-        if any(arg.startswith(f"{flag}=") for flag in flags):
-            continue
-        out.append(arg)
-    return out
-
-
-def _strip_bool_flags(argv: list[str], flags: tuple[str, ...]) -> list[str]:
-    """Strip boolean flags (which take no following value) from argv. Eats both `--flag` and `--no_flag`."""
-    flags_to_strip = set(flags) | {flag.replace("--", "--no_", 1) for flag in flags}
-    return [arg for arg in argv if arg not in flags_to_strip]
-
-
 def _is_stockout(stderr: str) -> bool:
     return "ZONE_RESOURCE_POOL_EXHAUSTED" in stderr
 
 
 def _is_phantom_already_exists(stderr: str) -> bool:
+    # It seems like a 409 occurs when a prev VM from a diff zone in the loop is getting staged. I don't understand why
+    # it's an error—the instances are in diff zones. Choosing to treat this as benign.
     return "HTTPError 409" in stderr and "already exists" in stderr
-
-
-def _raise_gce_create_failure(result: subprocess.CompletedProcess[str], args: list[str]) -> NoReturn:
-    """Log the gcloud stderr (CalledProcessError's repr drops it) and raise."""
-    logger.error(f"gcloud failed (exit {result.returncode}):\n{result.stderr}")
-    raise subprocess.CalledProcessError(
-        result.returncode,
-        args,
-        output=result.stdout,
-        stderr=result.stderr,
-    )
 
 
 def _gce_create_cmd(
@@ -366,7 +338,7 @@ def _gce_create_cmd(
     instance_name: str,
     zone: str,
     *,
-    provisioning_model: Literal["FLEX_START", "STANDARD"],
+    provision_type: Literal["FLEX_START", "STANDARD"],
     wait_for_instance_creation: bool,
     path_to_metadata_script: dict[str, str],
     launch_id: str | None = None,
@@ -376,11 +348,11 @@ def _gce_create_cmd(
         # Forward serial port output to Cloud Logging so we can post-mortem deleted VMs.
         "serial-port-logging-enable": "TRUE",
     }
+    if launch_id is not None:
+        metadata["launch-id"] = launch_id
     if config.install_nvidia_driver:
         metadata["enable-osconfig"] = "TRUE"
         metadata["install-nvidia-driver"] = "True"
-    if launch_id is not None:
-        metadata["launch-id"] = launch_id
 
     args = [
         "gcloud",
@@ -389,7 +361,7 @@ def _gce_create_cmd(
         "create",
         instance_name,
         f"--zone={zone}",
-        f"--provisioning-model={provisioning_model}",
+        f"--provisioning-model={provision_type}",
         f"--machine-type={config.machine_type}",
         "--network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default",
         f"--metadata-from-file={','.join(f'{k}={v}' for k, v in path_to_metadata_script.items())}",
@@ -407,7 +379,7 @@ def _gce_create_cmd(
         "--shielded-integrity-monitoring",
         f"--reservation-affinity={config.reservation_affinity}",
     ]
-    if provisioning_model == "FLEX_START":
+    if provision_type == "FLEX_START":
         args.append(f"--request-valid-for-duration={_FLEX_START_REQUEST_VALID_FOR_DURATION}")
     if config.accelerator:
         args.append(f"--accelerator={config.accelerator}")
@@ -419,36 +391,37 @@ def _gce_create_cmd(
 def _gce_multi_flex_start(
     *,
     config: GpuConfig,
-    base_instance_name: str,
+    instance_name: str,
     num_zones: int,
     path_to_metadata_script: dict[str, str],
 ) -> None:
     """
-    Fan out async FLEX_START submits across the first `num_zones` of `config.standard_zones`, all sharing the same
-    `launch-id` metadata. First VM to boot claims a GCS atomic-create lock (see `bin/_startup.sh`); losers self-delete.
+    Fan out async `FLEX_START` submits across the first `num_zones` of `config.zones`, all sharing the same `launch-id`
+    metadata. First VM to boot claims a GCS atomic-create lock (see `bin/_startup.sh`). Losers self-delete.
     """
     launch_id = uuid.uuid4().hex[:12]
-    zones = config.standard_zones[:num_zones]
+    zones = config.zones[:num_zones]
     logger.info(f"Multi-flex-start launch-id={launch_id} is fanning out to {len(zones)} zones: {zones}")
     n_submitted = 0
     last_stockout_stderr = ""
+
     for zone in zones:
         gce_create_args = _gce_create_cmd(
             config,
-            base_instance_name,  # instance names only need to be unique within (project, zone).
+            instance_name,  # NOTE: instance names only need to be unique w/in (project, zone).
             zone,
-            provisioning_model="FLEX_START",
+            provision_type="FLEX_START",
             wait_for_instance_creation=False,
             path_to_metadata_script=path_to_metadata_script,
             launch_id=launch_id,
         )
         result = subprocess.run(gce_create_args, capture_output=True, text=True)
         if result.returncode == 0:
-            logger.info(f"Submitted flex-start for {base_instance_name} in zone {zone}")
+            logger.info(f"Submitted flex-start for {instance_name} in zone {zone}")
             n_submitted += 1
             continue
 
-        if _is_stockout(result.stderr):  # I've gotten a stockout on flex-starts before
+        if _is_stockout(result.stderr):  # I've gotten stockouts on flex-starts before
             logger.warning(f"Stockout in {zone}. Continuing with remaining zones")
             last_stockout_stderr = result.stderr
             continue
@@ -462,7 +435,7 @@ def _gce_multi_flex_start(
                 f"{n_submitted} instances already submitted will still race for the lock. "
                 "You may still end up with a VM despite this error."
             )
-        _raise_gce_create_failure(result, gce_create_args)
+        gt.utils.log_and_raise_subprocess(result, gce_create_args, log_prefix="gcloud failed ")
 
     if n_submitted == 0:
         suffix = f" Last stderr:\n{last_stockout_stderr}" if last_stockout_stderr else ""
@@ -521,11 +494,10 @@ def gce_vm(
         If False (default), flex-starts the instance—GCP waits up to 2h to find one. `--sync_start` uses on-demand
         pricing and finds an instance in any zone, as flex-starting often can't find instances in time.
     multi_flex_start
-        Fan out async FLEX_START submits across the first `multi_flex_start_num_zones` zones of `standard_zones`. First
-        VM to boot wins via a GCS atomic-create lock; losers self-delete. Mutually exclusive with `sync_start`. Not
-        applicable to GPU types without a `flex_start_zone` (e.g. L4).
+        Fan out async FLEX_START submits across the first `multi_flex_start_num_zones` zones of `zones`. First VM to
+        boot wins via a GCS atomic-create lock. Losers self-delete. Mutually exclusive with `sync_start`.
     multi_flex_start_num_zones
-        How many zones to fan out to in multi-flex mode. Capped at the length of the GPU config's `standard_zones`.
+        How many zones to fan out to in multi-flex mode.
     command
         The command to run on the remote instance. If not given, the instance just sets up the env and stops for when
         you want to SSH in and iterate.
@@ -540,7 +512,7 @@ def gce_vm(
     config = gpu_type_to_config[gpu]
     if multi_flex_start and sync_start:
         raise ValueError("--multi_flex_start and --sync_start are mutually exclusive")
-    if multi_flex_start and config.flex_start_zone is None:
+    if multi_flex_start and config.default_zone_for_flex_start is None:
         raise ValueError(f"GPU type {gpu!r} does not support FLEX_START, so --multi_flex_start is not applicable")
 
     instance_name = f"{_INSTANCE_NAME_PREFIX}-{gpu}-{job_type}"
@@ -548,14 +520,14 @@ def gce_vm(
         # GCE instance names must match `[a-z]([-a-z0-9]*[a-z0-9])?`, so swap underscores for hyphens.
         instance_name += f"-{name_suffix.replace('_', '-')}"
 
-    if (not sync_start) and (not multi_flex_start) and (config.flex_start_zone is not None):
-        provisioning_model: Literal["FLEX_START", "STANDARD"] = "FLEX_START"
+    if (not sync_start) and (not multi_flex_start) and (config.default_zone_for_flex_start is not None):
+        provision_type: Literal["FLEX_START", "STANDARD"] = "FLEX_START"
         wait_for_instance_creation = False
-        zones_to_try: tuple[str, ...] = (zone or config.flex_start_zone,)
+        zones_to_try: tuple[str, ...] = (zone or config.default_zone_for_flex_start,)
     else:
-        provisioning_model = "STANDARD"
+        provision_type = "STANDARD"
         wait_for_instance_creation = True
-        zones_unique = (zone,) if zone else config.standard_zones
+        zones_unique = (zone,) if zone else config.zones
         zones_to_try = zones_unique * num_cycles_through_zones
 
     # Use --metadata-from-file=command=<tempfile> instead of --metadata=command=<cmd> because gcloud splits --metadata
@@ -576,7 +548,7 @@ def gce_vm(
         if multi_flex_start:
             _gce_multi_flex_start(
                 config=config,
-                base_instance_name=instance_name,
+                instance_name=instance_name,
                 num_zones=multi_flex_start_num_zones,
                 path_to_metadata_script=path_to_metadata_script,
             )
@@ -588,14 +560,14 @@ def gce_vm(
                 config,
                 instance_name,
                 zone,
-                provisioning_model=provisioning_model,
+                provision_type=provision_type,
                 wait_for_instance_creation=wait_for_instance_creation,
                 path_to_metadata_script=path_to_metadata_script,
             )
             logger.info(f"Attempting to create {instance_name} in zone {zone}")
             gce_create_cmd_result = subprocess.run(gce_create_args, capture_output=True, text=True)
             if gce_create_cmd_result.returncode == 0:
-                creation_type = "Flex-started" if provisioning_model == "FLEX_START" else "Created"
+                creation_type = "Flex-started" if provision_type == "FLEX_START" else "Created"
                 logger.info(f"{creation_type} {instance_name} in zone {zone}")
                 return
 
@@ -609,7 +581,31 @@ def gce_vm(
             # Fail
             if not sync_start:
                 logger.warning("You may have success with --multi_flex_start if you're fine waiting, else --sync_start")
-            _raise_gce_create_failure(gce_create_cmd_result, gce_create_args)
+            gt.utils.log_and_raise_subprocess(gce_create_cmd_result, gce_create_args, log_prefix="gcloud failed ")
+
+
+def _strip_flags_and_their_values(argv: list[str], flags: tuple[str, ...]) -> list[str]:
+    out: list[str] = []
+    skip = False
+    for arg in argv:
+        if skip:
+            skip = False
+            continue
+        if arg in flags:
+            skip = True
+            continue
+        if any(arg.startswith(f"{flag}=") for flag in flags):
+            continue
+        out.append(arg)
+    return out
+
+
+def _strip_bool_flags(argv: list[str], flags: tuple[str, ...]) -> list[str]:
+    """
+    Also strips negation forms like `--no_flag`.
+    """
+    flags_to_strip = set(flags) | {flag.replace("--", "--no_", 1) for flag in flags}
+    return [arg for arg in argv if arg not in flags_to_strip]
 
 
 def run_argv_remotely(
@@ -633,9 +629,9 @@ def run_argv_remotely(
       - `--sync_start`
       - `--multi_flex_start`.
 
-    Invokes `accelerate launch` instead of `python` if the GPU is multi-GPU.
+    Invokes `accelerate launch` instead of `python` if the instance has multiple GPUs.
 
-    Caller should `return` immediately after invoking this, as the remote instance runs the actual workload. Callers
+    Callers should `return` immediately after invoking this, as the remote instance runs the actual workload. Callers
     should also check `is_on_remote()` before deciding to launch, so a CUDA-detection misfire on the remote can't
     trigger a recursive launch. I can think about a better pattern later.
 
@@ -685,5 +681,5 @@ def run_argv_remotely(
 
 
 if __name__ == "__main__":
-    configure_logging(process_type="launch")
+    gt.logging.configure_logging(process_type="launch")
     tapify(gce_vm)

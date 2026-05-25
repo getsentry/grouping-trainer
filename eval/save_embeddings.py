@@ -139,7 +139,7 @@ def main(
     gt.logging.configure_logging(process_type="save_embeddings")
 
     if not (no_gpu or gt.launch.is_on_remote()):
-        gt.launch.validate_run_gcs_dir(run_gcs_dir)
+        gt.launch.check_run_has_model_for_inference(run_gcs_dir)
         run_name = os.path.basename(run_gcs_dir.rstrip("/"))
         gt.launch.run_argv_remotely(
             gpu="l4",
