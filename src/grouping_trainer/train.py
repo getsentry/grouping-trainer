@@ -84,7 +84,7 @@ def df_to_dataset(
     seed: int | None = None,
 ) -> Dataset:
     """
-    Convert a DataFrame to a Dataset, grouping records by `query_stacktrace_string`.
+    Convert a DataFrame to a `Dataset`, grouping records by `query_stacktrace_string`.
 
     Records with the same `query_stacktrace_string` are kept together for cache hits in the forward pass. By default,
     the order of groups is randomized to avoid alphabetical ordering bias during training.
@@ -154,8 +154,8 @@ def _load_train_df(
     paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
 ) -> tuple[pl.DataFrame, int]:
-    if stress_test_min_pair_len is not None:
-        df = gt.data.load_train_df(paths=paths, sample_size=None)  # bypass sampling
+    if stress_test_min_pair_len is not None:  # used for OOM stress testing
+        df = gt.data.load_train_df(paths=paths, sample_size=None)
         df = df.filter(
             (pl.col("query_stacktrace_string").str.len_chars() + pl.col("candidate_stacktrace_string").str.len_chars())
             > stress_test_min_pair_len
@@ -180,12 +180,6 @@ def load_train_dataset(
     paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
 ) -> tuple[Dataset, float, int]:
-    """
-    Args:
-        stress_test_min_pair_len: If set, bypasses sample_size and instead keeps only pairs
-            where (query + candidate character length) > this threshold. Useful for OOM stress testing.
-        source_to_sample_weight: Maps source column values to sample weights. Sources not in the dict get weight 1.0.
-    """
     df, num_projects = _load_train_df(
         sample_size=sample_size,
         stress_test_min_pair_len=stress_test_min_pair_len,
@@ -204,13 +198,6 @@ def load_train_dataset_dict(
     source_to_sample_weight: dict[str, float] | None = None,
     min_dataset_size: int | None = None,
 ) -> tuple[DatasetDict, float, int]:
-    """
-    Args:
-        stress_test_min_pair_len: If set, bypasses sample_size and instead keeps only pairs
-            where (query + candidate character length) > this threshold. Useful for OOM stress testing.
-        source_to_sample_weight: Maps source column values to sample weights. Sources not in the dict get weight 1.0.
-        min_dataset_size: If set, packs projects below this size into a single dataset to avoid tiny batches.
-    """
     df, num_projects = _load_train_df(
         sample_size=sample_size,
         stress_test_min_pair_len=stress_test_min_pair_len,
@@ -359,17 +346,10 @@ class Trainer(SentenceTransformerTrainer):
     """
     Unlike `SentenceTransformerTrainer`, this class inputs a module whose forward computes the loss. Makes things like
     DDP and FSDP work out of the box. This choice also fixes a bug where loss parameters aren't saved and aren't picked
-    up when resuming training from a checkpoint.
+    up when resuming training from a checkpoint. The saved model is `ModelForTraining`, not a `SentenceTransformer`.
 
     Subclassing `SentenceTransformerTrainer` b/c it comes w/ very useful samplers, has optimizer param groups, and it
     handles custom tokenization that we could hook into in the future.
-
-    Note
-    ----
-    - The saved model is not what should be used directly for inference. Save `.encoder` separately.
-    - Should pass `multi_dataset_batch_sampler=MultiDatasetBatchSamplers.PROPORTIONAL` to get some interleaving of
-      projects across batches, while keeping the batch size high to average each gradient over many candidates for each
-      query.
     """
 
     model: ModelForTraining  # type: ignore[assignment]
@@ -431,7 +411,7 @@ class Trainer(SentenceTransformerTrainer):
         seed: int = 0,
     ) -> BatchSampler:
         """
-        Returns a sampler for a single dataset/project. By default, returns a SequentialSampler for more cache hits in
+        Returns a sampler for a single dataset/project. By default, returns a `SequentialSampler` for more cache hits in
         each batch, as each batch is assumed to be sorted by query string.
         """
         sampler = (
@@ -512,8 +492,7 @@ class Trainer(SentenceTransformerTrainer):
         Stacktrace lengths are intentionally variant, ranging from 10 tokens to 8192 tokens.
         Reduce the chance of OOM by splitting `inputs` into sub-batches and accumulating gradients.
 
-        Couldn't get flash-attn installed, so can't use varlen. It's easier for my patience to take the throughput hit
-        than it is for my brain to hurt by slogging through the obscure chain of GCC errors I was getting.
+        Couldn't get flash-attn installed, so can't use varlen. Was getting an obscure chain of GCC errors.
         """
         # NOTE: training_step corresponds to one optimizer.step call and is wrapped in a no_sync context by accelerate.
         model.train()
@@ -788,7 +767,7 @@ def make_trainer(
     else:
         raise ValueError(f"Unknown loss_type: {training_config.loss_type}")
 
-    # Sigmoid loss has learnable params (log_scale, bias) with custom LRs; contrastive has none.
+    # Sigmoid loss has learnable params (log_scale, bias) with custom learning rates
     learning_rate_mapping = training_config.learning_rate_mapping if training_config.loss_type == "sigmoid" else {}
 
     model_for_training = ModelForTraining(encoder=model, loss=loss)

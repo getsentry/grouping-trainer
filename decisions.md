@@ -55,7 +55,7 @@ matter much
 here](https://github.com/getsentry/grouping-trainer/tree/main/eval/comparisons/test_full3/grouped-scan_dim768_vs_random-scan_dim768).)
 This is mitigated by pre-sorting each Sentry project by stacktrace, having the batch-sampler pick a single project per
 GPU, and having `ModelForTraining.encode` gather deduplicated embeddings in the forwards pass and scatter them in the
-backwards pass. This dance, courtesy of torch's autograd, cuts training time by ~2.8x.
+backwards pass. This dance cuts training time by ~2.8x.
 
 The 2005 `ContrastiveLoss` outperformed `SigmoidLoss`. I haven't studied this result much yet, e.g., confirming if this
 is caused by `ContrastiveLoss` being more forgiving by comparing it to a label-smoothed `SigmoidLoss`.
