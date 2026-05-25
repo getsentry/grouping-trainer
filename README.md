@@ -88,8 +88,6 @@ bin/gtlist
 And SSH in:
 
 ```bash
-bin/gtssh your-instance
-# Override the zone if needed
 bin/gtssh your-instance your-instance-zone
 ```
 
