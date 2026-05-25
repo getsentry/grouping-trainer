@@ -1,9 +1,5 @@
 """
-MLM pretraining building blocks for continuing pretraining of ModernBERT-large on Sentry-grouping LLM analyses
-(`prompt` + `thinking_output` + `response_output` joined per row with the tokenizer's sep_token).
-
-DDP works out of the box — HF `Trainer` reads the distributed env vars set by `accelerate launch` /  `torchrun` and
-shards the dataloader with a `DistributedSampler`. The repo-root `pretrain.py` is the launch entrypoint.
+Continue MLM pretraining on full grouping labels: `prompt[SEP]thinking_output[SEP]response_output`
 """
 
 import gc
@@ -11,7 +7,6 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import numpy as np
 import polars as pl
 import torch
 from datasets import Dataset
@@ -33,19 +28,18 @@ import grouping_trainer as gt
 logger = logging.getLogger(__name__)
 
 
-def load_pretraining_texts(
+def load_texts(
     sep_token: str,
     paths: tuple[str, ...] = gt.data.DEFAULT_PRETRAIN_PATHS,
     sample_size: int | None = None,
     n_rows_per_csv: int | None = None,
 ) -> list[str]:
     """
-    `prompt` + `thinking_output` + `response_output` columns joined by `sep_token`.
+    Returns a list of these texts:
 
-    `gt.data.load_train_df` enforces that all three columns are populated for non-synthetic rows, so a plain
-    `concat_str` (no `ignore_nulls`) is safe.
-
-    `n_rows_per_csv` is a laptop-sanity knob — see `gt.data.load_train_df`.
+    ```
+    prompt[SEP]thinking_output[SEP]response_output
+    ```
     """
     df = gt.data.load_train_df(paths=paths, sample_size=sample_size, n_rows_per_csv=n_rows_per_csv)
 
@@ -61,22 +55,6 @@ def load_pretraining_texts(
         .unique(maintain_order=True)["text"]
         .to_list()
     )
-
-
-def compute_seq_length_percentiles(
-    texts: list[str],
-    tokenizer: PreTrainedTokenizerBase,
-    percentiles: tuple[float, ...] = (50.0, 90.0, 95.0, 99.0, 99.9, 100.0),
-) -> dict[float, int]:
-    """
-    Untruncated-tokenize `texts` and log + return token-length percentiles. Use to pick `max_seq_length` from data:
-    truncating the long tail trades a tiny amount of signal for a large memory-headroom win under padded attention.
-    """
-    lengths = np.array([len(input_ids) for input_ids in tokenizer(texts, truncation=False)["input_ids"]])
-    percentile_to_length = {p: int(np.percentile(lengths, p)) for p in percentiles}
-    summary = ", ".join(f"p{p:g}={length:,}" for p, length in percentile_to_length.items())
-    logger.info(f"Sequence length over {len(texts):,} texts: {summary}")
-    return percentile_to_length
 
 
 def tokenize_for_mlm(
@@ -113,7 +91,7 @@ class PretrainingConfig(BaseModel):
     # Training args
     global_train_batch_size: int = 8
     gradient_accumulation_steps: int = 1
-    learning_rate: float = 5e-5  # TODO: ModernBERT started w/ 5e-4. Trapezoidal schedule
+    learning_rate: float = 5e-4  # 5e-5 was much slower. ModernBERT started w/ 5e-4
     weight_decay: float = 1e-5
     warmup_ratio: float = 0.05
     num_train_epochs: float = 1.0
@@ -173,11 +151,6 @@ def make_pretrainer(
     pretraining_config: PretrainingConfig,
     run_name: str | None = None,
 ) -> Trainer:
-    """
-    Build a HuggingFace `Trainer` for MLM continued pretraining. DDP works out of the box when launched under
-    `torchrun` / `accelerate launch` — `Trainer` reads the distributed env vars and shards the dataloader with a
-    `DistributedSampler`.
-    """
     if run_name is None:
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         run_name = f"{timestamp}-{pretraining_config.run_shortname}"
@@ -190,7 +163,7 @@ def make_pretrainer(
     model, tokenizer = _load_model_and_tokenizer(pretraining_config.base_model)
     assert tokenizer.sep_token is not None, f"Tokenizer for {pretraining_config.base_model} has no sep_token"
 
-    texts = load_pretraining_texts(
+    texts = load_texts(
         sep_token=tokenizer.sep_token,
         paths=pretraining_config.training_csvs,
         sample_size=pretraining_config.sample_size,
@@ -207,7 +180,7 @@ def make_pretrainer(
     eval_enabled = pretraining_config.eval_sample_size is not None and not pretraining_config.sort_by_seq_length_desc
     dataset_val: Dataset | None = None
     if eval_enabled:
-        eval_texts = load_pretraining_texts(
+        eval_texts = load_texts(
             sep_token=tokenizer.sep_token,
             paths=gt.data.DEFAULT_VAL_PATHS,
             sample_size=pretraining_config.eval_sample_size,
