@@ -12,7 +12,6 @@ import subprocess
 import warnings
 
 import torch
-import wandb
 from tap import tapify
 
 import grouping_trainer as gt
@@ -72,26 +71,19 @@ def run(
         self-delete. Better odds than a single-zone flex-start when capacity is dry. Mutually exclusive with
         --sync_start
     """
-    if not tiny_run:
-        assert run_shortname is not None, "run_shortname is required for full pretraining runs"
-    if run_shortname is not None:
-        gt.launch.check_run_shortname(run_shortname)
-
-    run_name = os.environ.get(_RUN_NAME_ENV_VAR) or gt.launch.run_name_from_shortname(run_shortname or "tiny-pretrain")
-    run_gcs_dir = f"gs://{os.environ['GROUPING_TRAINER_BUCKET']}/runs/{run_name}"
-    run_console_url = run_gcs_dir.replace("gs://", "https://console.cloud.google.com/storage/browser/", 1)
-
-    gt.logging.configure_logging(run_name=run_name, process_type="pretrain")
-
-    logger.info(f"Run artifacts: {run_console_url}")
-    if (wandb_entity := os.environ.get("WANDB_ENTITY")) and (wandb_project := os.environ.get("WANDB_PROJECT")):
-        logger.info(f"W&B logs: https://wandb.ai/{wandb_entity}/{wandb_project}/runs/{run_name}/logs")
+    run_name, run_gcs_dir = gt.launch.bootstrap_run(
+        run_shortname=run_shortname,
+        default_shortname=f"tiny-{gt.launch.JobType.PRETRAIN}",
+        run_name_env_var=_RUN_NAME_ENV_VAR,
+        process_type="pretrain",
+        tiny_run=tiny_run,
+    )
 
     if gpu is not None:
         gt.launch.run_argv_remotely(
             gpu=gpu,
             job_type=gt.launch.JobType.PRETRAIN,
-            name_suffix=run_shortname or "tiny-pretrain",
+            name_suffix=run_shortname or f"tiny-{gt.launch.JobType.PRETRAIN}",
             sync_start=sync_start,
             multi_flex_start=multi_flex_start,
             zone=zone,
@@ -106,7 +98,7 @@ def run(
 
     if tiny_run:
         pretraining_config = gt.pretrain.PretrainingConfig(
-            run_shortname=run_shortname or "tiny-pretrain",
+            run_shortname=run_shortname or f"tiny-{gt.launch.JobType.PRETRAIN}",
             base_model=base_model,
             global_train_batch_size=2,
             learning_rate=learning_rate,
@@ -141,16 +133,7 @@ def run(
 
     if pretrainer.accelerator.is_main_process:
         gt.launch.upload_run_metadata(run_gcs_dir, pretraining_config, config_filename="pretraining_config.json")
-
-        wandb.login()
-        wandb.init(
-            id=run_name,
-            name=pretrainer.args.run_name,
-            group=pretrainer.args.run_name,
-            settings=wandb.Settings(mode="shared", x_primary=True, x_label="pretrain"),
-        )
-        assert wandb.run is not None
-
+        gt.launch.init_wandb(run_name=run_name, x_label="pretrain")
         pretrainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run_gcs_dir))
 
     warnings.filterwarnings(

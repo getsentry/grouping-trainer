@@ -9,7 +9,6 @@ import subprocess
 import warnings
 
 import torch
-import wandb
 from tap import tapify
 
 import grouping_trainer as gt
@@ -77,32 +76,23 @@ def run(
         self-delete. Better odds than a single-zone flex-start when capacity is dry. Mutually exclusive with
         --sync_start
     """
-    if not tiny_run:
-        assert run_shortname is not None, "run_shortname is required for full training runs"
-    if run_shortname is not None:
-        gt.launch.check_run_shortname(run_shortname)
-
     # Fail fast on a typo'd gs:// model URI before wasting time launching training.
     if gt.utils.is_gcs_uri(base_model):
         gt.utils.assert_gcs_path_exists(base_model)
 
-    # Generate run_name up front so we can log the artifact URL locally before auto-launching. On the remote, re-use the
-    # local run_name via env var so both sides log the same GCS path (rather than each generating its own timestamp).
-    run_name = os.environ.get(_RUN_NAME_ENV_VAR) or gt.launch.run_name_from_shortname(run_shortname or "tiny-run")
-    run_gcs_dir = f"gs://{os.environ['GROUPING_TRAINER_BUCKET']}/runs/{run_name}"
-    run_console_url = run_gcs_dir.replace("gs://", "https://console.cloud.google.com/storage/browser/", 1)
-
-    gt.logging.configure_logging(run_name=run_name, process_type="training")
-
-    logger.info(f"Run artifacts: {run_console_url}")
-    if (wandb_entity := os.environ.get("WANDB_ENTITY")) and (wandb_project := os.environ.get("WANDB_PROJECT")):
-        logger.info(f"W&B logs: https://wandb.ai/{wandb_entity}/{wandb_project}/runs/{run_name}/logs")
+    run_name, run_gcs_dir = gt.launch.bootstrap_run(
+        run_shortname=run_shortname,
+        default_shortname=f"tiny-{gt.launch.JobType.TRAIN}",
+        run_name_env_var=_RUN_NAME_ENV_VAR,
+        process_type="training",
+        tiny_run=tiny_run,
+    )
 
     if gpu is not None:
         gt.launch.run_argv_remotely(
             gpu=gpu,
             job_type=gt.launch.JobType.TRAIN,
-            name_suffix=run_shortname or "tiny-run",
+            name_suffix=run_shortname or f"tiny-{gt.launch.JobType.TRAIN}",
             sync_start=sync_start,
             multi_flex_start=multi_flex_start,
             zone=zone,
@@ -120,7 +110,7 @@ def run(
 
     if tiny_run:
         training_config = gt.train.TrainingConfig(
-            run_shortname=run_shortname or "tiny-run",
+            run_shortname=run_shortname or f"tiny-{gt.launch.JobType.TRAIN}",
             global_train_batch_size=2,
             per_device_token_budget=64,
             gradient_checkpointing=True,
@@ -153,20 +143,12 @@ def run(
 
     if trainer.accelerator.is_main_process:
         gt.launch.upload_run_metadata(run_gcs_dir, training_config, config_filename="training_config.json")
-
-        wandb.login()
-        wandb.init(
-            id=run_name,
-            name=trainer.args.run_name,
-            group=trainer.args.run_name,
-            settings=wandb.Settings(mode="shared", x_primary=True, x_label="train"),
-        )
-        assert wandb.run is not None
+        gt.launch.init_wandb(run_name=run_name, x_label="train")
 
         # Start eval poller on a separate machine. WANDB_ENTITY/WANDB_PROJECT are forwarded by gce_vm.
         eval_command = (
             f"python eval/eval_poller.py --run_gcs_dir {run_gcs_dir} --base_model {base_model} "
-            f"--wandb_run_id {wandb.run.id} "
+            f"--wandb_run_id {run_name} "
             f"--loss_type {training_config.loss_type} --contrastive_margin {training_config.contrastive_margin}"
         )
         if use_text_prefix:

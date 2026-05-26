@@ -27,6 +27,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
+import wandb
 from pydantic import BaseModel, ConfigDict
 from tap import tapify
 
@@ -105,6 +106,57 @@ def check_run_shortname(run_shortname: str) -> None:
             f"run_shortname {run_shortname!r} is {len(run_shortname)} chars; must be <= {shortname_max_length} so the "
             f"full GCE instance name fits in {gce_instance_name_max_length} chars."
         )
+
+
+def bootstrap_run(
+    *,
+    run_shortname: str | None,
+    default_shortname: str,
+    run_name_env_var: str,
+    process_type: str,
+    tiny_run: bool,
+) -> tuple[str, str]:
+    """
+    Returns `(run_name, run_gcs_dir)`, e.g., for `run_shortname="my-run"`:
+
+        ```
+        (
+            "2026-05-25-12-34-56-my-run",
+            "gs://my-bucket/runs/2026-05-25-12-34-56-my-run"
+        )
+        ```
+
+    You can then set `env_var_to_value={run_name_env_var: run_name}` to propagate the `run_name` to the remote command,
+    and use `run_gcs_dir` to log the GCS path.
+    """
+    if not tiny_run:
+        assert run_shortname is not None, "run_shortname is required for non-tiny runs"
+    if run_shortname is not None:
+        check_run_shortname(run_shortname)
+
+    # Resolve run_name so local and remote log the same GCS path
+    run_name = os.environ.get(run_name_env_var) or run_name_from_shortname(run_shortname or default_shortname)
+    run_gcs_dir = f"gs://{os.environ['GROUPING_TRAINER_BUCKET']}/runs/{run_name}"
+    run_console_url = run_gcs_dir.replace("gs://", "https://console.cloud.google.com/storage/browser/", 1)
+
+    gt.logging.configure_logging(run_name=run_name, process_type=process_type)
+
+    logger.info(f"Run artifacts: {run_console_url}")
+    if (wandb_entity := os.environ.get("WANDB_ENTITY")) and (wandb_project := os.environ.get("WANDB_PROJECT")):
+        logger.info(f"W&B logs: https://wandb.ai/{wandb_entity}/{wandb_project}/runs/{run_name}/logs")
+
+    return run_name, run_gcs_dir
+
+
+def init_wandb(*, run_name: str, x_label: str) -> None:
+    wandb.login()
+    wandb.init(
+        id=run_name,
+        name=run_name,
+        group=run_name,
+        settings=wandb.Settings(mode="shared", x_primary=True, x_label=x_label),
+    )
+    assert wandb.run is not None
 
 
 class GpuConfig(BaseModel):
