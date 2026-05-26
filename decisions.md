@@ -4,13 +4,14 @@
 
 TLDR: We invested in and trust the labels.
 
-The data were sampled from the previous (v1) embedding model's decision boundary. These pairs are more interesting and
-are inherently the ones where a successor stands to gain. Easy stacktrace pairs are likely easy for every model. These
-pairs typically have completely different errors and frames. Sampling weights decreased as the distance from v1's
-boundary increased. Pairs were formed via a self-join per Sentry project. There are no other constraints around the
-data's structure besides a limit on the number of stacktraces fetched from table B for each stacktrace in table A of the
-self-join, and a distance range which was determined via eye-test: no pairs have a v1 cosine distance outside the range
-[0.001, 0.50]. A stacktrace can be similar or dissimilar to any number of other stacktraces. This dataset has:
+The data were largely sampled from the previous (v1) embedding model's decision boundary. These pairs are more
+interesting and are the ones where a successor stands to gain the most. Easy stacktrace pairs are likely easy for every
+model. Easy negatives typically have completely different errors and frames, and easy positives are lexically close.
+Sampling weights decreased as the distance from v1's boundary increased. Pairs were formed via a self-join per Sentry
+project. There are no other constraints around the data's structure besides a limit on the number of stacktraces fetched
+from table B for each stacktrace in table A of the self-join, and a distance range which was determined via eye-test: no
+pairs have a v1 cosine distance outside the range [0.001, 0.50]. A stacktrace can be similar or dissimilar to any number
+of other stacktraces. This dataset has:
 
   - Some stacktraces which are similar to 20 others
   - Some which are dissimilar to 20
@@ -24,12 +25,12 @@ generally err on the side of avoiding overgrouping—wrongly grouping two errors
 costly; Sentry's job is to tell you that something in prod broke.
 
 There are many ways to train an embeddings model from here. You could, e.g., collate in-batch negatives and train using
-symmetric MNRL—the "standard" loss today. The immediate problem is that in-batch negatives can easily be false negatives
-in this dataset. Across pairs and w/in a project, there are plenty of similar stacktraces that aren't explicitly labeled
-as similar. MNRL is especially sensitive to the false negative rate. This sensitivity is good when you're training for
-the globally sparse similarity structures encountered in RAG, but bad when you're training for fine-grained stacktrace
-similarity w/in a Sentry project. GISTEmbed aims to address this kind of issue, but there aren't good guide models for
-this niche task. `gemini-embedding-2`, e.g.,
+symmetric MNRL—the standard embeddings loss today. The immediate problem is that in-batch negatives can easily be false
+negatives in this dataset. Across pairs and w/in a project, there are plenty of similar stacktraces that aren't
+explicitly labeled as similar. MNRL is especially sensitive to the false negative rate. This sensitivity is good when
+you're training for the globally sparse similarity structures encountered in RAG, but bad when you're training for
+fine-grained stacktrace similarity w/in a Sentry project. GISTEmbed aims to address this kind of issue, but there aren't
+good guide models for this niche task. `gemini-embedding-2`, e.g.,
 [flops](https://github.com/getsentry/grouping-trainer/tree/main/eval/comparisons/test_full3/gemini-cluster_dim3072_vs_large-no-prefix_dim64).
 
 You could instead have the batch sampler pair up stacktraces from different Sentry projects to avoid false negatives.
@@ -38,12 +39,13 @@ test-time, the DB query doesn't compare stacktraces across projects. A more basi
 procedure needs to handle stacktraces that aren't similar to anything in the dataset or are similar to multiple
 stacktraces by padding and masking the loss, or adding a pairwise loss term over lone pairs.
 
-Another idea is to use a triplet loss. Triplet sampling is well-defined when an input is classified. It's ambiguous for
-our dataset which has variable numbers of similar and dissimilar stacktraces. I'm not sure there's a principled way to
-select from the many combinations of triplets without dropping explicitly labeled stacktrace relationships.
+Another standard approach is to use a triplet loss. Triplet sampling is well-defined when an input is classified. It's
+ambiguous for our dataset which has variable numbers of similar and dissimilar stacktraces. I'm not sure there's a
+principled way to select from the many combinations of triplets without dropping explicitly labeled stacktrace
+relationships.
 
 In general, non-pairwise losses coerce a jagged but rich similarity structure into a rectangular one. The data
-intentionally contains hard positives and hard negatives. Pairwise losses put their faith in the data and accomodate the
+intentionally contains hard positives and hard negatives. Pairwise losses put their faith in our data and accomodate the
 jagged structure by melting it into a rectangular one.
 
 Pairwise losses do have downsides. A statistical downside is that we don't have many negatives per positive, which is
