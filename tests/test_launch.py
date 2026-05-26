@@ -67,3 +67,38 @@ def test_shortname_from_run_name(run_name: str, expected: str) -> None:
 def test_run_name_shortname_roundtrip(shortname: str) -> None:
     """`shortname_from_run_name` should recover the shortname from a freshly built run_name."""
     assert gt.launch.shortname_from_run_name(gt.launch.run_name_from_shortname(shortname)) == shortname
+
+
+@pytest.mark.parametrize(
+    "shortname",
+    [
+        "a",  # minimum length
+        "ddp",
+        "tiny-run",
+        "multi-word-shortname",
+        "abc123",  # digits after a letter
+        "a-1",  # ends in a digit
+        "a" * 35,  # exactly at the max length
+    ],
+)
+def test_check_run_shortname_valid(shortname: str) -> None:
+    gt.launch.check_run_shortname(shortname)
+
+
+@pytest.mark.parametrize(
+    "shortname",
+    [
+        "",  # empty
+        "Ddp",  # uppercase
+        "1ddp",  # starts with a digit
+        "-ddp",  # starts with a hyphen
+        "ddp-",  # ends with a hyphen
+        "my_run",  # underscore — strict mode rejects
+        "my.run",  # disallowed punctuation
+        "my run",  # whitespace
+        "a" * 36,  # one over the max length
+    ],
+)
+def test_check_run_shortname_invalid(shortname: str) -> None:
+    with pytest.raises(ValueError):
+        gt.launch.check_run_shortname(shortname)

@@ -74,6 +74,8 @@ def run(
     """
     if not tiny_run:
         assert run_shortname is not None, "run_shortname is required for full pretraining runs"
+    if run_shortname is not None:
+        gt.launch.check_run_shortname(run_shortname)
 
     run_name = os.environ.get(_RUN_NAME_ENV_VAR) or gt.launch.run_name_from_shortname(run_shortname or "tiny-pretrain")
     run_gcs_dir = f"gs://{os.environ['GROUPING_TRAINER_BUCKET']}/runs/{run_name}"

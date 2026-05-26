@@ -79,6 +79,8 @@ def run(
     """
     if not tiny_run:
         assert run_shortname is not None, "run_shortname is required for full training runs"
+    if run_shortname is not None:
+        gt.launch.check_run_shortname(run_shortname)
 
     # Fail fast on a typo'd gs:// model URI before wasting time launching training.
     if gt.utils.is_gcs_uri(base_model):

@@ -16,6 +16,7 @@ no networking or region dependence. They communicate via GCS if at all.
 import contextlib
 import logging
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -81,6 +82,29 @@ def shortname_from_run_name(run_name: str) -> str:
 def check_run_has_model_for_inference(run_gcs_dir: str) -> None:
     path_inference = f"{run_gcs_dir.rstrip('/')}/inference/"
     subprocess.run(["gcloud", "storage", "ls", path_inference], check=True, stdout=subprocess.DEVNULL)
+
+
+def check_run_shortname(run_shortname: str) -> None:
+    """
+    Validate that `run_shortname` is usable as the suffix of a GCE instance name (see `gce_vm`). Strict: no underscores
+    (use hyphens), no uppercase, no leading digit, no trailing hyphen.
+
+    See https://docs.cloud.google.com/compute/docs/naming-resources.
+    """
+    # Worst-case prefix is `gt-{gpu}-{job_type}-`. A limit of 35 should be fine
+    gce_instance_name_max_length = 63
+    shortname_max_length = 35
+    pattern = r"[a-z]([-a-z0-9]*[a-z0-9])?"
+    if not re.fullmatch(pattern, run_shortname):
+        raise ValueError(
+            f"run_shortname {run_shortname!r} is not a valid GCE instance name suffix. Must match {pattern!r}: "
+            "lowercase letters, digits, and hyphens; must start with a letter and not end with a hyphen."
+        )
+    if len(run_shortname) > shortname_max_length:
+        raise ValueError(
+            f"run_shortname {run_shortname!r} is {len(run_shortname)} chars; must be <= {shortname_max_length} so the "
+            f"full GCE instance name fits in {gce_instance_name_max_length} chars."
+        )
 
 
 class GpuConfig(BaseModel):
