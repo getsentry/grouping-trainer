@@ -49,7 +49,7 @@ def run(
     ----------
     base_model
         HuggingFace model ID or local path for the base encoder, or a `gs://...` path to a custom model directory in our
-        bucket (downloaded into `_base_models/` on the instance). Others we've tried:
+        bucket, e.g., the checkpoint to a model pretrained using pretrain.py. Others we've tried:
         Alibaba-NLP/gte-modernbert-base, Qwen/Qwen3-Embedding-0.6B, jinaai/jina-embeddings-v5-text-nano-text-matching
     run_shortname
         Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp.
