@@ -1,9 +1,9 @@
 """
-Continues MLM pretraining of a base encoder (default: ModernBERT-large) on Sentry-grouping LLM analyses
-(per-row `prompt` + `thinking_output` + `response_output`, joined with the tokenizer's sep_token).
+Continues MLM pretraining of a base encoder on Sentry-grouping LLM prompts and completions:
+`prompt[SEP]thinking_output[SEP]response_output`
 
-Logs to wandb. Writes checkpoints + the final model to GCS. Unlike `train.py`, there's no async eval — the MLM loss
-in wandb is the only training-time signal.
+Logs to wandb. Writes checkpoints + the final model to GCS. Unlike `train.py`, there's no async eval. Just MLM loss on a
+subsample of val data run sync.
 """
 
 import logging
