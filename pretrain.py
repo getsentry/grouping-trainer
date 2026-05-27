@@ -43,8 +43,8 @@ def run(
     Parameters
     ----------
     base_model
-        HuggingFace model ID, local path, or `gs://...` path to a custom model directory in our bucket
-        (downloaded into `_base_models/` on the instance).
+        HuggingFace model ID, local path, or `gs://...` path to a custom model directory in our bucket (downloaded into
+        `_base_models/` on the instance).
     run_shortname
         Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp. Not required when
         `--resume_from` is given (derived from the resumed run's name).
@@ -73,8 +73,8 @@ def run(
     sync_start
         If False (default), flex-starts the instance. `--sync_start` uses on-demand pricing.
     multi_flex_start
-        Fan out async flex-start submits across 10 zones simultaneously; first VM to boot claims a GCS lock and the rest
-        self-delete. Better odds than a single-zone flex-start when capacity is dry. Mutually exclusive with
+        Fan out async flex-start submits across many zones simultaneously; first VM to boot claims a GCS lock and the
+        rest self-delete. Better odds than a single-zone flex-start when capacity is dry. Mutually exclusive with
         --sync_start
     """
     if resume_from is None and gt.utils.is_gcs_uri(base_model):

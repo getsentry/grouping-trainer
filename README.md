@@ -61,7 +61,7 @@ python train.py --gpu h100-4 --run_shortname my-run --multi_flex_start
 ```
 
 Adding `--multi_flex_start` [flex-starts](https://docs.cloud.google.com/compute/docs/instances/about-flex-start-vms)
-instances in at most 10 zones. The first to boot w/in 2 hours survives. The rest self-delete.
+instances across many zones. The first to boot w/in 2 hours survives. The rest self-delete.
 
 
 ### Debug

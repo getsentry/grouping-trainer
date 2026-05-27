@@ -77,8 +77,8 @@ def run(
         If False (default), flex-starts the instance—GCP waits up to 2h to find one. `--sync_start` uses on-demand
         pricing and finds an instance in any zone, as flex-starting often can't find instances in time.
     multi_flex_start
-        Fan out async flex-start submits across 10 zones simultaneously; first VM to boot claims a GCS lock and the rest
-        self-delete. Better odds than a single-zone flex-start when capacity is dry. Mutually exclusive with
+        Fan out async flex-start submits across many zones simultaneously; first VM to boot claims a GCS lock and the
+        rest self-delete. Better odds than a single-zone flex-start when capacity is dry. Mutually exclusive with
         --sync_start
     """
     if resume_from is None and gt.utils.is_gcs_uri(base_model):
