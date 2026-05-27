@@ -47,6 +47,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
     Python is too slow for small models w/ batch size 1. Rm its overhead by compiling. 1.5-3x speedup for our models.
     Cost: warming up can take minutes.
 
+    ONNX didn't work. See the note at the top of benchmark/run.py.
+
     Assumes the tokenizer input type is a list of strings.
     """
 

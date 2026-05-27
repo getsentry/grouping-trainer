@@ -158,7 +158,7 @@ def assert_gcs_path_exists(uri: str) -> None:
     )
 
 
-def _download_base_model_from_gcs(uri: str) -> str:
+def download_base_model_from_gcs(uri: str) -> str:
     """
     Rsync `uri` (a `gs://...` directory) into `_base_models/<basename>/` relative to CWD and return the local path.
     """
@@ -180,7 +180,7 @@ def encoder_from_base(base_model: str, use_text_prefix: bool = False) -> Sentenc
     supported.
     """
     if is_gcs_uri(base_model):
-        base_model = _download_base_model_from_gcs(base_model)
+        base_model = download_base_model_from_gcs(base_model)
 
     if base_model == "jinaai/jina-embeddings-v5-text-nano-text-matching":
         return SentenceTransformer(

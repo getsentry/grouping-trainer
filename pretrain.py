@@ -16,14 +16,13 @@ from tap import tapify
 
 import grouping_trainer as gt
 
-_RUN_NAME_ENV_VAR = "GROUPING_TRAINER_PRETRAIN_RUN_NAME"
-
 logger = logging.getLogger(__name__)
 
 
 def run(
     base_model: str = "answerdotai/ModernBERT-large",
     run_shortname: str | None = None,
+    resume_from: str | None = None,
     global_train_batch_size: int = 8,
     learning_rate: float = 5e-5,
     num_train_epochs: float = 1.0,
@@ -44,9 +43,16 @@ def run(
     Parameters
     ----------
     base_model
-        HuggingFace model ID or local path for the base encoder.
+        HuggingFace model ID, local path, or `gs://...` path to a custom model directory in our bucket
+        (downloaded into `_base_models/` on the instance).
     run_shortname
-        Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp.
+        Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp. Not required when
+        `--resume_from` is given (derived from the resumed run's name).
+    resume_from
+        Resume from a previously-uploaded run. If it's a run dir (`gs://$GROUPING_TRAINER_BUCKET/runs/<run_name>`) then
+        the latest checkpoint is picked. Otherwise you specify the checkpoint
+        (`gs://$GROUPING_TRAINER_BUCKET/runs/<run_name>/checkpoint-<step>`). Reuses the original run_name, GCS run dir,
+        and W&B run id.
     global_train_batch_size
         Total batch size across all devices. Only used for non-tiny runs.
     max_seq_length
@@ -71,23 +77,25 @@ def run(
         self-delete. Better odds than a single-zone flex-start when capacity is dry. Mutually exclusive with
         --sync_start
     """
-    run_name, run_gcs_dir = gt.launch.bootstrap_run(
-        run_shortname=run_shortname,
-        default_shortname=f"tiny-{gt.launch.JobType.PRETRAIN}",
-        run_name_env_var=_RUN_NAME_ENV_VAR,
-        process_type="pretrain",
-        tiny_run=tiny_run,
-    )
+    if resume_from is None and gt.utils.is_gcs_uri(base_model):
+        gt.utils.assert_gcs_path_exists(base_model)
+
+    if resume_from is None:
+        run_shortname = run_shortname or (f"tiny-{gt.launch.JobType.PRETRAIN}" if tiny_run else None)
+
+    run = gt.launch.bootstrap_run(run_shortname=run_shortname, process_type="pretrain", resume_from=resume_from)
+
+    if resume_from is not None:
+        base_model = gt.resume.read_uploaded_config(run.gcs_dir, "pretraining_config.json")["base_model"]
 
     if gpu is not None:
         gt.launch.run_argv_remotely(
             gpu=gpu,
             job_type=gt.launch.JobType.PRETRAIN,
-            name_suffix=run_shortname or f"tiny-{gt.launch.JobType.PRETRAIN}",
+            run_name=run.name,
             sync_start=sync_start,
             multi_flex_start=multi_flex_start,
             zone=zone,
-            env_var_to_value={_RUN_NAME_ENV_VAR: run_name},
         )
         return
 
@@ -98,7 +106,7 @@ def run(
 
     if tiny_run:
         pretraining_config = gt.pretrain.PretrainingConfig(
-            run_shortname=run_shortname or f"tiny-{gt.launch.JobType.PRETRAIN}",
+            run_shortname=run.shortname,
             base_model=base_model,
             global_train_batch_size=2,
             learning_rate=learning_rate,
@@ -111,12 +119,11 @@ def run(
             eval_sample_size=10,
         )
     else:
-        assert run_shortname is not None
         pretraining_config = gt.pretrain.PretrainingConfig(
-            run_shortname=run_shortname,
+            run_shortname=run.shortname,
             base_model=base_model,
             global_train_batch_size=global_train_batch_size,
-            mlm_probability=0.5,
+            mlm_probability=0.3,
             learning_rate=learning_rate,
             num_train_epochs=num_train_epochs,
             max_seq_length=max_seq_length,
@@ -129,36 +136,41 @@ def run(
     if pretraining_config.eval_sample_size is not None:
         gt.data.ensure_local(gt.data.DEFAULT_VAL_PATHS)
 
-    pretrainer = gt.pretrain.make_pretrainer(pretraining_config, run_name=run_name)
+    pretrainer = gt.pretrain.make_pretrainer(pretraining_config, run_name=run.name, is_resumed=resume_from is not None)
+
+    checkpoint_path_local = (
+        gt.resume.download_for_resume(pretrainer, run.gcs_dir, run.checkpoint_gcs_uri)
+        if resume_from is not None
+        else None
+    )
 
     if pretrainer.accelerator.is_main_process:
-        gt.launch.upload_run_metadata(run_gcs_dir, pretraining_config, config_filename="pretraining_config.json")
-        gt.launch.init_wandb(run_name=run_name, x_label="pretrain")
-        pretrainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run_gcs_dir))
+        gt.launch.upload_run_metadata(run.gcs_dir, pretraining_config, config_filename="pretraining_config.json")
+        gt.launch.init_wandb(run_name=run.name, x_label="pretrain", resume_from=resume_from)
+        pretrainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run.gcs_dir))
 
     warnings.filterwarnings(
         "ignore",
         message=".*torch.utils.checkpoint: the use_reentrant parameter.*",
         category=UserWarning,
     )
-
-    logger.info("Pretraining - start")
-    pretrainer.train(resume_from_checkpoint=pretraining_config.resume_from_checkpoint)
-    logger.info("Pretraining - complete")
+    logger.info("Pretraining started")
+    pretrainer.train(resume_from_checkpoint=checkpoint_path_local)
+    logger.info("Pretraining completed")
 
     if pretrainer.accelerator.is_main_process:
         assert pretrainer.args.output_dir is not None
         dir_final = os.path.join(pretrainer.args.output_dir, "final")
         pretrainer.save_model(dir_final)
         subprocess.run(
-            ["gcloud", "storage", "cp", "-r", "wandb", f"{run_gcs_dir}/wandb"],
+            ["gcloud", "storage", "cp", "-r", "wandb", f"{run.gcs_dir}/wandb"],
             check=True,
         )
         subprocess.run(
-            ["gcloud", "storage", "rsync", "-r", dir_final, f"{run_gcs_dir}/final"],
+            ["gcloud", "storage", "rsync", "-r", dir_final, f"{run.gcs_dir}/final"],
             check=True,
         )
-        logger.info(f"Uploaded wandb artifacts and final model to {run_gcs_dir}")
+        logger.info(f"Uploaded wandb artifacts and final model to {run.gcs_dir}")
 
 
 if __name__ == "__main__":

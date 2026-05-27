@@ -82,7 +82,7 @@ class PretrainingConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_shortname: str
-    base_model: str = "answerdotai/ModernBERT-large"
+    base_model: str
 
     # MLM
     mlm_probability: float = 0.3  # ModernBERT was pretrained with 30%
@@ -96,7 +96,6 @@ class PretrainingConfig(BaseModel):
     warmup_ratio: float = 0.05
     num_train_epochs: float = 1.0
     gradient_checkpointing: bool = True  # ~free wall-clock with seq_len up to 8192 on ModernBERT-large
-    resume_from_checkpoint: str | bool | None = None
 
     # Data
     training_csvs: tuple[str, ...] = gt.data.DEFAULT_PRETRAIN_PATHS
@@ -113,6 +112,8 @@ class PretrainingConfig(BaseModel):
 
 
 def _load_model_and_tokenizer(base_model: str) -> tuple[PreTrainedModel, PreTrainedTokenizerBase]:
+    if gt.utils.is_gcs_uri(base_model):
+        base_model = gt.utils.download_base_model_from_gcs(base_model)
     kwargs_model: dict[str, Any] = {}
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
         kwargs_model |= dict(dtype=torch.bfloat16, attn_implementation="sdpa")
@@ -150,6 +151,7 @@ def _sort_dataset_by_length_desc(dataset: Dataset) -> Dataset:
 def make_pretrainer(
     pretraining_config: PretrainingConfig,
     run_name: str | None = None,
+    is_resumed: bool = False,
 ) -> Trainer:
     if run_name is None:
         timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -160,6 +162,7 @@ def make_pretrainer(
 
     gc.collect()
     torch.cuda.empty_cache()
+    # TODO: when is_resumed, load weights from the checkpoint instead so we skip a redundant gs:// base-model rsync.
     model, tokenizer = _load_model_and_tokenizer(pretraining_config.base_model)
     assert tokenizer.sep_token is not None, f"Tokenizer for {pretraining_config.base_model} has no sep_token"
 
@@ -232,7 +235,7 @@ def make_pretrainer(
             ddp_find_unused_parameters=False,
             eval_strategy="steps" if eval_enabled else "no",
             eval_steps=save_steps if eval_enabled else None,
-            eval_on_start=eval_enabled,
+            eval_on_start=eval_enabled and not is_resumed,
             per_device_eval_batch_size=per_device_train_batch_size,
         ),
         train_dataset=dataset_train,

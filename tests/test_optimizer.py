@@ -17,6 +17,7 @@ type ParamGroup = dict[str, Any]
 def config() -> gt.train.TrainingConfig:
     return gt.train.TrainingConfig(
         run_shortname="cpu-sanity-check",
+        base_model="lightonai/modernbert-embed-large",
         global_train_batch_size=2,
         per_device_token_budget=64,
         gradient_checkpointing=True,

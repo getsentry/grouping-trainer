@@ -25,10 +25,10 @@ import time
 import uuid
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 import wandb
-from pydantic import BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict
 from tap import tapify
 
 import grouping_trainer as gt
@@ -40,6 +40,11 @@ _REMOTE_ENV_VAR = "GROUPING_TRAINER_REMOTE"
 Env var set by `run_argv_remotely()` in the cmd that runs on the remote instance, so the remote knows it shouldn't try
 to re-launch. Callers can check `is_on_remote()` if it wants to avoid launch from remote. The main training job doesn't
 check `is_on_remote()` so that it can launch the eval poller.
+"""
+
+_RUN_NAME_ENV_VAR = "GROUPING_TRAINER_RUN_NAME"
+"""
+Env var forwarded by `run_argv_remotely()` so the remote `bootstrap_run` reuses the local run name.
 """
 
 _IMAGE = "projects/ml-images/global/images/pytorch-2-7-cu128-ubuntu-2404-nvidia-570-v20260323"
@@ -85,12 +90,10 @@ def check_run_has_model_for_inference(run_gcs_dir: str) -> None:
     subprocess.run(["gcloud", "storage", "ls", path_inference], check=True, stdout=subprocess.DEVNULL)
 
 
-def check_run_shortname(run_shortname: str) -> None:
+def check_run_shortname(run_shortname: str) -> str:
     """
-    Validate that `run_shortname` is usable as the suffix of a GCE instance name (see `gce_vm`). Strict: no underscores
-    (use hyphens), no uppercase, no leading digit, no trailing hyphen.
-
-    See https://docs.cloud.google.com/compute/docs/naming-resources.
+    Validate that `run_shortname` is usable as the suffix of a GCE instance name (see `gce_vm`). See
+    https://docs.cloud.google.com/compute/docs/naming-resources.
     """
     # Worst-case prefix is `gt-{gpu}-{job_type}-`. A limit of 35 should be fine
     gce_instance_name_max_length = 63
@@ -104,57 +107,91 @@ def check_run_shortname(run_shortname: str) -> None:
     if len(run_shortname) > shortname_max_length:
         raise ValueError(
             f"run_shortname {run_shortname!r} is {len(run_shortname)} chars; must be <= {shortname_max_length} so the "
-            f"full GCE instance name fits in {gce_instance_name_max_length} chars."
+            f"full GCE instance name comfortably fits in {gce_instance_name_max_length} chars."
         )
+    return run_shortname
+
+
+class RunInfo(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str
+    gcs_dir: str
+    checkpoint_gcs_uri: str | None
+    "Set when `resume_from` pointed at a specific `checkpoint-<step_number>` (rather than the run dir)."
+    shortname: Annotated[str, AfterValidator(check_run_shortname)]
 
 
 def bootstrap_run(
     *,
     run_shortname: str | None,
-    default_shortname: str,
-    run_name_env_var: str,
     process_type: str,
-    tiny_run: bool,
-) -> tuple[str, str]:
+    resume_from: str | None = None,
+) -> RunInfo:
     """
-    Returns `(run_name, run_gcs_dir)`, e.g., for `run_shortname="my-run"`:
+    Returns, e.g., for `run_shortname="my-run"`:
 
         ```
-        (
-            "2026-05-25-12-34-56-my-run",
-            "gs://my-bucket/runs/2026-05-25-12-34-56-my-run"
+        RunInfo(
+            name="2026-05-25-12-34-56-my-run",
+            gcs_dir="gs://$GROUPING_TRAINER_BUCKET/runs/2026-05-25-12-34-56-my-run",
+            checkpoint_gcs_uri=None,
+            shortname="my-run",
         )
         ```
-
-    You can then set `env_var_to_value={run_name_env_var: run_name}` to propagate the `run_name` to the remote command,
-    and use `run_gcs_dir` to log the GCS path.
     """
-    if not tiny_run:
-        assert run_shortname is not None, "run_shortname is required for non-tiny runs"
-    if run_shortname is not None:
-        check_run_shortname(run_shortname)
+    # Check the run name can be unambiguously inferred
+    if (resume_from is not None) and (run_shortname is not None):
+        raise ValueError("Pass either run_shortname or resume_from, not both")
+    if (
+        ((run_name_from_env := os.environ.get(_RUN_NAME_ENV_VAR)) is None)
+        and (resume_from is None)
+        and (run_shortname is None)
+    ):
+        raise ValueError(
+            f"Pass run_shortname or resume_from (or set ${_RUN_NAME_ENV_VAR}—done automatically by --gpu launches)"
+        )
 
-    # Resolve run_name so local and remote log the same GCS path
-    run_name = os.environ.get(run_name_env_var) or run_name_from_shortname(run_shortname or default_shortname)
-    run_gcs_dir = f"gs://{os.environ['GROUPING_TRAINER_BUCKET']}/runs/{run_name}"
-    run_console_url = run_gcs_dir.replace("gs://", "https://console.cloud.google.com/storage/browser/", 1)
+    # Resolve run_name, run_gcs_dir, run_shortname, and (if resume_from is given) checkpoint_gcs_uri
+    if resume_from is not None:
+        run_gcs_dir, checkpoint_gcs_uri = gt.resume.parse_resume_uri(resume_from)
+        run_name = run_gcs_dir.rstrip("/").rsplit("/", 1)[-1]
+        run_shortname = shortname_from_run_name(run_name)
+        gt.utils.assert_gcs_path_exists(checkpoint_gcs_uri or run_gcs_dir)
+    else:
+        if run_name_from_env is None:
+            assert run_shortname is not None
+            run_name = run_name_from_shortname(run_shortname)
+        else:
+            run_name = run_name_from_env
+            if run_shortname is None:
+                run_shortname = shortname_from_run_name(run_name)
+        run_gcs_dir = f"gs://{os.environ['GROUPING_TRAINER_BUCKET']}/runs/{run_name}"
+        checkpoint_gcs_uri = None
 
+    # Log run info locally and remotely
     gt.logging.configure_logging(run_name=run_name, process_type=process_type)
-
+    run_console_url = run_gcs_dir.replace("gs://", "https://console.cloud.google.com/storage/browser/", 1)
     logger.info(f"Run artifacts: {run_console_url}")
     if (wandb_entity := os.environ.get("WANDB_ENTITY")) and (wandb_project := os.environ.get("WANDB_PROJECT")):
         logger.info(f"W&B logs: https://wandb.ai/{wandb_entity}/{wandb_project}/runs/{run_name}/logs")
 
-    return run_name, run_gcs_dir
+    return RunInfo(
+        name=run_name,
+        gcs_dir=run_gcs_dir,
+        checkpoint_gcs_uri=checkpoint_gcs_uri,
+        shortname=run_shortname,
+    )
 
 
-def init_wandb(*, run_name: str, x_label: str) -> None:
+def init_wandb(*, run_name: str, x_label: str, resume_from: str | None = None) -> None:
     wandb.login()
     wandb.init(
         id=run_name,
         name=run_name,
         group=run_name,
         settings=wandb.Settings(mode="shared", x_primary=True, x_label=x_label),
+        resume="must" if resume_from is not None else None,
     )
     assert wandb.run is not None
 
@@ -535,6 +572,31 @@ def _wandb_env_prefix() -> str:
     return " ".join(parts)
 
 
+def _gce_instance_name(*, gpu: GpuType, job_type: JobType, name_suffix: str = "") -> str:
+    # GCE instance names must match `[a-z]([-a-z0-9]*[a-z0-9])?`, so swap underscores for hyphens.
+    name = f"{_INSTANCE_NAME_PREFIX}-{gpu}-{job_type}"
+    if name_suffix:
+        name += f"-{name_suffix.replace('_', '-')}"
+    return name
+
+
+def _delete_gce_instance_if_exists(instance_name: str) -> None:
+    """Delete the instance(s) with this name, across all zones. No-op if none exist."""
+    result = subprocess.run(
+        ["gcloud", "compute", "instances", "list", f"--filter=name={instance_name}", "--format=value(zone)"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    for zone_url in result.stdout.split():
+        zone = zone_url.rsplit("/", 1)[-1]
+        logger.info(f"Pre-deleting existing instance {instance_name} in zone {zone}")
+        subprocess.run(
+            ["gcloud", "compute", "instances", "delete", instance_name, f"--zone={zone}", "--quiet"],
+            check=False,
+        )
+
+
 def gce_vm(
     *,
     gpu: GpuType,
@@ -548,6 +610,7 @@ def gce_vm(
     zone: str | None = None,
     num_cycles_through_zones: int = 5,
     seconds_between_gce_create_attempts: int = 1,
+    delete_if_exists: bool = False,
 ) -> None:
     """
     Launch a GCE instance for the given GPU type. If `command` is given, it's passed via instance metadata and
@@ -584,6 +647,8 @@ def gce_vm(
         No-op for sync_start. Otherwise, loop through zones this many times before giving up.
     seconds_between_gce_create_attempts
         No-op for sync_start. Otherwise, sleep this many seconds b/t consecutive zone attempts.
+    delete_if_exists
+        If True, delete any existing instance with this name (across all zones) before launching.
     """
     config = gpu_type_to_config[gpu]
     if multi_flex_start and sync_start:
@@ -591,10 +656,9 @@ def gce_vm(
     if multi_flex_start and config.default_zone_for_flex_start is None:
         raise ValueError(f"GPU type {gpu!r} does not support FLEX_START, so --multi_flex_start is not applicable")
 
-    instance_name = f"{_INSTANCE_NAME_PREFIX}-{gpu}-{job_type}"
-    if name_suffix:
-        # GCE instance names must match `[a-z]([-a-z0-9]*[a-z0-9])?`, so swap underscores for hyphens.
-        instance_name += f"-{name_suffix.replace('_', '-')}"
+    instance_name = _gce_instance_name(gpu=gpu, job_type=job_type, name_suffix=name_suffix)
+    if delete_if_exists:
+        _delete_gce_instance_if_exists(instance_name)
 
     if (not sync_start) and (not multi_flex_start) and (config.default_zone_for_flex_start is not None):
         provision_type: Literal["FLEX_START", "STANDARD"] = "FLEX_START"
@@ -688,11 +752,10 @@ def run_argv_remotely(
     *,
     gpu: GpuType,
     job_type: JobType,
-    name_suffix: str,
+    run_name: str,
     sync_start: bool = False,
     multi_flex_start: bool = False,
     zone: str | None = None,
-    env_var_to_value: dict[str, str] | None = None,
 ) -> None:
     """
     Launch a remote GPU instance and re-run the current Python invocation on it::
@@ -710,10 +773,6 @@ def run_argv_remotely(
     Callers should `return` immediately after invoking this, as the remote instance runs the actual workload. Callers
     should also check `is_on_remote()` before deciding to launch, so a CUDA-detection misfire on the remote can't
     trigger a recursive launch. I can think about a better pattern later.
-
-    `job_type` and `name_suffix` are forwarded to `gce_vm` to disambiguate the instance name.
-
-    `env_var_to_value` are additional env vars to set on the remote command.
     """
     if is_on_remote():
         raise RuntimeError(
@@ -721,11 +780,10 @@ def run_argv_remotely(
             "Callers should guard the launch with `not gt.launch.is_on_remote()`."
         )
 
-    command_parts: list[str] = []
-
-    command_parts.append(f"{_REMOTE_ENV_VAR}=1")
-    for env_var, value in (env_var_to_value or {}).items():
-        command_parts.append(f"{env_var}={shlex.quote(value)}")
+    command_parts: list[str] = [
+        f"{_REMOTE_ENV_VAR}=1",
+        f"{_RUN_NAME_ENV_VAR}={shlex.quote(run_name)}",
+    ]
 
     # Command
     if gpu_type_to_config[gpu].n_gpu > 1:
@@ -744,11 +802,11 @@ def run_argv_remotely(
 
     # Pass as metadata to a flex-start instance
     command = " ".join(command_parts)
-    logger.info(f"Launching {gpu} with remote command:\n  {command}")
+    logger.info(f"Launching {gpu} with remote command:\n{command}")
     gce_vm(
         gpu=gpu,
         job_type=job_type,
-        name_suffix=name_suffix,
+        name_suffix=shortname_from_run_name(run_name),
         sync_start=sync_start,
         multi_flex_start=multi_flex_start,
         command=command,

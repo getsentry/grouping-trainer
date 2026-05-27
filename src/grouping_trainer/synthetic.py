@@ -306,7 +306,7 @@ def main(
         gt.launch.run_argv_remotely(
             gpu="l4",
             job_type=gt.launch.JobType.SYNTH,
-            name_suffix=gt.launch.shortname_from_run_name(run_name),
+            run_name=run_name,
             zone=zone,
         )
         return

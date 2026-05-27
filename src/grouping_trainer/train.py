@@ -647,6 +647,7 @@ class TrainingConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_shortname: str
+    base_model: str
 
     # Training args
     global_train_batch_size: int
@@ -662,7 +663,6 @@ class TrainingConfig(BaseModel):
     }
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
-    resume_from_checkpoint: str | bool | None = None
 
     # Loss
     loss_type: Literal["sigmoid", "contrastive"] = "contrastive"
