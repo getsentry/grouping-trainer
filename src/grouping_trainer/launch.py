@@ -11,7 +11,7 @@ a lock in GCS identifying this launch. The first to write it wins. The rest self
 
 Eval jobs which use cheap L4 GPUs are launched by sync-looping through zones ourselves b/c eval ideally starts in time,
 e.g., training shouldn't start w/o an eval poller. L4s are cheap-enough that the flex-start discount isn't worth the
-flex-start headache.
+flex-start flakiness.
 """
 
 import contextlib
