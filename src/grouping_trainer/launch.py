@@ -10,7 +10,7 @@ it wins, the rest self-delete.
 Eval jobs which use cheap L4 GPUs are launched by sync-looping through zones ourselves b/c eval ideally starts in time,
 e.g., training shouldn't start w/o an eval poller. L4s are cheap-enough that the flex-start discount isn't worth the
 flex-start headache. In current year, GCE doesn't have a simple, built-in cross-region fallback mechanism. Our jobs have
-no networking or region dependence. They communicate via GCS if at all.
+no networking or region dependence. They communicate via GCS and git.
 """
 
 import contextlib
