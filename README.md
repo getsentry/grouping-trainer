@@ -48,7 +48,7 @@ Sanity check that plumbing works locally:
 python train.py --tiny_run
 ```
 
-Launch a full, remote training run:
+Launch a full, remote training run by checking out to a new branch, pushing it to remote, and running:
 
 ```bash
 python train.py --gpu h100 --run_shortname my-run --multi_flex_start
@@ -70,7 +70,7 @@ instances in at most 10 zones. The first to boot w/in 2 hours survives. The rest
 <summary>Launch a bare instance to SSH into</summary>
 
 ```bash
-python -m grouping_trainer.launch --gpu h100 --sync_start
+python -m grouping_trainer.launch --gpu h100 --sync_start --git_ref main
 ```
 
 </details>

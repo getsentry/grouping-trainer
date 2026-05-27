@@ -63,6 +63,15 @@ export WANDB_API_KEY
 git clone https://github.com/getsentry/grouping-trainer.git "$REPO_DIR"
 cd "$REPO_DIR"
 
+# Check out a specific ref if the launcher passed one
+GIT_REF=$(curl -fsS -H "Metadata-Flavor: Google" \
+    http://metadata.google.internal/computeMetadata/v1/instance/attributes/git-ref 2>/dev/null || true)
+if [ -n "$GIT_REF" ]; then
+    echo "Checking out git ref: $GIT_REF"
+    git fetch --depth=1 origin "$GIT_REF"
+    git checkout FETCH_HEAD
+fi
+
 uv sync --locked
 # shellcheck disable=SC1091
 source .venv/bin/activate  # so the eval $COMMAND below finds python/accelerate

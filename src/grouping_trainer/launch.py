@@ -436,6 +436,38 @@ def _repo_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 
 
+def _local_head_sha() -> str:
+    repo_root = _repo_root()
+
+    def git(*args: str) -> str:
+        cmd = ["git", "-C", repo_root, *args]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            gt.utils.log_and_raise_subprocess(result, cmd, log_prefix="git failed ")
+        return result.stdout.strip()
+
+    sha = git("rev-parse", "HEAD")
+
+    # On the remote, fetch-by-SHA only updates FETCH_HEAD (no remote-tracking ref), so `branch -r --contains` would
+    # spuriously fail.
+    if is_on_remote():
+        return sha
+
+    branch = git("rev-parse", "--abbrev-ref", "HEAD")
+    # Refresh remote-tracking refs so a push from another machine (or via `gh`) is reflected before we check.
+    git("fetch", "--quiet")
+    if not git("branch", "-r", "--contains", sha):
+        raise RuntimeError(f"HEAD {sha} (branch: {branch}) isn't on any remote branch. Run `git push` first.")
+
+    if git("status", "--porcelain"):
+        logger.warning(
+            f"Local working tree is dirty; remote will run committed SHA {sha}, not your uncommitted changes."
+        )
+
+    logger.info(f"Using git ref {sha} (branch: {branch})")
+    return sha
+
+
 def _is_stockout(stderr: str) -> bool:
     return "ZONE_RESOURCE_POOL_EXHAUSTED" in stderr
 
@@ -455,6 +487,7 @@ def _gce_create_cmd(
     wait_for_instance_creation: bool,
     path_to_metadata_script: dict[str, str],
     launch_id: str | None = None,
+    git_ref: str | None = None,
 ) -> list[str]:
     metadata = {
         "gcs-bucket": os.environ["GROUPING_TRAINER_BUCKET"],
@@ -463,6 +496,8 @@ def _gce_create_cmd(
     }
     if launch_id is not None:
         metadata["launch-id"] = launch_id
+    if git_ref is not None:
+        metadata["git-ref"] = git_ref
     if config.install_nvidia_driver:
         metadata["enable-osconfig"] = "TRUE"
         metadata["install-nvidia-driver"] = "True"
@@ -507,6 +542,7 @@ def _gce_multi_flex_start(
     instance_name: str,
     num_zones: int,
     path_to_metadata_script: dict[str, str],
+    git_ref: str | None = None,
 ) -> None:
     """
     Fan out async `FLEX_START` submits across the first `num_zones` of `config.zones`, all sharing the same `launch-id`
@@ -527,6 +563,7 @@ def _gce_multi_flex_start(
             wait_for_instance_creation=False,
             path_to_metadata_script=path_to_metadata_script,
             launch_id=launch_id,
+            git_ref=git_ref,
         )
         result = subprocess.run(gce_create_args, capture_output=True, text=True)
         if result.returncode == 0:
@@ -611,6 +648,7 @@ def gce_vm(
     num_cycles_through_zones: int = 5,
     seconds_between_gce_create_attempts: int = 1,
     delete_if_exists: bool = False,
+    git_ref: str | None = None,
 ) -> None:
     """
     Launch a GCE instance for the given GPU type. If `command` is given, it's passed via instance metadata and
@@ -649,12 +687,26 @@ def gce_vm(
         No-op for sync_start. Otherwise, sleep this many seconds b/t consecutive zone attempts.
     delete_if_exists
         If True, delete any existing instance with this name (across all zones) before launching.
+    git_ref
+        Git ref (SHA or branch name) the remote should check out after cloning. When None (default), resolves to the
+        local HEAD SHA, and requires that SHA to have been pushed to a remote branch. Pass `--git_ref main` (or any
+        explicit ref) to skip the auto-resolve when you don't care which SHA the VM starts from, e.g. for a debug VM.
     """
     config = gpu_type_to_config[gpu]
     if multi_flex_start and sync_start:
         raise ValueError("--multi_flex_start and --sync_start are mutually exclusive")
     if multi_flex_start and config.default_zone_for_flex_start is None:
         raise ValueError(f"GPU type {gpu!r} does not support FLEX_START, so --multi_flex_start is not applicable")
+
+    if git_ref is None:
+        git_ref = _local_head_sha()
+    else:
+        ls_remote_args = ["git", "-C", _repo_root(), "ls-remote", "--exit-code", "origin", git_ref]
+        ls_remote_result = subprocess.run(ls_remote_args, capture_output=True, text=True)
+        if ls_remote_result.returncode != 0:
+            gt.utils.log_and_raise_subprocess(
+                ls_remote_result, ls_remote_args, log_prefix=f"git ref {git_ref!r} not found on origin "
+            )
 
     instance_name = _gce_instance_name(gpu=gpu, job_type=job_type, name_suffix=name_suffix)
     if delete_if_exists:
@@ -691,6 +743,7 @@ def gce_vm(
                 instance_name=instance_name,
                 num_zones=multi_flex_start_num_zones,
                 path_to_metadata_script=path_to_metadata_script,
+                git_ref=git_ref,
             )
             return
 
@@ -703,6 +756,7 @@ def gce_vm(
                 provision_type=provision_type,
                 wait_for_instance_creation=wait_for_instance_creation,
                 path_to_metadata_script=path_to_metadata_script,
+                git_ref=git_ref,
             )
             logger.info(f"Attempting to create {instance_name} in zone {zone}")
             gce_create_cmd_result = subprocess.run(gce_create_args, capture_output=True, text=True)
