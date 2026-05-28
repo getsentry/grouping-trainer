@@ -26,11 +26,11 @@ costly; Sentry's job is to tell you that something in prod broke.
 
 There are many ways to train an embeddings model from here. You could, e.g., collate in-batch negatives and train using
 symmetric MNRL—the standard embeddings loss today. The immediate problem is that in-batch negatives can easily be false
-negatives in this dataset. Across pairs and w/in a project, there are plenty of similar stacktraces that aren't
-explicitly labeled as similar. MNRL is especially sensitive to the false negative rate. This sensitivity is good when
-you're training for the globally sparse similarity structures encountered in RAG, but bad when you're training for
-fine-grained stacktrace similarity w/in a Sentry project. GISTEmbed aims to address this kind of issue, but there aren't
-good guide models for this niche task. `gemini-embedding-2`, e.g.,
+negatives in this dataset. Across pairs in a project, there are plenty of similar stacktraces that aren't explicitly
+labeled as similar. MNRL is especially sensitive to the false negative rate. This sensitivity is good when you're
+training for the globally sparse similarity structures encountered in RAG, but bad when you're training for fine-grained
+stacktrace similarity w/in a Sentry project. GISTEmbed aims to address this kind of issue, but there aren't good guide
+models for this niche task. `gemini-embedding-2`, e.g.,
 [flops](https://github.com/getsentry/grouping-trainer/tree/main/eval/comparisons/test_full3/gemini-cluster_dim3072_vs_large-no-prefix_dim64).
 
 You could instead have the batch sampler pair up stacktraces from different Sentry projects to avoid false negatives.
