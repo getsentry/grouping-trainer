@@ -10,6 +10,12 @@ set -euo pipefail
 # GCP's metadata script runner doesn't export HOME
 export HOME="${HOME:-/root}"
 
+cat > /usr/local/bin/startup-logs <<'EOF'
+#!/bin/bash
+exec sudo journalctl -u google-startup-scripts.service --no-pager "$@"
+EOF
+chmod +x /usr/local/bin/startup-logs
+
 # Set by gt.launch.gce_vm
 GROUPING_TRAINER_BUCKET=$(curl -fsS -H "Metadata-Flavor: Google" \
     http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-bucket)
@@ -103,14 +109,6 @@ cat > /usr/local/bin/logs <<'EOF'
 exec sudo tail -n 50 -f /var/log/grouping_trainer_run.log "$@"
 EOF
 chmod +x /usr/local/bin/logs
-
-# startup-logs cmd = shortcut for viewing the GCE startup script's output (e.g.,
-# when /var/log/grouping_trainer_run.log doesn't exist because startup failed).
-cat > /usr/local/bin/startup-logs <<'EOF'
-#!/bin/bash
-exec sudo journalctl -u google-startup-scripts.service --no-pager "$@"
-EOF
-chmod +x /usr/local/bin/startup-logs
 
 # screen -S run
 # ctrl+a d
