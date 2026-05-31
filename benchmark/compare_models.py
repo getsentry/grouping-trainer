@@ -336,6 +336,11 @@ def main(
     failures_all: list[dict] = []
 
     for model_name in models:
+        # Dynamo's submodule caches (Pooling, Normalize, ...) are keyed by function identity, so
+        # they accumulate entries across models in one process and silently overflow the default
+        # cache_size_limit of 8. Reset between models so each one compiles from a clean slate.
+        torch._dynamo.reset()
+        torch.cuda.empty_cache()
         rows, failures = _benchmark_model(model_name, rng)
         rows_all.extend(rows)
         failures_all.extend(failures)
