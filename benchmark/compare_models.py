@@ -17,6 +17,7 @@ Example:
 import logging
 import random
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -53,6 +54,23 @@ def _model_kwargs() -> dict:
     return {}
 
 
+def _load_with_sdpa_fallback[T: gt.utils.SentenceTransformer](cls: type[T], model_name: str) -> T:
+    """
+    Construct `cls(model_name, ...)` with the standard model_kwargs. If the model's architecture
+    doesn't have an SDPA implementation in transformers (e.g. MPNet), retry without
+    `attn_implementation` so it falls back to eager attention.
+    """
+    model_kwargs = _model_kwargs()
+    try:
+        return cls(model_name, model_kwargs=model_kwargs)
+    except ValueError as e:
+        if "scaled_dot_product_attention" not in str(e):
+            raise
+        logger.warning(f"[{model_name}] SDPA not supported; retrying with eager attention")
+        model_kwargs_eager = {k: v for k, v in model_kwargs.items() if k != "attn_implementation"}
+        return cls(model_name, model_kwargs=model_kwargs_eager)
+
+
 def _sweep_lengths(max_seq_length: int) -> list[int]:
     """
     Return sorted token-length targets: step-`SWEEP_STEP` grid plus B-1, B, B+1 for each default bucket B.
@@ -68,24 +86,17 @@ def _sweep_lengths(max_seq_length: int) -> list[int]:
     return sorted(grid)
 
 
-def _num_tokens_in_text(model: gt.utils.SentenceTransformer, text: str) -> int:
-    """
-    Token count produced by the model's own tokenizer pipeline (including specials).
-    """
-    return model.tokenize([text])["input_ids"].shape[1]
-
-
 def _generate_texts(
-    model_base: gt.utils.SentenceTransformer,
+    tokenize_fn: Callable[[list[str]], dict[str, torch.Tensor]],
     sweep: list[int],
 ) -> dict[int, tuple[str, int]]:
     """
-    Build `{target_num_tokens: (text, actual_num_tokens)}` reusing `gt.compiled._create_text_with_num_tokens`.
+    Build `{target_num_tokens: (text, actual_num_tokens)}` using `tokenize_fn`.
     """
     texts: dict[int, tuple[str, int]] = {}
     for target in sweep:
-        text = gt.compiled._create_text_with_num_tokens(target, model_base.tokenize)
-        actual = _num_tokens_in_text(model_base, text)
+        text = gt.compiled._create_text_with_num_tokens(target, tokenize_fn)
+        actual = tokenize_fn([text])["input_ids"].shape[1]
         texts[target] = (text, actual)
     return texts
 
@@ -101,31 +112,105 @@ def _encode_once(model: gt.utils.SentenceTransformer, text: str) -> float:
 
 def _benchmark_model(model_name: str, rng: random.Random) -> tuple[list[dict], list[dict]]:
     """
-    Run base + compiled versions for one model. Returns (rows_for_csv, failures).
+    Run compiled then base for one model. Compiled-first matches benchmark/run.py and avoids letting a
+    prior base encode dirty the CUDA allocator state that `mode="reduce-overhead"` needs for cudagraph
+    capture. Returns (rows_for_csv, failures).
     """
     rows: list[dict] = []
     failures: list[dict] = []
-    model_kwargs = _model_kwargs()
+    sweep_order: list[int] | None = None
+    texts: dict[int, tuple[str, int]] | None = None
+    warmup_sec: float = 0.0
+    model_compiled: gt.compiled.SentenceTransformer | None = None
+
+    try:
+        logger.info(f"[{model_name}] loading compiled")
+        model_compiled = _load_with_sdpa_fallback(gt.compiled.SentenceTransformer, model_name)
+    except Exception as e:
+        logger.exception(f"[{model_name}] compiled load failed")
+        failures.append({"model_name": model_name, "version": "compiled", "reason": f"{type(e).__name__}: {e}"})
+
+    if model_compiled is not None:
+        try:
+            logger.info(f"[{model_name}] compile_and_warm_up")
+            start = time.monotonic()
+            model_compiled.compile_and_warm_up()
+            warmup_sec = time.monotonic() - start
+        except Exception as e:
+            logger.exception(f"[{model_name}] compile_and_warm_up failed")
+            failures.append(
+                {
+                    "model_name": model_name,
+                    "version": "compiled",
+                    "reason": f"compile_and_warm_up: {type(e).__name__}: {e}",
+                }
+            )
+            (model_compiled,) = release_memory(model_compiled)
+            model_compiled = None
+
+    if model_compiled is not None:
+        max_seq = model_compiled.max_seq_length
+        sweep = _sweep_lengths(max_seq)
+        logger.info(f"[{model_name}] max_seq={max_seq}, sweep={len(sweep)} lengths")
+
+        # Fresh local so the closure below doesn't widen the capture back to `... | None`.
+        model_compiled_narrowed = model_compiled
+
+        # Bypass compiled.SentenceTransformer.tokenize (which pads to buckets) so the calibration in
+        # _create_text_with_num_tokens sees true token counts.
+        def tokenize_unpadded(batch: list[str]) -> dict[str, torch.Tensor]:
+            return gt.utils.SentenceTransformer.tokenize(model_compiled_narrowed, batch)
+
+        texts = _generate_texts(tokenize_unpadded, sweep)
+        sweep_order = list(sweep)
+        rng.shuffle(sweep_order)
+
+        rows.append(
+            {
+                "model_name": model_name,
+                "version": "compiled",
+                "phase": "warmup",
+                "num_tokens_target": None,
+                "num_tokens_actual": None,
+                "latency_sec": warmup_sec,
+                "iteration": 0,
+            }
+        )
+
+        for target in tqdm(sweep_order, desc=f"{model_name} compiled"):
+            text, actual = texts[target]
+            latency = _encode_once(model_compiled, text)
+            rows.append(
+                {
+                    "model_name": model_name,
+                    "version": "compiled",
+                    "phase": "sweep",
+                    "num_tokens_target": target,
+                    "num_tokens_actual": actual,
+                    "latency_sec": latency,
+                    "iteration": 0,
+                }
+            )
+
+        (model_compiled,) = release_memory(model_compiled)
 
     try:
         logger.info(f"[{model_name}] loading base")
-        model_base = gt.utils.SentenceTransformer(model_name, model_kwargs=model_kwargs)
+        model_base = _load_with_sdpa_fallback(gt.utils.SentenceTransformer, model_name)
     except Exception as e:
         logger.exception(f"[{model_name}] base load failed")
         failures.append({"model_name": model_name, "version": "base", "reason": f"{type(e).__name__}: {e}"})
         return rows, failures
 
-    max_seq = model_base.max_seq_length
-    sweep = _sweep_lengths(max_seq)
-    logger.info(f"[{model_name}] max_seq={max_seq}, sweep={len(sweep)} lengths")
+    if sweep_order is None or texts is None:
+        max_seq = model_base.max_seq_length
+        sweep = _sweep_lengths(max_seq)
+        logger.info(f"[{model_name}] max_seq={max_seq}, sweep={len(sweep)} lengths")
+        texts = _generate_texts(model_base.tokenize, sweep)
+        sweep_order = list(sweep)
+        rng.shuffle(sweep_order)
 
-    texts = _generate_texts(model_base, sweep)
-
-    sweep_order = list(sweep)
-    rng.shuffle(sweep_order)
-
-    text_warmup, _ = texts[sweep[len(sweep) // 2]]
-    _ = model_base.encode(text_warmup, convert_to_numpy=True, show_progress_bar=False)
+    _ = model_base.encode("warm up", convert_to_numpy=True, show_progress_bar=False)
 
     for target in tqdm(sweep_order, desc=f"{model_name} base"):
         text, actual = texts[target]
@@ -143,60 +228,6 @@ def _benchmark_model(model_name: str, rng: random.Random) -> tuple[list[dict], l
         )
 
     (model_base,) = release_memory(model_base)
-
-    try:
-        logger.info(f"[{model_name}] loading compiled")
-        model_compiled = gt.compiled.SentenceTransformer(model_name, model_kwargs=model_kwargs)
-    except Exception as e:
-        logger.exception(f"[{model_name}] compiled load failed")
-        failures.append({"model_name": model_name, "version": "compiled", "reason": f"{type(e).__name__}: {e}"})
-        return rows, failures
-
-    try:
-        logger.info(f"[{model_name}] compile_and_warm_up")
-        start = time.monotonic()
-        model_compiled.compile_and_warm_up()
-        warmup_sec = time.monotonic() - start
-    except Exception as e:
-        logger.exception(f"[{model_name}] compile_and_warm_up failed")
-        failures.append(
-            {
-                "model_name": model_name,
-                "version": "compiled",
-                "reason": f"compile_and_warm_up: {type(e).__name__}: {e}",
-            }
-        )
-        (model_compiled,) = release_memory(model_compiled)
-        return rows, failures
-
-    rows.append(
-        {
-            "model_name": model_name,
-            "version": "compiled",
-            "phase": "warmup",
-            "num_tokens_target": None,
-            "num_tokens_actual": None,
-            "latency_sec": warmup_sec,
-            "iteration": 0,
-        }
-    )
-
-    for target in tqdm(sweep_order, desc=f"{model_name} compiled"):
-        text, actual = texts[target]
-        latency = _encode_once(model_compiled, text)
-        rows.append(
-            {
-                "model_name": model_name,
-                "version": "compiled",
-                "phase": "sweep",
-                "num_tokens_target": target,
-                "num_tokens_actual": actual,
-                "latency_sec": latency,
-                "iteration": 0,
-            }
-        )
-
-    (model_compiled,) = release_memory(model_compiled)
     return rows, failures
 
 
