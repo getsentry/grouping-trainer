@@ -65,7 +65,7 @@ def deduplicate_pairs(
 
 class SentenceTransformer(SentenceTransformerOriginal):
     """
-    `SentenceTransformer` which deduplicates texts during inference and retries OOMs once.
+    `SentenceTransformer` which deduplicates texts during inference.
     """
 
     def __init__(self, *args, text_prefix: str = "", **kwargs) -> None:

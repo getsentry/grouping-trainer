@@ -34,12 +34,11 @@ def _create_text_with_num_tokens(
     tokenize_function: Callable[[list[str]], dict[str, torch.Tensor]],
     **tokenize_kwargs,
 ) -> str:
-    num_words = target_num_tokens  # overestimate
-    text = "a " * num_words
-    num_tokens = tokenize_function([text], **tokenize_kwargs)["input_ids"].shape[1]
-    num_words -= num_tokens - target_num_tokens
-    text = "a " * num_words
-    return text
+    token = " a"
+    probe_num_words = 4
+    probe_num_tokens = tokenize_function([token * probe_num_words], **tokenize_kwargs)["input_ids"].shape[1]
+    num_specials = probe_num_tokens - probe_num_words
+    return token * (target_num_tokens - num_specials)
 
 
 class SentenceTransformer(gt.utils.SentenceTransformer):
