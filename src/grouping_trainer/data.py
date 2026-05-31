@@ -53,7 +53,7 @@ DEFAULT_TRAIN_PATHS: tuple[str, ...] = (
     "final_csvs/train_more2.csv",
     "final_csvs/synthetic-easy.csv",
 )
-DEFAULT_PRETRAIN_PATHS = tuple(path for path in DEFAULT_TRAIN_PATHS if "synthetic" not in path)
+DEFAULT_TRAIN_PATHS_WO_SYNTHETIC = tuple(path for path in DEFAULT_TRAIN_PATHS if "synthetic" not in path)
 
 DEFAULT_VAL_PATHS: tuple[str, ...] = ("final_csvs/val.csv",)
 

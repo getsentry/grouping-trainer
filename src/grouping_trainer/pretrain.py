@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 def load_texts(
     sep_token: str,
-    paths: tuple[str, ...] = gt.data.DEFAULT_PRETRAIN_PATHS,
+    paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS_WO_SYNTHETIC,
     sample_size: int | None = None,
     n_rows_per_csv: int | None = None,
 ) -> list[str]:
@@ -98,7 +98,7 @@ class PretrainingConfig(BaseModel):
     gradient_checkpointing: bool = True  # ~free wall-clock with seq_len up to 8192 on ModernBERT-large
 
     # Data
-    training_csvs: tuple[str, ...] = gt.data.DEFAULT_PRETRAIN_PATHS
+    training_csvs: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS_WO_SYNTHETIC
     sample_size: int | None = None  # uniform downsample, applied after the full data is loaded
     n_rows_per_csv: int | None = None  # laptop-sanity prefix cap on `pl.read_csv`; biased, only for tiny_runs
     # stress-probe mode: train iterates longest sequences first; pair w/ max_steps
