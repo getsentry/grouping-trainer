@@ -57,7 +57,6 @@ fi
 # Set up python env
 # ----------------------------------------------------------------------------------------------------------------------
 
-# Install uv (manages its own Python, respects .python-version in the repo).
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
@@ -69,13 +68,12 @@ export WANDB_API_KEY
 git clone https://github.com/getsentry/grouping-trainer.git "$REPO_DIR"
 cd "$REPO_DIR"
 
-# Check out a specific ref if the launcher passed one
 GIT_REF=$(curl -fsS -H "Metadata-Flavor: Google" \
     http://metadata.google.internal/computeMetadata/v1/instance/attributes/git-ref 2>/dev/null || true)
 if [ -n "$GIT_REF" ]; then
     echo "Checking out git ref: $GIT_REF"
     git fetch --depth=1 origin "$GIT_REF"
-    git checkout FETCH_HEAD
+    git checkout "$GIT_REF"
 fi
 
 uv sync --locked
@@ -94,8 +92,8 @@ gcloud storage cp -r "gs://${GROUPING_TRAINER_BUCKET}/final_csvs/" .
 # SSH niceties
 # ----------------------------------------------------------------------------------------------------------------------
 
-# Auto-cd into the repo, put uv on PATH, activate the venv, and re-export the
-# env vars set above so interactive SSH sessions see them.
+# Auto-cd into the repo, put uv on PATH, activate the venv, and re-export the env vars set above so interactive SSH
+# sessions see them.
 {
     echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
     echo "export GROUPING_TRAINER_BUCKET=$GROUPING_TRAINER_BUCKET"
