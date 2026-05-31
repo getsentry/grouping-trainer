@@ -136,7 +136,7 @@ def run(
             per_device_token_budget=8192 * per_device_token_budget_scale,
             warmup_ratio=0.25,
             learning_rate=learning_rate,
-            loss_type="contrastive",
+            loss_type="sigmoid",
             contrastive_margin=0.5,
             training_csvs=gt.data.DEFAULT_TRAIN_PATHS,
         )
