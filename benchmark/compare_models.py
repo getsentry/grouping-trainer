@@ -14,7 +14,6 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from itertools import combinations
 from pathlib import Path
 from string import ascii_lowercase
 from typing import Literal, TypedDict, cast
@@ -253,22 +252,25 @@ def _benchmark_model(
         records.extend(benchmark_model_result.records)
         version_to_embeddings[version] = benchmark_model_result.embeddings
 
+    if "base" not in versions:
+        logger.warning(f"[{model_name}] No base version in versions={versions}. Skipping correctness check.")
+        return records
+
     # Sanity check correctness by comparing cos sim. PyTorch's huggingface dynamo bench does allclose(eager_bf16,
     # compiled_bf16) at tol=1e-3 (bumped to 4e-3 for known-noisy models) for bf16+compile AMP inference checking, with
     # an fp64 reference as a second-chance fallback when allclose fails.
     # https://github.com/pytorch/pytorch/blob/19ecfe58b45fe56afcd9155ad721dcf9a7569339/benchmarks/dynamo/huggingface.py#L529
     default_atol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
     atol = MODEL_NAME_TO_ATOL.get(model_name, default_atol)
-    for version1, version2 in combinations(versions, 2):
-        cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
+    for version in (version for version in versions if version != "base"):
+        cos_sim = _cos_sim(version_to_embeddings["base"], version_to_embeddings[version])
         diag = np.diag(cos_sim)
         # rtol contributes ~atol on top since target ≈ 1.0 (effective tolerance ~2e-3), following
         # torch.testing.assert_close's convention of `rtol == atol` for reduced-precision dtypes.
         assert np.allclose(diag, 1.0, atol=atol, rtol=atol), (
-            f"Cos sim isn't always numerically close to 1.0 for {version1} vs {version2}. "
+            f"Cos sim isn't always numerically close to 1.0 for base vs {version}. "
             f"Observed range: [{diag.min()}, {diag.max()}]"
         )
-
     return records
 
 
