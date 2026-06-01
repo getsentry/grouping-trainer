@@ -86,6 +86,13 @@ def _create_random_text_with_num_tokens(
     seed: int | None = 42,
     **tokenize_kwargs,
 ) -> str:
+    """
+    Return a text of random single-character words that tokenizes to exactly `target_num_tokens` tokens.
+    """
+
+    # Random chars should give more diverse embeddings than repeating. Want to avoid numerical drift flying under the
+    # radar in the correctness check. Ideally we have a small corpus of single-token words to pick from, but it's not
+    # clear to me that's not a marginal improvement.
     def count_tokens(text):
         return tokenize_fn([text], **tokenize_kwargs)["input_ids"].shape[1]
 
