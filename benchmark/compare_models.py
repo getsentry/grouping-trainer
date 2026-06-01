@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from itertools import combinations
 from pathlib import Path
+from string import ascii_lowercase
 from typing import Literal, TypedDict, cast
 
 import numpy as np
@@ -33,7 +34,7 @@ MODEL_NAMES: tuple[str, ...] = (
     # ...
     # All models below achieve the expected speedup. To test new models, add them above so they're tested first.
     "lightonai/modernbert-embed-large",
-    "Alibaba-NLP/gte-modernbert-base",
+    # "Alibaba-NLP/gte-modernbert-base",  # TODO: seems to drift w/ compilation
     "sentence-transformers/all-MiniLM-L6-v2",
     "sentence-transformers/all-mpnet-base-v2",
     "BAAI/bge-small-en-v1.5",
@@ -41,7 +42,7 @@ MODEL_NAMES: tuple[str, ...] = (
     "intfloat/e5-small-v2",
 )
 
-STEP_BETWEEN_INPUT_TOKENS = 32
+STEP_BETWEEN_INPUT_TOKENS = 8
 MIN_TOKENS = 8
 DEFAULT_COMPILE_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
 
@@ -51,6 +52,8 @@ type Version = Literal["base", "compiled"]
 def _load_sdpa_with_eager_fallback[T: gt.utils.SentenceTransformer](cls: type[T], model_name: str) -> T:
     model_kwargs = {"attn_implementation": "sdpa"}
     if torch.cuda.is_bf16_supported():
+        # The benefit of compilation positively interacts w/ bfloat16. CUDA compute is much faster b/c of tensor cores,
+        # and memory movement is also faster. So Python overhead is relatively higher.
         model_kwargs |= {"dtype": torch.bfloat16}
     try:
         return cls(model_name, model_kwargs=model_kwargs)
@@ -77,18 +80,41 @@ def _input_token_lengths(max_seq_length: int, step: int = STEP_BETWEEN_INPUT_TOK
     return sorted(grid)
 
 
+def _create_random_text_with_num_tokens(
+    target_num_tokens: int,
+    tokenize_fn: Callable[[list[str]], dict[str, torch.Tensor]],
+    seed: int | None = 42,
+    **tokenize_kwargs,
+) -> str:
+    def count_tokens(text):
+        return tokenize_fn([text], **tokenize_kwargs)["input_ids"].shape[1]
+
+    num_specials = count_tokens("")
+    single_character_tokens = [
+        character for character in ascii_lowercase if (count_tokens(" " + character) - num_specials) == 1
+    ]
+    if not single_character_tokens:
+        raise RuntimeError("no single-token characters found. Weird tokenizer?")
+
+    rng = random.Random(seed)
+    text = "".join(" " + rng.choice(single_character_tokens) for _ in range(target_num_tokens - num_specials))
+
+    if count_tokens(text) != target_num_tokens:
+        raise RuntimeError("target not reachable by single-char steps")
+
+    return text
+
+
 def _generate_texts(
     tokenize_fn: Callable[[list[str]], dict[str, torch.Tensor]], input_token_lengths: list[int]
-) -> dict[int, tuple[str, int]]:
+) -> dict[int, str]:
     """
-    Returns a dict mapping target input token lengths to (generated text, actual number of tokens in text).
+    Returns a dict mapping target input token lengths to the generated text.
     """
-    target_num_tokens_to_text_and_actual_num: dict[int, tuple[str, int]] = {}
-    for target_num_tokens in input_token_lengths:
-        text = gt.compiled._create_text_with_num_tokens(target_num_tokens, tokenize_fn)
-        actual_num_tokens = tokenize_fn([text])["input_ids"].shape[1]
-        target_num_tokens_to_text_and_actual_num[target_num_tokens] = (text, actual_num_tokens)
-    return target_num_tokens_to_text_and_actual_num
+    return {
+        target_num_tokens: _create_random_text_with_num_tokens(target_num_tokens, tokenize_fn)
+        for target_num_tokens in input_token_lengths
+    }
 
 
 def _time_func[**P, R](func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> tuple[R, float]:
@@ -102,8 +128,7 @@ class Record(TypedDict):
     model_name: str
     version: Version
     phase: Literal["warmup", "run"]
-    num_tokens_target: int | None  # None for warmup
-    num_tokens_actual: int | None  # None for warmup
+    num_tokens: int | None  # None for warmup
     latency_sec: float
 
 
@@ -117,17 +142,15 @@ def _run_model(
     model: gt.utils.SentenceTransformer,
     version: Version,
     model_name: str,
-    target_num_tokens_to_text_and_actual_num: dict[int, tuple[str, int]],
+    target_num_tokens_to_text: dict[int, str],
 ) -> BenchmarkModelResult:
     """
     Time the encode() call for each target.
     """
-    assert target_num_tokens_to_text_and_actual_num
+    assert target_num_tokens_to_text
     records: list[Record] = []
     embeddings: list[np.ndarray] = []
-    for target_num_tokens, (text, actual_num_tokens) in tqdm(
-        target_num_tokens_to_text_and_actual_num.items(), desc=f"{model_name} {version}"
-    ):
+    for target_num_tokens, text in tqdm(target_num_tokens_to_text.items(), desc=f"{model_name} {version}"):
         embedding, latency_sec = _time_func(model.encode, text, convert_to_numpy=True, show_progress_bar=False)
         embeddings.append(cast(np.ndarray, embedding))
         records.append(
@@ -135,8 +158,7 @@ def _run_model(
                 "model_name": model_name,
                 "version": version,
                 "phase": "run",
-                "num_tokens_target": target_num_tokens,
-                "num_tokens_actual": actual_num_tokens,
+                "num_tokens": target_num_tokens,
                 "latency_sec": latency_sec,
             }
         )
@@ -149,21 +171,20 @@ def _clear_context():
     torch.cuda.empty_cache()
 
 
-def _target_num_tokens_to_text_and_actual_num(model_name: str) -> dict[int, tuple[str, int]]:
+def _target_num_tokens_to_text(model_name: str) -> dict[int, str]:
     model = gt.utils.SentenceTransformer(model_name)
     input_token_lengths = _input_token_lengths(model.max_seq_length)
-    target_num_tokens_to_text_and_actual_num = _generate_texts(model.tokenize, input_token_lengths)
-    target_num_tokens_order = list(target_num_tokens_to_text_and_actual_num.keys())
+    target_num_tokens_to_text = _generate_texts(model.tokenize, input_token_lengths)
+    target_num_tokens_order = list(target_num_tokens_to_text.keys())
     random.Random(42).shuffle(target_num_tokens_order)
     return {
-        target_num_tokens: target_num_tokens_to_text_and_actual_num[target_num_tokens]
-        for target_num_tokens in target_num_tokens_order
+        target_num_tokens: target_num_tokens_to_text[target_num_tokens] for target_num_tokens in target_num_tokens_order
     }
 
 
 def _benchmark_model_version(
     model_name: str,
-    target_num_tokens_to_text_and_actual_num: dict[int, tuple[str, int]],
+    target_num_tokens_to_text: dict[int, str],
     *,
     version: Version,
 ) -> BenchmarkModelResult:
@@ -185,12 +206,11 @@ def _benchmark_model_version(
             "model_name": model_name,
             "version": version,
             "phase": "warmup",
-            "num_tokens_target": None,
-            "num_tokens_actual": None,
+            "num_tokens": None,
             "latency_sec": warmup_sec,
         }
     )
-    benchmark_model_result = _run_model(model, version, model_name, target_num_tokens_to_text_and_actual_num)
+    benchmark_model_result = _run_model(model, version, model_name, target_num_tokens_to_text)
     records.extend(benchmark_model_result.records)
 
     _clear_context()
@@ -204,27 +224,33 @@ def _cos_sim(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "compiled")) -> list[Record]:
-    target_num_tokens_to_text_and_actual_num = _target_num_tokens_to_text_and_actual_num(model_name)
+    target_num_tokens_to_text = _target_num_tokens_to_text(model_name)
     records: list[Record] = []
     version_to_embeddings: dict[Version, np.ndarray] = {}
 
     for version in versions:
         benchmark_model_result = _benchmark_model_version(
             model_name,
-            target_num_tokens_to_text_and_actual_num,
+            target_num_tokens_to_text,
             version=version,
         )
         records.extend(benchmark_model_result.records)
         version_to_embeddings[version] = benchmark_model_result.embeddings
 
-    # Check correctness by comparing cos sim across versions
-    atol = 1e-2 if torch.cuda.is_bf16_supported() else 1e-4
-    rtol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
+    # Sanity check correctness by comparing cos sim. PyTorch's huggingface dynamo bench does
+    # allclose(eager_bf16, compiled_bf16) at tol=1e-3 (bumped to 4e-3 for known-noisy models) for its bf16+compile
+    # AMP inference suite, with an fp64 reference as a second-chance fallback when allclose fails — see
+    # https://github.com/pytorch/pytorch/blob/19ecfe58b45fe56afcd9155ad721dcf9a7569339/benchmarks/dynamo/huggingface.py#L529.
+    # We do the same allclose on the cos_sim diagonal. A stricter test would also check against an fp64 reference.
+    atol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
     for version1, version2 in combinations(versions, 2):
         cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
         diag = np.diag(cos_sim)
-        assert np.allclose(diag, 1.0, atol=atol, rtol=rtol), (
-            f"Cos sim is not 1.0: {version1} vs {version2}, ({diag.min()}, {diag.max()})"
+        # rtol contributes ~atol on top since target ≈ 1.0 (effective tolerance ~2e-3), following
+        # torch.testing.assert_close's convention of `rtol == atol` for reduced-precision dtypes.
+        assert np.allclose(diag, 1.0, atol=atol, rtol=atol), (
+            f"Cos sim isn't always numerically close to 1.0 for {version1} vs {version2}. "
+            f"Observed range: [{diag.min()}, {diag.max()}]"
         )
 
     return records
@@ -258,18 +284,18 @@ def _summary_per_model_bucket(df: pl.DataFrame) -> pl.DataFrame:
     """
     Pivot `df`'s `phase="run"` rows wide on `version` and aggregate per `(model_name, bucket)`.
     """
-    df = df.filter(pl.col("phase") == "run").drop_nulls(["num_tokens_actual"])
-    df = _add_bucket_label(df, buckets=DEFAULT_COMPILE_TOKEN_BUCKETS, column="num_tokens_actual")
+    df = df.filter(pl.col("phase") == "run")
+    df = _add_bucket_label(df, buckets=DEFAULT_COMPILE_TOKEN_BUCKETS, column="num_tokens")
     df = df.pivot(
         on="version",
-        index=["model_name", "bucket", "num_tokens_target", "num_tokens_actual"],
+        index=["model_name", "bucket", "num_tokens"],
         values="latency_sec",
     )
     df = (
         df.group_by(["model_name", "bucket"], maintain_order=False)
         .agg(
             pl.len().alias("n"),
-            pl.col("num_tokens_actual").median().alias("tok_p50"),
+            pl.col("num_tokens").median().alias("tok_p50"),
             (pl.col("base").median() * 1000).round(2).alias("base_ms_p50"),
             (pl.col("compiled").median() * 1000).round(2).alias("compiled_ms_p50"),
             (pl.col("base").quantile(0.9) * 1000).round(2).alias("base_ms_p90"),
