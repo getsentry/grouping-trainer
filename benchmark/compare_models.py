@@ -45,7 +45,7 @@ MODEL_NAME_TO_ATOL: dict[str, float] = {
     "lightonai/modernbert-embed-large": 6e-3,
 }
 
-STEP_BETWEEN_INPUT_TOKENS = 8
+NUM_SAMPLES_PER_BUCKET = 32
 MIN_TOKENS = 8
 DEFAULT_COMPILE_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
 
@@ -68,14 +68,16 @@ def _load_sdpa_with_eager_fallback[T: gt.utils.SentenceTransformer](cls: type[T]
         return cls(model_name, model_kwargs=model_kwargs_eager)
 
 
-def _input_token_lengths(max_seq_length: int, step: int = STEP_BETWEEN_INPUT_TOKENS) -> list[int]:
+def _input_token_lengths(max_seq_length: int, num_samples: int = NUM_SAMPLES_PER_BUCKET) -> list[int]:
     """
-    Return sorted token-length targets: `step` grid plus B-1, B, B+1 for each bucket B.
+    Return sorted token-length targets: `num_samples` uniform per bucket plus B-1, B, B+1 for each bucket B.
     """
-    grid = set(range(MIN_TOKENS, max_seq_length + 1, step))
+    buckets_active = [bucket for bucket in DEFAULT_COMPILE_TOKEN_BUCKETS if bucket < max_seq_length]
+    edges = [MIN_TOKENS, *buckets_active, max_seq_length]
+    grid: set[int] = set()
+    for lower, upper in zip(edges[:-1], edges[1:], strict=True):
+        grid.update(int(value) for value in np.linspace(lower, upper, num_samples))
     for bucket in DEFAULT_COMPILE_TOKEN_BUCKETS:
-        if bucket > max_seq_length:
-            continue
         for offset in (-1, 0, 1):
             value = bucket + offset
             if MIN_TOKENS <= value <= max_seq_length:
