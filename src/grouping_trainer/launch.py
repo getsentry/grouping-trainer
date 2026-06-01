@@ -764,6 +764,8 @@ def gce_vm(
             if gce_create_cmd_result.returncode == 0:
                 creation_type = "Flex-started" if provision_type == "FLEX_START" else "Created"
                 logger.info(f"{creation_type} {instance_name} in zone {zone}")
+                if wait_for_instance_creation:
+                    logger.info(f"bin/gtssh {instance_name} {zone} to SSH into the instance")
                 return
 
             # Retry next zone if stockout
