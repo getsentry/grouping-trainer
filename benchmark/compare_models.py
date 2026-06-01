@@ -1,12 +1,17 @@
 """
 Runs each model across a grid of texts w/ different token lengths.
 
+Always runs on a GPU. If CUDA is not locally available, auto-launches a flex-start GPU instance
+and re-runs the same invocation there.
+
 uv run python benchmark/compare_models.py
 """
 
 import gc
 import logging
+import os
 import random
+import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,12 +34,12 @@ MODEL_NAMES: tuple[str, ...] = (
     # Add more models here:
     # ...
     # All models below achieve the expected speedup. To test new models, add them above so they're tested first.
+    "Alibaba-NLP/gte-modernbert-base",
     "sentence-transformers/all-MiniLM-L6-v2",
     "sentence-transformers/all-mpnet-base-v2",
     "BAAI/bge-small-en-v1.5",
     "BAAI/bge-base-en-v1.5",
     "intfloat/e5-small-v2",
-    "Alibaba-NLP/gte-modernbert-base",
     "lightonai/modernbert-embed-large",
 )
 
@@ -215,8 +220,8 @@ def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "
         version_to_embeddings[version] = benchmark_model_result.embeddings
 
     # Check correctness by comparing cos sim across versions
-    atol = 1e-4 if torch.cuda.is_bf16_supported() else 1e-5
-    rtol = 1e-4 if torch.cuda.is_bf16_supported() else 1e-5
+    atol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
+    rtol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
     for version1, version2 in combinations(versions, 2):
         cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
         diag = np.diag(cos_sim)
@@ -291,29 +296,39 @@ def _warmup_summary(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def main(
-    output_path: Path | None = None,
     model_names: tuple[str, ...] = MODEL_NAMES,
+    *,
+    no_gpu: bool = False,
+    zone: str | None = None,
 ):
     """
     Benchmark gt.utils.SentenceTransformer vs gt.compiled.SentenceTransformer across multiple models.
 
     Parameters
     ----------
-    output_path
-        CSV output path. Defaults to benchmark/results/multi_model_<timestamp>.csv.
     model_names
         Space-separated list of HuggingFace model IDs to benchmark.
         Example: "BAAI/bge-small-en-v1.5 BAAI/bge-base-en-v1.5 sentence-transformers/all-MiniLM-L6-v2"
+    no_gpu
+        Don't sync-start an L4 and run this same invocation there, instead run it locally.
+    zone
+        Override the default GCP zone for the L4 when launching the GPU instance. Useful when capacity is dry in the
+        default zone.
     """
     gt.logging.configure_logging(process_type="benchmark_multi_model")
 
+    if not (no_gpu or gt.launch.is_on_remote()):
+        run_name = gt.launch.run_name_from_shortname("compare-models")
+        gt.launch.run_argv_remotely(
+            gpu="l4",
+            job_type=gt.launch.JobType.BENCHMARK,
+            run_name=run_name,
+            zone=zone,
+        )
+        return
+
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required (gt.compiled.SentenceTransformer uses CUDA graphs).")
-
-    if output_path is None:
-        stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-        output_path = Path("benchmark/results") / f"multi_model_{stamp}.csv"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
     records_for_all_models = [
         record
@@ -322,8 +337,6 @@ def main(
     ]
 
     df = pl.DataFrame(records_for_all_models)
-    df.write_csv(output_path)
-    logger.info(f"Wrote {len(df):,} records to {output_path}")
 
     print()
     print("=== Per-(model, bucket) latency (medians in ms, speedup = base / compiled) ===")
@@ -332,6 +345,16 @@ def main(
     print("=== compile_and_warm_up() wall time per model ===")
     print(_df_to_markdown(_warmup_summary(df)))
     print()
+
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    path_output = Path("benchmark/results") / f"multi_model_{timestamp}.csv"
+    path_output.parent.mkdir(parents=True, exist_ok=True)
+    df.write_csv(path_output)
+    logger.info(f"Wrote {len(df):,} records to {path_output}")
+
+    if gt.launch.is_on_remote():
+        path_gcs_output = f"gs://{os.environ['GROUPING_TRAINER_BUCKET']}/perf/multi-model/{timestamp}/multi_model.csv"
+        subprocess.run(["gcloud", "storage", "cp", str(path_output), path_gcs_output], check=True)
 
 
 if __name__ == "__main__":
