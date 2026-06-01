@@ -49,7 +49,7 @@ NUM_SAMPLES_PER_BUCKET = 32
 MIN_TOKENS = 8
 DEFAULT_COMPILE_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
 
-type Version = Literal["base", "compiled"]
+type Version = Literal["base", "compiled", "st_compiled"]
 
 
 def _load_sdpa_with_eager_fallback[T: gt.utils.SentenceTransformer](cls: type[T], model_name: str) -> T:
@@ -203,13 +203,15 @@ def _benchmark_model_version(
     _clear_context()
 
     logger.info(f"[{model_name}] loading")
-    model = _load_sdpa_with_eager_fallback(
-        gt.compiled.SentenceTransformer if version == "compiled" else gt.utils.SentenceTransformer,
-        model_name,
-    )
+    cls = gt.compiled.SentenceTransformer if version == "compiled" else gt.utils.SentenceTransformer
+    model = _load_sdpa_with_eager_fallback(cls, model_name)
     if isinstance(model, gt.compiled.SentenceTransformer):
         _, warmup_sec = _time_func(model.compile_and_warm_up)
     else:
+        if version == "st_compiled":
+            # ST's built-in torch.compile path. dynamic=True compiles once for all shapes (vs default static, which
+            # would recompile per sequence length and dominate the sweep).
+            model.compile(dynamic=True)
         _, warmup_sec = _time_func(model.encode, "warm up")
 
     records: list[Record] = []
@@ -235,7 +237,9 @@ def _cos_sim(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return a @ b.T
 
 
-def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "compiled")) -> list[Record]:
+def _benchmark_model(
+    model_name: str, versions: tuple[Version, ...] = ("base", "st_compiled", "compiled")
+) -> list[Record]:
     target_num_tokens_to_text = _target_num_tokens_to_text(model_name)
     records: list[Record] = []
     version_to_embeddings: dict[Version, np.ndarray] = {}
@@ -309,9 +313,9 @@ def _summary_per_model_bucket(df: pl.DataFrame) -> pl.DataFrame:
             pl.len().alias("n"),
             pl.col("num_tokens").median().alias("tok_p50"),
             (pl.col("base").median() * 1000).round(2).alias("base_ms_p50"),
+            (pl.col("st_compiled").median() * 1000).round(2).alias("st_compiled_ms_p50"),
             (pl.col("compiled").median() * 1000).round(2).alias("compiled_ms_p50"),
-            (pl.col("base").quantile(0.9) * 1000).round(2).alias("base_ms_p90"),
-            (pl.col("compiled").quantile(0.9) * 1000).round(2).alias("compiled_ms_p90"),
+            (pl.col("base").median() / pl.col("st_compiled").median()).round(2).alias("speedup_st_p50"),
             (pl.col("base").median() / pl.col("compiled").median()).round(2).alias("speedup_p50"),
         )
         .sort(["model_name", "tok_p50"])
@@ -321,14 +325,16 @@ def _summary_per_model_bucket(df: pl.DataFrame) -> pl.DataFrame:
 
 def _warmup_summary(df: pl.DataFrame) -> pl.DataFrame:
     """
-    One row per model with the compiled-version `compile_and_warm_up()` wall time.
+    One row per model with the warmup wall time for each compiled version.
     """
     return (
-        df.filter((pl.col("phase") == "warmup") & (pl.col("version") == "compiled"))
-        .select(
-            pl.col("model_name"),
-            pl.col("latency_sec").round(1).alias("compile_and_warmup_sec"),
+        df.filter((pl.col("phase") == "warmup") & (pl.col("version") != "base"))
+        .pivot(on="version", index="model_name", values="latency_sec")
+        .with_columns(
+            pl.col("st_compiled").round(1).alias("st_warmup_sec"),
+            pl.col("compiled").round(1).alias("warmup_sec"),
         )
+        .select("model_name", "st_warmup_sec", "warmup_sec")
         .sort("model_name")
     )
 
