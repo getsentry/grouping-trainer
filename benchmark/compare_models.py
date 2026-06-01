@@ -32,13 +32,13 @@ MODEL_NAMES: tuple[str, ...] = (
     # Add more models here:
     # ...
     # All models below achieve the expected speedup. To test new models, add them above so they're tested first.
+    "lightonai/modernbert-embed-large",
     "Alibaba-NLP/gte-modernbert-base",
     "sentence-transformers/all-MiniLM-L6-v2",
     "sentence-transformers/all-mpnet-base-v2",
     "BAAI/bge-small-en-v1.5",
     "BAAI/bge-base-en-v1.5",
     "intfloat/e5-small-v2",
-    "lightonai/modernbert-embed-large",
 )
 
 STEP_BETWEEN_INPUT_TOKENS = 32
@@ -223,7 +223,9 @@ def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "
     for version1, version2 in combinations(versions, 2):
         cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
         diag = np.diag(cos_sim)
-        assert np.allclose(diag, 1.0, atol=atol, rtol=rtol), f"Cos sim is not 1.0: {version1} vs {version2}, {cos_sim}"
+        assert np.allclose(diag, 1.0, atol=atol, rtol=rtol), (
+            f"Cos sim is not 1.0: {version1} vs {version2}, ({diag.min()}, {diag.max()})"
+        )
 
     return records
 
