@@ -18,6 +18,13 @@ type MatmulPrecision = Literal["highest", "high", "medium"]
 _COMPILED_MATMUL_PRECISION: MatmulPrecision = "high"
 "Shared precision for compile_and_warm_up and forward."
 
+DEFAULT_COMPILED_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
+# After 1024, for the v2.1 model, empirically it seems like Python overhead isn't clearly worse than attention overhead.
+# Compiled needs to pad, so it gets worse as the sequence length increases. Stacktrace token lengths in particular have
+# a long enough tail that we end up w/ an appreciable speedup. Anything higher should be benchmarked unless you know
+# you'll only get small sequences. Run the benchmark over stacktraces sampled from prod in
+# https://github.com/getsentry/grouping-trainer/blob/main/benchmark
+
 
 @contextmanager
 def _set_float32_matmul_precision(precision: MatmulPrecision):
@@ -55,15 +62,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         self,
         *args,
         compiled_batch_size: int = 1,
-        # Anything higher should be benchmarked unless you know you'll only get small sequences.
-        #
-        compiled_token_buckets: tuple[int, ...] = (64, 128, 256, 512, 1024),
-        # After 1024, for the v2.1 model, empirically it seems like Python overhead isn't clearly worse than attention
-        # overhead. Compiled needs to pad, so it gets worse as the sequence length increases.
-        # Stacktrace token lengths in particular have a long enough tail that we end up w/ an appreciable speedup.
-        # Run the benchmark over stacktraces sampled from prod in:
-        # https://github.com/getsentry/grouping-trainer/blob/main/benchmark
-        #
+        compiled_token_buckets: tuple[int, ...] = DEFAULT_COMPILED_TOKEN_BUCKETS,
         tokenize_and_forward_kwargs: dict[str, Any] | None = None,
         # SentenceTransformer.encode passes **kwargs to tokenize and forward, so they need to provided up front so that
         # compile_and_warm_up uses them.

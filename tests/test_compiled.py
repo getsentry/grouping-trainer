@@ -5,7 +5,6 @@ import torch
 
 import grouping_trainer as gt
 
-COMPILED_TOKEN_BUCKETS = (64, 128, 256)
 BUCKET_EXCEEDING_MAX_SEQ_LENGTH = 999_999
 
 
@@ -17,7 +16,7 @@ def sentence_transformer(model_name: str) -> gt.compiled.SentenceTransformer:
     return gt.compiled.SentenceTransformer(
         model_name,
         compiled_batch_size=1,
-        compiled_token_buckets=(*COMPILED_TOKEN_BUCKETS, BUCKET_EXCEEDING_MAX_SEQ_LENGTH),
+        compiled_token_buckets=(*gt.compiled.DEFAULT_COMPILED_TOKEN_BUCKETS, BUCKET_EXCEEDING_MAX_SEQ_LENGTH),
     )
 
 
@@ -25,7 +24,10 @@ class TestInit:
     def test_filters_buckets_exceeding_max_seq_length(
         self, sentence_transformer: gt.compiled.SentenceTransformer
     ) -> None:
-        assert all(bucket in sentence_transformer._compiled_token_buckets for bucket in COMPILED_TOKEN_BUCKETS)
+        assert all(
+            bucket in sentence_transformer._compiled_token_buckets
+            for bucket in gt.compiled.DEFAULT_COMPILED_TOKEN_BUCKETS
+        )
         assert BUCKET_EXCEEDING_MAX_SEQ_LENGTH not in sentence_transformer._compiled_token_buckets
 
 
@@ -47,17 +49,17 @@ class TestTokenize:
         assert num_tokens == expected_bucket
 
     def test_no_padding_when_exceeding_all_buckets(self, sentence_transformer: gt.compiled.SentenceTransformer) -> None:
-        long_text = "word " * 1000
+        long_text = "word " * 2000
         result = sentence_transformer.tokenize([long_text])
         num_tokens = result["input_ids"].shape[1]
-        assert num_tokens > max(COMPILED_TOKEN_BUCKETS)
+        assert num_tokens > max(gt.compiled.DEFAULT_COMPILED_TOKEN_BUCKETS)
         assert num_tokens not in sentence_transformer._compiled_token_buckets
 
     def test_batch_size_mismatch_skips_padding(self, sentence_transformer: gt.compiled.SentenceTransformer) -> None:
         # compiled_batch_size is 1, passing 2 texts triggers early return without padding
         result = sentence_transformer.tokenize(["hello", "world"])
         num_tokens = result["input_ids"].shape[1]
-        assert num_tokens < min(COMPILED_TOKEN_BUCKETS)
+        assert num_tokens < min(gt.compiled.DEFAULT_COMPILED_TOKEN_BUCKETS)
 
 
 @contextlib.contextmanager

@@ -46,7 +46,6 @@ MODEL_NAME_TO_ATOL: dict[str, float] = {
 
 NUM_SAMPLES_PER_BUCKET = 32
 MIN_TOKENS = 8
-DEFAULT_COMPILE_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
 
 type Version = Literal["base", "compiled", "st_compiled"]
 
@@ -71,12 +70,12 @@ def _input_token_lengths(max_seq_length: int, num_samples: int = NUM_SAMPLES_PER
     """
     Return sorted token-length targets: `num_samples` uniform per bucket plus B-1, B, B+1 for each bucket B.
     """
-    buckets_active = [bucket for bucket in DEFAULT_COMPILE_TOKEN_BUCKETS if bucket < max_seq_length]
+    buckets_active = [bucket for bucket in gt.compiled.DEFAULT_COMPILED_TOKEN_BUCKETS if bucket < max_seq_length]
     edges = [MIN_TOKENS, *buckets_active, max_seq_length]
     grid: set[int] = set()
     for lower, upper in zip(edges[:-1], edges[1:], strict=True):
         grid.update(int(value) for value in np.linspace(lower, upper, num_samples))
-    for bucket in DEFAULT_COMPILE_TOKEN_BUCKETS:
+    for bucket in gt.compiled.DEFAULT_COMPILED_TOKEN_BUCKETS:
         for offset in (-1, 0, 1):
             value = bucket + offset
             if MIN_TOKENS <= value <= max_seq_length:
@@ -303,7 +302,7 @@ def _summary_per_model_bucket(df: pl.DataFrame) -> pl.DataFrame:
     Pivot `df`'s `phase="run"` rows wide on `version` and aggregate per `(model_name, bucket)`.
     """
     df = df.filter(pl.col("phase") == "run")
-    df = _add_bucket_label(df, buckets=DEFAULT_COMPILE_TOKEN_BUCKETS, column="num_tokens")
+    df = _add_bucket_label(df, buckets=gt.compiled.DEFAULT_COMPILED_TOKEN_BUCKETS, column="num_tokens")
     df = df.pivot(
         on="version",
         index=["model_name", "bucket", "num_tokens"],
