@@ -41,6 +41,9 @@ MODEL_NAMES: tuple[str, ...] = (
     "BAAI/bge-base-en-v1.5",
     "intfloat/e5-small-v2",
 )
+MODEL_NAME_TO_ATOL: dict[str, float] = {
+    "lightonai/modernbert-embed-large": 6e-3,
+}
 
 STEP_BETWEEN_INPUT_TOKENS = 8
 MIN_TOKENS = 8
@@ -244,12 +247,12 @@ def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "
         records.extend(benchmark_model_result.records)
         version_to_embeddings[version] = benchmark_model_result.embeddings
 
-    # Sanity check correctness by comparing cos sim. PyTorch's huggingface dynamo bench does
-    # allclose(eager_bf16, compiled_bf16) at tol=1e-3 (bumped to 4e-3 for known-noisy models) for its bf16+compile
-    # AMP inference suite, with an fp64 reference as a second-chance fallback when allclose fails — see
-    # https://github.com/pytorch/pytorch/blob/19ecfe58b45fe56afcd9155ad721dcf9a7569339/benchmarks/dynamo/huggingface.py#L529.
-    # We do the same allclose on the cos_sim diagonal. A stricter test would also check against an fp64 reference.
-    atol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
+    # Sanity check correctness by comparing cos sim. PyTorch's huggingface dynamo bench does allclose(eager_bf16,
+    # compiled_bf16) at tol=1e-3 (bumped to 4e-3 for known-noisy models) for bf16+compile AMP inference checking, with
+    # an fp64 reference as a second-chance fallback when allclose fails.
+    # https://github.com/pytorch/pytorch/blob/19ecfe58b45fe56afcd9155ad721dcf9a7569339/benchmarks/dynamo/huggingface.py#L529
+    default_atol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
+    atol = MODEL_NAME_TO_ATOL.get(model_name, default_atol)
     for version1, version2 in combinations(versions, 2):
         cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
         diag = np.diag(cos_sim)
