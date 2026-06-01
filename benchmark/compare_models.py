@@ -9,10 +9,13 @@ import logging
 import random
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
+from itertools import combinations
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 
+import numpy as np
 import polars as pl
 import torch
 from tap import tapify
@@ -23,6 +26,9 @@ import grouping_trainer as gt
 logger = logging.getLogger(__name__)
 
 MODEL_NAMES: tuple[str, ...] = (
+    # Add more models here:
+    # ...
+    # All models below achieve the expected speedup. To test new models, add them above so they're tested first.
     "sentence-transformers/all-MiniLM-L6-v2",
     "sentence-transformers/all-mpnet-base-v2",
     "BAAI/bge-small-en-v1.5",
@@ -39,15 +45,15 @@ DEFAULT_COMPILE_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
 type Version = Literal["base", "compiled"]
 
 
-def _load_with_sdpa_fallback[T: gt.utils.SentenceTransformer](cls: type[T], model_name: str) -> T:
-    model_kwargs = {}
+def _load_sdpa_with_eager_fallback[T: gt.utils.SentenceTransformer](cls: type[T], model_name: str) -> T:
+    model_kwargs = {"attn_implementation": "sdpa"}
     if torch.cuda.is_bf16_supported():
-        model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
+        model_kwargs |= {"dtype": torch.bfloat16}
     try:
         return cls(model_name, model_kwargs=model_kwargs)
-    except ValueError as e:
-        if "scaled_dot_product_attention" not in str(e):
-            raise
+    except ValueError as exception:
+        if "scaled_dot_product_attention" not in str(exception):
+            raise exception
         logger.warning(f"[{model_name}] SDPA not supported. Falling back to eager.")
         model_kwargs_eager = {k: v for k, v in model_kwargs.items() if k != "attn_implementation"}
         return cls(model_name, model_kwargs=model_kwargs_eager)
@@ -82,10 +88,11 @@ def _generate_texts(
     return target_num_tokens_to_text_and_actual_num
 
 
-def _time_func[**P](func: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> float:
+def _time_func[**P, R](func: Callable[P, R], *args: P.args, **kwargs: P.kwargs) -> tuple[R, float]:
     start = time.monotonic()
-    func(*args, **kwargs)
-    return time.monotonic() - start
+    out = func(*args, **kwargs)
+    latency_sec = time.monotonic() - start
+    return out, latency_sec
 
 
 class Record(TypedDict):
@@ -97,20 +104,29 @@ class Record(TypedDict):
     latency_sec: float
 
 
+@dataclass(kw_only=True, frozen=True)
+class BenchmarkModelResult:
+    records: list[Record]
+    embeddings: np.ndarray
+
+
 def _run_model(
     model: gt.utils.SentenceTransformer,
     version: Version,
     model_name: str,
     target_num_tokens_to_text_and_actual_num: dict[int, tuple[str, int]],
-) -> list[Record]:
+) -> BenchmarkModelResult:
     """
     Time the encode() call for each target.
     """
+    assert target_num_tokens_to_text_and_actual_num
     records: list[Record] = []
+    embeddings: list[np.ndarray] = []
     for target_num_tokens, (text, actual_num_tokens) in tqdm(
         target_num_tokens_to_text_and_actual_num.items(), desc=f"{model_name} {version}"
     ):
-        latency = _time_func(model.encode, text, convert_to_numpy=True, show_progress_bar=False)
+        embedding, latency_sec = _time_func(model.encode, text, convert_to_numpy=True, show_progress_bar=False)
+        embeddings.append(cast(np.ndarray, embedding))
         records.append(
             {
                 "model_name": model_name,
@@ -118,10 +134,10 @@ def _run_model(
                 "phase": "run",
                 "num_tokens_target": target_num_tokens,
                 "num_tokens_actual": actual_num_tokens,
-                "latency_sec": latency,
+                "latency_sec": latency_sec,
             }
         )
-    return records
+    return BenchmarkModelResult(records=records, embeddings=np.array(embeddings))
 
 
 def _clear_context():
@@ -130,37 +146,35 @@ def _clear_context():
     torch.cuda.empty_cache()
 
 
-def _target_num_tokens_to_text_and_actual_num(
-    model_name: str, rng_for_input_order: random.Random
-) -> dict[int, tuple[str, int]]:
+def _target_num_tokens_to_text_and_actual_num(model_name: str) -> dict[int, tuple[str, int]]:
     model = gt.utils.SentenceTransformer(model_name)
     input_token_lengths = _input_token_lengths(model.max_seq_length)
     target_num_tokens_to_text_and_actual_num = _generate_texts(model.tokenize, input_token_lengths)
     target_num_tokens_order = list(target_num_tokens_to_text_and_actual_num.keys())
-    rng_for_input_order.shuffle(target_num_tokens_order)
+    random.Random(42).shuffle(target_num_tokens_order)
     return {
         target_num_tokens: target_num_tokens_to_text_and_actual_num[target_num_tokens]
         for target_num_tokens in target_num_tokens_order
     }
 
 
-def _benchmark_model(
+def _benchmark_model_version(
     model_name: str,
     target_num_tokens_to_text_and_actual_num: dict[int, tuple[str, int]],
     *,
     version: Version,
-) -> list[Record]:
+) -> BenchmarkModelResult:
     _clear_context()
 
     logger.info(f"[{model_name}] loading")
-    model = _load_with_sdpa_fallback(
+    model = _load_sdpa_with_eager_fallback(
         gt.compiled.SentenceTransformer if version == "compiled" else gt.utils.SentenceTransformer,
         model_name,
     )
     if isinstance(model, gt.compiled.SentenceTransformer):
-        warmup_sec = _time_func(model.compile_and_warm_up)
+        _, warmup_sec = _time_func(model.compile_and_warm_up)
     else:
-        warmup_sec = _time_func(model.encode, "warm up")
+        _, warmup_sec = _time_func(model.encode, "warm up")
 
     records: list[Record] = []
     records.append(
@@ -173,9 +187,41 @@ def _benchmark_model(
             "latency_sec": warmup_sec,
         }
     )
-    records.extend(_run_model(model, version, model_name, target_num_tokens_to_text_and_actual_num))
+    benchmark_model_result = _run_model(model, version, model_name, target_num_tokens_to_text_and_actual_num)
+    records.extend(benchmark_model_result.records)
 
     _clear_context()
+    return BenchmarkModelResult(records=records, embeddings=benchmark_model_result.embeddings)
+
+
+def _cos_sim(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    a = a / np.linalg.norm(a, axis=-1, keepdims=True)
+    b = b / np.linalg.norm(b, axis=-1, keepdims=True)
+    return a @ b.T
+
+
+def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "compiled")) -> list[Record]:
+    target_num_tokens_to_text_and_actual_num = _target_num_tokens_to_text_and_actual_num(model_name)
+    records: list[Record] = []
+    version_to_embeddings: dict[Version, np.ndarray] = {}
+
+    for version in versions:
+        benchmark_model_result = _benchmark_model_version(
+            model_name,
+            target_num_tokens_to_text_and_actual_num,
+            version=version,
+        )
+        records.extend(benchmark_model_result.records)
+        version_to_embeddings[version] = benchmark_model_result.embeddings
+
+    # Check correctness by comparing cos sim across versions
+    atol = 1e-4 if torch.cuda.is_bf16_supported() else 1e-5
+    rtol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
+    for version1, version2 in combinations(versions, 2):
+        cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
+        diag = np.diag(cos_sim)
+        assert np.allclose(diag, 1.0, atol=atol, rtol=rtol), f"Cos sim is not 1.0: {version1} vs {version2}"
+
     return records
 
 
@@ -246,7 +292,6 @@ def _warmup_summary(df: pl.DataFrame) -> pl.DataFrame:
 
 def main(
     output_path: Path | None = None,
-    seed: int = 0,
     model_names: tuple[str, ...] = MODEL_NAMES,
 ):
     """
@@ -256,39 +301,30 @@ def main(
     ----------
     output_path
         CSV output path. Defaults to benchmark/results/multi_model_<timestamp>.csv.
-    seed
-        Random seed for the per-model input-order shuffle.
     model_names
-        HuggingFace model IDs to benchmark. Defaults to MODEL_NAMES at the top of this file.
+        Space-separated list of HuggingFace model IDs to benchmark.
+        Example: "BAAI/bge-small-en-v1.5 BAAI/bge-base-en-v1.5 sentence-transformers/all-MiniLM-L6-v2"
     """
     gt.logging.configure_logging(process_type="benchmark_multi_model")
 
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required (gt.compiled.SentenceTransformer uses CUDA graphs).")
 
-    # Set output path
     if output_path is None:
         stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
         output_path = Path("benchmark/results") / f"multi_model_{stamp}.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Run models on benchmark
-    rng_for_input_order = random.Random(seed)
-    records_for_all_models: list[Record] = []
-    for model_name in model_names:
-        target_num_tokens_to_text_and_actual_num = _target_num_tokens_to_text_and_actual_num(
-            model_name, rng_for_input_order
-        )
-        for version in ("base", "compiled"):
-            records_for_all_models.extend(
-                _benchmark_model(model_name, target_num_tokens_to_text_and_actual_num, version=version)
-            )
+    records_for_all_models = [
+        record
+        for model_name in tqdm(model_names, desc="Benchmarking models")
+        for record in _benchmark_model(model_name)
+    ]
 
-    # Write results
     df = pl.DataFrame(records_for_all_models)
     df.write_csv(output_path)
     logger.info(f"Wrote {len(df):,} records to {output_path}")
-    # Should be small enough to print
+
     print()
     print("=== Per-(model, bucket) latency (medians in ms, speedup = base / compiled) ===")
     print(_df_to_markdown(_summary_per_model_bucket(df)))
