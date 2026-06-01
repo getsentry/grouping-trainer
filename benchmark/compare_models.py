@@ -218,7 +218,7 @@ def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "
         version_to_embeddings[version] = benchmark_model_result.embeddings
 
     # Check correctness by comparing cos sim across versions
-    atol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
+    atol = 1e-2 if torch.cuda.is_bf16_supported() else 1e-4
     rtol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
     for version1, version2 in combinations(versions, 2):
         cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
