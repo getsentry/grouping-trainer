@@ -1,8 +1,6 @@
 """
-Runs each model across a grid of texts w/ different token lengths.
-
-Always runs on a GPU. If CUDA is not locally available, auto-launches a flex-start GPU instance
-and re-runs the same invocation there.
+Runs each model across a grid of texts w/ different token lengths, comparing the regular SentenceTransformer vs its CUDA
+graph-compiled version.
 
 uv run python benchmark/compare_models.py
 """
