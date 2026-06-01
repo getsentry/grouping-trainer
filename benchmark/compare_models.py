@@ -41,7 +41,7 @@ MODEL_NAMES: tuple[str, ...] = (
     "lightonai/modernbert-embed-large",
 )
 
-STEP_BETWEEN_INPUT_TOKENS = 4
+STEP_BETWEEN_INPUT_TOKENS = 32
 MIN_TOKENS = 8
 DEFAULT_COMPILE_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
 
@@ -223,7 +223,7 @@ def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "
     for version1, version2 in combinations(versions, 2):
         cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
         diag = np.diag(cos_sim)
-        assert np.allclose(diag, 1.0, atol=atol, rtol=rtol), f"Cos sim is not 1.0: {version1} vs {version2}"
+        assert np.allclose(diag, 1.0, atol=atol, rtol=rtol), f"Cos sim is not 1.0: {version1} vs {version2}, {cos_sim}"
 
     return records
 
