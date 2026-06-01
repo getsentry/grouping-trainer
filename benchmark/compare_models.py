@@ -34,7 +34,7 @@ MODEL_NAMES: tuple[str, ...] = (
     # ...
     # All models below achieve the expected speedup. To test new models, add them above so they're tested first.
     "lightonai/modernbert-embed-large",
-    # "Alibaba-NLP/gte-modernbert-base",  # TODO: seems to drift w/ compilation
+    # "Alibaba-NLP/gte-modernbert-base",  # TODO: drifts w/ compilation. Strange b/c the larger model above doesn't.
     "sentence-transformers/all-MiniLM-L6-v2",
     "sentence-transformers/all-mpnet-base-v2",
     "BAAI/bge-small-en-v1.5",
