@@ -38,7 +38,7 @@ MODEL_NAMES: tuple[str, ...] = (
     "lightonai/modernbert-embed-large",
 )
 
-STEP_BETWEEN_INPUT_TOKENS = 16
+STEP_BETWEEN_INPUT_TOKENS = 4
 MIN_TOKENS = 8
 DEFAULT_COMPILE_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
 
@@ -216,7 +216,7 @@ def _benchmark_model(model_name: str, versions: tuple[Version, ...] = ("base", "
 
     # Check correctness by comparing cos sim across versions
     atol = 1e-4 if torch.cuda.is_bf16_supported() else 1e-5
-    rtol = 1e-3 if torch.cuda.is_bf16_supported() else 1e-4
+    rtol = 1e-4 if torch.cuda.is_bf16_supported() else 1e-5
     for version1, version2 in combinations(versions, 2):
         cos_sim = _cos_sim(version_to_embeddings[version1], version_to_embeddings[version2])
         diag = np.diag(cos_sim)
