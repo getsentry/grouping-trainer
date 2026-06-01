@@ -16,6 +16,8 @@ exec sudo journalctl -u google-startup-scripts.service --no-pager "$@"
 EOF
 chmod +x /usr/local/bin/startup-logs
 
+export GROUPING_TRAINER_REMOTE=1
+
 # Set by gt.launch.gce_vm
 GROUPING_TRAINER_BUCKET=$(curl -fsS -H "Metadata-Flavor: Google" \
     http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-bucket)
@@ -97,6 +99,7 @@ gcloud storage cp -r "gs://${GROUPING_TRAINER_BUCKET}/final_csvs/" .
 {
     echo "export PATH=\"\$HOME/.local/bin:\$PATH\""
     echo "export GROUPING_TRAINER_BUCKET=$GROUPING_TRAINER_BUCKET"
+    echo "export GROUPING_TRAINER_REMOTE=1"
     echo "export WANDB_API_KEY=$WANDB_API_KEY"
     echo "cd $REPO_DIR && source .venv/bin/activate"
 } >> /root/.bashrc

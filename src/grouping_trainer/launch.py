@@ -38,9 +38,9 @@ logger = logging.getLogger(__name__)
 
 _REMOTE_ENV_VAR = "GROUPING_TRAINER_REMOTE"
 """
-Env var set by `run_argv_remotely()` in the cmd that runs on the remote instance, so the remote knows it shouldn't try
-to re-launch. Callers can check `is_on_remote()` if it wants to avoid launch from remote. The main training job doesn't
-check `is_on_remote()` so that it can launch the eval poller.
+Env var exported by `bin/_startup.sh` on every gt.launch-created VM, so any process on it—the eval'd command and
+interactive SSH sessions alike—knows it shouldn't try to re-launch. Callers can check `is_on_remote()` if it wants to
+avoid launching from remote. The main training job doesn't check `is_on_remote()` so that it can launch the eval poller.
 """
 
 _RUN_NAME_ENV_VAR = "GROUPING_TRAINER_RUN_NAME"
@@ -834,11 +834,11 @@ def run_argv_remotely(
     if is_on_remote():
         raise RuntimeError(
             f"run_argv_remotely() called while {_REMOTE_ENV_VAR} is set — likely a recursion bug. "
-            "Callers should guard the launch with `not gt.launch.is_on_remote()`."
+            "Callers should guard the launch with `not gt.launch.is_on_remote()`. "
+            "Or maybe you meant to run your command from local?"
         )
 
     command_parts: list[str] = [
-        f"{_REMOTE_ENV_VAR}=1",
         f"{_RUN_NAME_ENV_VAR}={shlex.quote(run_name)}",
     ]
 

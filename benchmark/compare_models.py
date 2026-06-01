@@ -328,15 +328,15 @@ def main(
         return
 
     if not torch.cuda.is_available():
-        raise SystemExit("CUDA is required (gt.compiled.SentenceTransformer uses CUDA graphs).")
+        raise SystemExit("CUDA is required b/c gt.compiled.SentenceTransformer uses CUDA graphs.")
 
-    records_for_all_models = [
-        record
-        for model_name in tqdm(model_names, desc="Benchmarking models")
-        for record in _benchmark_model(model_name)
-    ]
-
-    df = pl.DataFrame(records_for_all_models)
+    df = pl.DataFrame(
+        [
+            record
+            for model_name in tqdm(model_names, desc="Benchmarking models")
+            for record in _benchmark_model(model_name)
+        ]
+    )
 
     print()
     print("=== Per-(model, bucket) latency (medians in ms, speedup = base / compiled) ===")
