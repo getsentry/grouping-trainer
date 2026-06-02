@@ -769,7 +769,8 @@ def gce_vm(
                 logger.info(f"{creation_type} {instance_name} in zone {zone}")
                 if wait_for_instance_creation:
                     logger.info(
-                        f"bin/gtssh {instance_name} {zone} to SSH into the instance. Then sudo -i to switch to root."
+                        f"bin/gtssh {instance_name} {zone} to SSH into the instance after 2-3 minutes. "
+                        "Then sudo -i to switch to root."
                     )
                 return
 

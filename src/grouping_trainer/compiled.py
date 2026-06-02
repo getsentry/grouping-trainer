@@ -67,7 +67,7 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         # Anything higher should be benchmarked unless you know you'll only get small sequences.
         #
         compiled_token_buckets: tuple[int, ...] = DEFAULT_COMPILED_TOKEN_BUCKETS,
-        compile_fallback: bool = True,
+        compile_fallback: bool = False,
         tokenize_and_forward_kwargs: dict[str, Any] | None = None,
         # SentenceTransformer.encode passes **kwargs to tokenize and forward, so they need to provided up front so that
         # compile_and_warm_up uses them.
