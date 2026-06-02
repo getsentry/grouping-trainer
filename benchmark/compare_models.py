@@ -345,7 +345,11 @@ def _warmup_summary(df: pl.DataFrame) -> pl.DataFrame:
             # pl.col("st_compiled").round(1).alias("st_warmup_sec"),
             pl.col("compiled").round(1).alias("warmup_sec"),
         )
-        .select("model_name", "st_warmup_sec", "warmup_sec")
+        .select(
+            "model_name",
+            # "st_warmup_sec",
+            "warmup_sec",
+        )
         .sort("model_name")
     )
 
