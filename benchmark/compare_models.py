@@ -330,6 +330,7 @@ def _summary_per_model_bucket(df: pl.DataFrame) -> pl.DataFrame:
             (pl.col("base").quantile(0.9) / pl.col("compiled").quantile(0.9)).round(2).alias("speedup_p90"),
         )
         .sort(["model_name", "tok_p50"])
+        .drop("tok_p50", "n")
     )
     return df
 
