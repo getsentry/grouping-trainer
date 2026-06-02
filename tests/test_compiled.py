@@ -230,7 +230,8 @@ class TestForward:
             with pytest.raises(ValueError, match="compile_and_warm_up"):
                 model.forward(_encodings(64))
 
-    def test_fallback_raises_when_not_warmed(self, model: gt.compiled.SentenceTransformer) -> None:
+    def test_fallback_raises_when_not_warmed(self, model_name: str) -> None:
+        model = _load(model_name, compile_fallback=True)
         with _training_mode(model, training=False):
             # 100 is not a bucket -> the (dynamic-compiled) fallback, which also requires warm-up.
             with pytest.raises(ValueError, match="compile_and_warm_up"):
