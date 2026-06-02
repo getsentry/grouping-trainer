@@ -47,7 +47,7 @@ MODEL_NAME_TO_ATOL: dict[str, float] = {
 NUM_SAMPLES_PER_BUCKET = 32
 MIN_TOKENS = 8
 
-type Version = Literal["base", "compiled", "st_compiled"]
+type Version = Literal["base", "st_compiled", "compiled"]
 
 
 def _load_sdpa_with_eager_fallback[T: gt.utils.SentenceTransformer](cls: type[T], model_name: str) -> T:
@@ -240,7 +240,12 @@ def _cos_sim(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def _benchmark_model(
-    model_name: str, versions: tuple[Version, ...] = ("base", "st_compiled", "compiled")
+    model_name: str,
+    versions: tuple[Version, ...] = (
+        "base",
+        # "st_compiled",
+        "compiled",
+    ),
 ) -> list[Record]:
     target_num_tokens_to_text = _target_num_tokens_to_text(model_name)
     records: list[Record] = []
@@ -318,10 +323,11 @@ def _summary_per_model_bucket(df: pl.DataFrame) -> pl.DataFrame:
             pl.len().alias("n"),
             pl.col("num_tokens").median().alias("tok_p50"),
             (pl.col("base").median() * 1000).round(2).alias("base_ms_p50"),
-            (pl.col("st_compiled").median() * 1000).round(2).alias("st_compiled_ms_p50"),
+            # (pl.col("st_compiled").median() * 1000).round(2).alias("st_compiled_ms_p50"),
             (pl.col("compiled").median() * 1000).round(2).alias("compiled_ms_p50"),
-            (pl.col("base").median() / pl.col("st_compiled").median()).round(2).alias("speedup_st_p50"),
+            # (pl.col("base").median() / pl.col("st_compiled").median()).round(2).alias("speedup_st_p50"),
             (pl.col("base").median() / pl.col("compiled").median()).round(2).alias("speedup_p50"),
+            (pl.col("base").quantile(0.9) / pl.col("compiled").quantile(0.9)).round(2).alias("speedup_p90"),
         )
         .sort(["model_name", "tok_p50"])
     )
@@ -336,7 +342,7 @@ def _warmup_summary(df: pl.DataFrame) -> pl.DataFrame:
         df.filter((pl.col("phase") == "warmup") & (pl.col("version") != "base"))
         .pivot(on="version", index="model_name", values="latency_sec")
         .with_columns(
-            pl.col("st_compiled").round(1).alias("st_warmup_sec"),
+            # pl.col("st_compiled").round(1).alias("st_warmup_sec"),
             pl.col("compiled").round(1).alias("warmup_sec"),
         )
         .select("model_name", "st_warmup_sec", "warmup_sec")
