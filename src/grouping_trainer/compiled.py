@@ -4,8 +4,10 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from typing import Any, Literal, cast
 
+import sentence_transformers
 import torch
 import torch.nn.functional as F
+from packaging.version import Version
 
 import grouping_trainer as gt
 
@@ -19,11 +21,8 @@ _COMPILED_MATMUL_PRECISION: MatmulPrecision = "high"
 "Shared precision for compile_and_warm_up and forward."
 
 DEFAULT_COMPILED_TOKEN_BUCKETS: tuple[int, ...] = (64, 128, 256, 512, 1024)
-# After 1024, for the v2.1 model, empirically it seems like Python overhead isn't clearly worse than attention overhead.
-# Compiled needs to pad, so it gets worse as the sequence length increases. Stacktrace token lengths in particular have
-# a long enough tail that we end up w/ an appreciable speedup. Anything higher should be benchmarked unless you know
-# you'll only get small sequences. Run the benchmark over stacktraces sampled from prod in
-# https://github.com/getsentry/grouping-trainer/blob/main/benchmark
+
+_ENCODE_USES_PREPROCESS: bool = Version(sentence_transformers.__version__) >= Version("5.3.0")
 
 
 @contextmanager
@@ -43,7 +42,9 @@ def _create_text_with_num_tokens(
 ) -> str:
     token = " a"
     probe_num_words = 4
-    probe_num_tokens = tokenize_function([token * probe_num_words], **tokenize_kwargs)["input_ids"].shape[1]
+    probe_num_tokens = tokenize_function([token * probe_num_words], **tokenize_kwargs)["input_ids"].shape[
+        1
+    ]  # assume linear
     num_specials = probe_num_tokens - probe_num_words
     return token * (target_num_tokens - num_specials)
 
@@ -53,7 +54,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
     Python is too slow for small models w/ batch size 1. Rm its overhead by compiling. 1.5-3x speedup for our models.
     Cost: warming up can take minutes.
 
-    ONNX didn't work. See the note at the top of benchmark/run.py.
+    ONNX didn't work. See the note at the top of
+    https://github.com/getsentry/grouping-trainer/blob/main/benchmark/run.py.
 
     Assumes the tokenizer input type is a list of strings.
     """
@@ -62,7 +64,10 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
         self,
         *args,
         compiled_batch_size: int = 1,
+        # Anything higher should be benchmarked unless you know you'll only get small sequences.
+        #
         compiled_token_buckets: tuple[int, ...] = DEFAULT_COMPILED_TOKEN_BUCKETS,
+        compile_fallback: bool = True,
         tokenize_and_forward_kwargs: dict[str, Any] | None = None,
         # SentenceTransformer.encode passes **kwargs to tokenize and forward, so they need to provided up front so that
         # compile_and_warm_up uses them.
@@ -76,26 +81,42 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         self._tokenize_and_forward_kwargs = tokenize_and_forward_kwargs or {}
         self._compiled_batch_size = compiled_batch_size
+        self._compile_fallback = compile_fallback
+
         if not compiled_token_buckets:
             raise ValueError("Must provide at least one compiled token bucket")
         self._compiled_token_buckets = tuple(
-            sorted({bucket for bucket in compiled_token_buckets if bucket <= self.max_seq_length})
+            sorted({min(bucket, self.max_seq_length) for bucket in compiled_token_buckets})
         )
-        if not self._compiled_token_buckets:
-            raise ValueError(
-                f"All compiled token buckets are greater than the model's max sequence length: {self.max_seq_length}"
-            )
         self._compiled_forward: _ForwardFunction | None = None
+        "CUDA-graph per bucket which is hit when batch size and seq length matches"
+        self._compiled_forward_dynamic: _ForwardFunction | None = None
+        "Dynamic-shape torch.compile for the fallback, no re-compiles. None when compile_fallback=False"
 
-    def tokenize(
-        self, texts: list[str] | list[dict[Any, Any]] | list[tuple[str, str]], **kwargs
-    ) -> dict[str, torch.Tensor]:
+    def preprocess(
+        self,
+        inputs: list[str] | list[dict[Any, Any]] | list[tuple[str, str]],
+        prompt: str | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        # `preprocess` only exists on ST >= 5.3. On older versions, encode() calls tokenize directly so this override
+        # is never reached
+        return self._pad_to_bucket(super().preprocess(inputs, prompt=prompt, **kwargs))  # type: ignore[not-callable]
+
+    def tokenize(self, texts: list[str] | list[dict[Any, Any]] | list[tuple[str, str]], **kwargs) -> dict[str, Any]:
+        return self._pad_to_bucket(super().tokenize(texts, **kwargs))
+
+    def _pad_to_bucket(self, encodings: dict[str, Any]) -> dict[str, Any]:
         """
         Pads tokens to the nearest bucket so encode calls use a pre-compiled CUDA graph.
         """
-        encodings = super().tokenize(texts, **kwargs)
-        batch_size, num_tokens = encodings["input_ids"].shape
+        # Only standard 2D text features can be bucketed. Bail out for empty or non-text inputs, and for the flash-attn
+        # varlen "flattened" path, which drops the 2D attention_mask and is incompatible with fixed-shape CUDA graphs
+        # anyway. forward falls back to the non-compiled forward and logs an error.
+        if ("input_ids" not in encodings) or ("attention_mask" not in encodings) or (encodings["input_ids"].dim() != 2):
+            return encodings
 
+        batch_size, num_tokens = encodings["input_ids"].shape
         if batch_size != self._compiled_batch_size:
             # No point in padding. forward falls back to the non-compiled forward and logs an error.
             return encodings
@@ -108,7 +129,12 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         if target_num_tokens > num_tokens:
             num_padding_tokens = target_num_tokens - num_tokens
-            if extra_keys := (set(encodings.keys()) - {"input_ids", "attention_mask", "token_type_ids"}):
+            # preprocess (>= 5.3) also returns non-tensor metadata (e.g. modality, prompt_length) that must pass through
+            # untouched. Be loud about any other key: a sequence-length tensor we don't pad would crash the model on a
+            # shape mismatch.
+            padding_keys = {"input_ids", "attention_mask", "token_type_ids"}
+            passthrough_keys = {"modality", "prompt_length"}
+            if extra_keys := (set(encodings) - padding_keys - passthrough_keys):
                 raise ValueError(f"Unexpected encoding keys: {extra_keys}")
 
             encodings["input_ids"] = F.pad(
@@ -119,6 +145,11 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
                 encodings["token_type_ids"] = F.pad(encodings["token_type_ids"], (0, num_padding_tokens), value=0)
 
         return encodings
+
+    def _tokenize_unpadded(self, texts: list[str], **kwargs) -> dict[str, torch.Tensor | Any]:
+        if _ENCODE_USES_PREPROCESS:
+            return super().preprocess(texts, **kwargs)  # type: ignore[not-callable]
+        return super().tokenize(texts, **kwargs)
 
     def encode(self, *args, **kwargs):
         # NOTE: merging self._tokenize_and_forward_kwargs and kwargs is wrong b/c it can silently change the output that
@@ -139,10 +170,15 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             _ForwardFunction,
             torch.compile(super().forward, mode="reduce-overhead", dynamic=False),
         )
+        if self._compile_fallback:
+            self._compiled_forward_dynamic = cast(
+                _ForwardFunction,
+                torch.compile(super().forward, dynamic=True),
+            )
 
         for target_num_tokens in self._compiled_token_buckets:
             text = _create_text_with_num_tokens(
-                target_num_tokens, super().tokenize, **self._tokenize_and_forward_kwargs
+                target_num_tokens, self._tokenize_unpadded, **self._tokenize_and_forward_kwargs
             )
             texts = [text] * self._compiled_batch_size
 
@@ -150,7 +186,9 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
             # There are other approaches like creating the encoding ourselves, padding to the target length, and calling
             # .forward() (under inference_mode) ourselves. This approach didn't perform well, maybe b/c of subtle
             # differences in how .encode works. I prefer going through .encode and being loud about missing the target.
-            batch_size, num_tokens = super().tokenize(texts, **self._tokenize_and_forward_kwargs)["input_ids"].shape
+            batch_size, num_tokens = self._tokenize_unpadded(texts, **self._tokenize_and_forward_kwargs)[
+                "input_ids"
+            ].shape
             if batch_size != self._compiled_batch_size:
                 raise ValueError(f"Batch size mismatch: {batch_size} (attempt) != {self._compiled_batch_size} (target)")
             if num_tokens != target_num_tokens:
@@ -166,15 +204,16 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
                 # https://docs.nvidia.com/dl-cuda-graph/torch-cuda-graph/torch-integration.html#stream-capture-api-torch-cuda-graph
                 # https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/
 
-        # Warm up the eager fallback path by intentionally exceeding the biggest bucket.
-        logger.info("Warming up fallback path")
-        text = _create_text_with_num_tokens(
-            math.ceil((max(self._compiled_token_buckets) + self.max_seq_length) / 2),
-            super().tokenize,
-            **self._tokenize_and_forward_kwargs,
-        )
-        texts = [text] * self._compiled_batch_size
-        _ = self.encode(texts, show_progress_bar=False, **self._tokenize_and_forward_kwargs)
+        # Warm up the fallback path by intentionally exceeding the biggest bucket
+        if self._compile_fallback and max(self._compiled_token_buckets) < self.max_seq_length:
+            logger.info("Warming up fallback path")
+            text = _create_text_with_num_tokens(
+                math.ceil((max(self._compiled_token_buckets) + self.max_seq_length) / 2),
+                self._tokenize_unpadded,
+                **self._tokenize_and_forward_kwargs,
+            )
+            texts = [text] * self._compiled_batch_size
+            _ = self.encode(texts, show_progress_bar=False, **self._tokenize_and_forward_kwargs)
 
     @_set_float32_matmul_precision(_COMPILED_MATMUL_PRECISION)
     def forward(self, input: dict[str, torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
@@ -197,4 +236,10 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
 
         if not does_match_batch_size:
             logger.error(f"Batch size mismatch: {batch_size} (input) != {self._compiled_batch_size} (compiled)")
-        return super().forward(input, **kwargs)
+
+        # Fallback for out-of-bucket lengths or unexpected batch sizes.
+        if not self._compile_fallback:
+            return super().forward(input, **kwargs)
+        if self._compiled_forward_dynamic is None:
+            raise ValueError("compile_and_warm_up() must be called before using the compiled forward.")
+        return self._compiled_forward_dynamic(input, **kwargs)
