@@ -595,7 +595,10 @@ def _gce_multi_flex_start(
         f"Multi-flex-start launch-id={launch_id} submitted {n_submitted}/{len(zones)} VMs. "
         f"First to boot w/in {_FLEX_START_REQUEST_VALID_FOR_DURATION} will stay running, others self-delete."
     )
-    logger.info("Run bin/gtlist to list statuses, and bin/gtssh <name> <zone> to SSH into the one that's running.")
+    logger.info(
+        "Run bin/gtlist to list statuses, and bin/gtssh <name> <zone> to SSH into the one that's running. "
+        "Then sudo -i to switch to root."
+    )
 
 
 def _wandb_env_prefix() -> str:
@@ -765,7 +768,9 @@ def gce_vm(
                 creation_type = "Flex-started" if provision_type == "FLEX_START" else "Created"
                 logger.info(f"{creation_type} {instance_name} in zone {zone}")
                 if wait_for_instance_creation:
-                    logger.info(f"bin/gtssh {instance_name} {zone} to SSH into the instance")
+                    logger.info(
+                        f"bin/gtssh {instance_name} {zone} to SSH into the instance. Then sudo -i to switch to root."
+                    )
                 return
 
             # Retry next zone if stockout
