@@ -204,8 +204,8 @@ class SentenceTransformer(gt.utils.SentenceTransformer):
                 # https://docs.nvidia.com/dl-cuda-graph/torch-cuda-graph/torch-integration.html#stream-capture-api-torch-cuda-graph
                 # https://pytorch.org/blog/accelerating-pytorch-with-cuda-graphs/
 
-        # Warm up the fallback path by intentionally exceeding the biggest bucket
-        if self._compile_fallback and max(self._compiled_token_buckets) < self.max_seq_length:
+        # Warm up the fallback path (compiled or eager) by intentionally exceeding the biggest bucket
+        if max(self._compiled_token_buckets) < self.max_seq_length:
             logger.info("Warming up fallback path")
             text = _create_text_with_num_tokens(
                 math.ceil((max(self._compiled_token_buckets) + self.max_seq_length) / 2),
