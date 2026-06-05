@@ -3,11 +3,10 @@ Launch GCE instances. The instance's startup script does bin/_startup.sh to set 
 whatever `python` command was locally run.
 
 Training jobs don't need to start immediately, so by default they're launched async via flex-start w/ a max wait time of
-2 hours (anything higher 400'd for me). Flex-staring also saves some money. One hitch is that GCE doesn't have a
-built-in cross-region fallback mechanism. Jobs in this repo have no networking or region dependence—they communicate via
-GCS. To get around stockouts, this module implements a lightweight cross-region fallback. Specifically, an instance is
-flex-started in every zone, and they race to write a lock in GCS identifying this launch. The first to write it wins.
-The rest self-delete.
+2 hours (anything higher 400'd for me). Flex-starting also saves ~50% $$. To get around stockouts, this module
+implements a lightweight cross-region fallback b/c GCE doesn't have one. Specifically, an instance is flex-started in
+every zone, and they race to write a lock in GCS identifying this launch. The first to write it wins. The rest
+self-delete. Jobs in this repo have no networking or region dependence—they communicate via GCS.
 
 Eval jobs which use cheap L4 GPUs are launched by sync-looping through zones ourselves b/c eval ideally starts in time,
 e.g., training shouldn't start w/o an eval poller. L4s are cheap-enough that the flex-start discount isn't worth the
