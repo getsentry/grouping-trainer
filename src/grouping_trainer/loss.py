@@ -1,5 +1,5 @@
 """
-Pairwise losses. See https://github.com/getsentry/grouping-trainer/blob/main/decisions.md
+Pairwise losses. See https://github.com/getsentry/grouping-trainer/blob/main/lab_notebook.md
 """
 
 from abc import ABC, abstractmethod
