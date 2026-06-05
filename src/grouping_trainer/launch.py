@@ -596,7 +596,7 @@ def _gce_multi_flex_start(
     )
     logger.info(
         "Run bin/gtlist to list statuses, and bin/gtssh <name> <zone> to SSH into the one that's running. "
-        "Then sudo -i to switch to root."
+        "Then `sudo -i` to switch to root and operate, or `logs` to tail the run log."
     )
 
 
@@ -769,7 +769,7 @@ def gce_vm(
                 if wait_for_instance_creation:
                     logger.info(
                         f"bin/gtssh {instance_name} {zone} to SSH into the instance after 2-3 minutes. "
-                        "Then sudo -i to switch to root."
+                        "Then `sudo -i` to switch to root and operate, or `logs` to tail the run log."
                     )
                 return
 
