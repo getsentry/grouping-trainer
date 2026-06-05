@@ -138,7 +138,7 @@ def run(
             learning_rate=learning_rate,
             loss_type="contrastive",
             contrastive_margin=0.5,
-            training_csvs=gt.data.DEFAULT_TRAIN_PATHS,
+            training_csvs=gt.data.DEFAULT_TRAIN_PATHS + ("final_csvs/synthetic-hard-negatives-llm.csv",),
         )
 
     gt.data.ensure_local(training_config.training_csvs)
