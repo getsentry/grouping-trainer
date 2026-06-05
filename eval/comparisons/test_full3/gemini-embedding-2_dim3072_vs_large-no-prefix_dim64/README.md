@@ -1,11 +1,9 @@
-# gemini-cluster (dim=3072) vs large-no-prefix (dim=64), dataset: test_full3
+# gemini-embedding-2 (dim=3072) vs large-no-prefix (dim=64), dataset: test_full3
 
 Command to repro:
 
 ```bash
 python -m eval.compare \
-    --name_model1 gemini-cluster \
-    --name_model2 large-no-prefix \
     --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/gemini-embedding-2/similarities/test_full3 \
     --gcs_model2 gs://$GROUPING_TRAINER_BUCKET/runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3 \
     --threshold_model1 0.99 \
@@ -31,29 +29,29 @@ python -m eval.compare \
 
 | model           | pred_GROUP_rate | precision_GROUP | precision_SEPARATE | recall_GROUP | recall_SEPARATE |
 |-----------------|-----------------|-----------------|--------------------|--------------|-----------------|
-| gemini-cluster  | 0.09            | 0.93            | 0.45               | 0.15         | 0.98            |
+| gemini-embedding-2  | 0.09            | 0.93            | 0.45               | 0.15         | 0.98            |
 | large-no-prefix | 0.38            | 0.97            | 0.65               | 0.62         | 0.97            |
 
 ### Project-averaged metrics (152 projects)
 
 | model           | pred_GROUP_rate | precision_GROUP | precision_SEPARATE | recall_GROUP | recall_SEPARATE |
 |-----------------|-----------------|-----------------|--------------------|--------------|-----------------|
-| gemini-cluster  | 0.09            | 0.9             | 0.54               | 0.16         | 0.98            |
+| gemini-embedding-2  | 0.09            | 0.9             | 0.54               | 0.16         | 0.98            |
 | large-no-prefix | 0.29            | 0.94            | 0.66               | 0.49         | 0.96            |
 
 ### Conditional probabilities
 
-P(large-no-prefix GROUP | gemini-cluster GROUP)    = 0.8474
+P(large-no-prefix GROUP | gemini-embedding-2 GROUP)    = 0.8474
 
-P(large-no-prefix GROUP | gemini-cluster SEPARATE) = 0.3305
+P(large-no-prefix GROUP | gemini-embedding-2 SEPARATE) = 0.3305
 
-P(large-no-prefix GROUP | gemini-cluster GROUP, distance < 0.005) = 0.9137  (n=5681)
+P(large-no-prefix GROUP | gemini-embedding-2 GROUP, distance < 0.005) = 0.9137  (n=5681)
 
 ### Thresholds
 
 ```json
 {
-  "gemini-cluster": 0.99,
+  "gemini-embedding-2": 0.99,
   "large-no-prefix": 0.9
 }
 ```
@@ -94,7 +92,7 @@ GROUP rate: 58.75%
 label GROUP rate: 83.18%
 | model           | pred_GROUP_rate | precision_GROUP | precision_SEPARATE | recall_GROUP | recall_SEPARATE |
 |-----------------|-----------------|-----------------|--------------------|--------------|-----------------|
-| gemini-cluster  | 0.07            | 0.92            | 0.18               | 0.08         | 0.97            |
+| gemini-embedding-2  | 0.07            | 0.92            | 0.18               | 0.08         | 0.97            |
 | large-no-prefix | 0.44            | 0.99            | 0.29               | 0.52         | 0.98            |
 
 ### Long stacktraces (query_tokens >= p90 = 764 tokens, 15036 pairs)
@@ -102,13 +100,13 @@ label GROUP rate: 83.18%
 label GROUP rate: 59.37%
 | model           | pred_GROUP_rate | precision_GROUP | precision_SEPARATE | recall_GROUP | recall_SEPARATE |
 |-----------------|-----------------|-----------------|--------------------|--------------|-----------------|
-| gemini-cluster  | 0.22            | 0.97            | 0.51               | 0.35         | 0.99            |
+| gemini-embedding-2  | 0.22            | 0.97            | 0.51               | 0.35         | 0.99            |
 | large-no-prefix | 0.4             | 0.96            | 0.65               | 0.65         | 0.96            |
 
 ## Threshold sweep
 
 
-### Threshold sweep for gemini-cluster
+### Threshold sweep for gemini-embedding-2
 
 | threshold | pred_GROUP_rate | precision_GROUP | precision_SEPARATE | recall_GROUP | recall_SEPARATE |
 |-----------|-----------------|-----------------|--------------------|--------------|-----------------|
@@ -129,7 +127,7 @@ label GROUP rate: 59.37%
 ## Platform-level results
 
 
-### Metrics by platform, avg over projects (gemini-cluster, threshold=0.99)
+### Metrics by platform, avg over projects (gemini-embedding-2, threshold=0.99)
 
 | platform   | n_pairs | n_projects | label_GROUP_rate | min_threshold | pred_GROUP_rate | precision_GROUP | precision_SEPARATE | recall_GROUP | recall_SEPARATE |
 |------------|---------|------------|------------------|---------------|-----------------|-----------------|--------------------|--------------|-----------------|
@@ -159,7 +157,7 @@ label GROUP rate: 59.37%
 | python     | 13428   | 8          | 0.568            | 0.9           | 0.33            | 0.953           | 0.607              | 0.535        | 0.962           |
 | ruby       | 6529    | 8          | 0.59             | 0.9           | 0.292           | 0.938           | 0.482              | 0.439        | 0.943           |
 
-### Min threshold for >= 95% avg project precision_GROUP by platform (gemini-cluster)
+### Min threshold for >= 95% avg project precision_GROUP by platform (gemini-embedding-2)
 
 | platform   | n_pairs | n_projects | label_GROUP_rate | min_threshold | pred_GROUP_rate | precision_GROUP | precision_SEPARATE | recall_GROUP | recall_SEPARATE |
 |------------|---------|------------|------------------|---------------|-----------------|-----------------|--------------------|--------------|-----------------|
@@ -197,9 +195,9 @@ label GROUP rate: 59.37%
 
 
 <details>
-<summary>Similarity distribution (gemini-cluster)</summary>
+<summary>Similarity distribution (gemini-embedding-2)</summary>
 
-![Similarity distribution (gemini-cluster)](similarity_distribution_gemini-cluster.png)
+![Similarity distribution (gemini-embedding-2)](similarity_distribution_gemini-embedding-2.png)
 </details>
 
 
@@ -224,7 +222,7 @@ label GROUP rate: 59.37%
 
 ### >= 15% group rate increase (stratified by platform)
 
-| org_id | project_id | platform   | n_pairs | label_GROUP_rate | gemini-cluster_GROUP_rate | gemini-cluster_prec | gemini-cluster_rec | large-no-prefix_GROUP_rate | large-no-prefix_prec | large-no-prefix_rec | group_rate_increase |
+| org_id | project_id | platform   | n_pairs | label_GROUP_rate | gemini-embedding-2_GROUP_rate | gemini-embedding-2_prec | gemini-embedding-2_rec | large-no-prefix_GROUP_rate | large-no-prefix_prec | large-no-prefix_rec | group_rate_increase |
 |--------|------------|------------|---------|------------------|---------------------------|---------------------|--------------------|----------------------------|----------------------|---------------------|---------------------|
 | id_20  | id_139     | go         | 1248    | 1.0              | 0.01                      | 1.0                 | 0.01               | 1.0                        | 1.0                  | 1.0                 | 0.99                |
 | id_71  | id_211     | csharp     | 5539    | 1.0              | 0.04                      | 1.0                 | 0.04               | 1.0                        | 1.0                  | 1.0                 | 0.96                |
@@ -260,4 +258,4 @@ label GROUP rate: 59.37%
 
 ---
 
-_Real report with original org/project IDs at_ `gs://$GROUPING_TRAINER_BUCKET/eval/comparisons/test_full3/gemini-cluster_dim3072_vs_large-no-prefix_dim64/`
+_Real report with original org/project IDs at_ `gs://$GROUPING_TRAINER_BUCKET/eval/comparisons/test_full3/gemini-embedding-2_dim3072_vs_large-no-prefix_dim64/`

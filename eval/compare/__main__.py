@@ -7,9 +7,7 @@ Assumes you've run save_embeddings.py for both models.
 Example usage:
 
 python -m eval.compare \
-    --name_model1 v1 \
-    --name_model2 large-no-prefix \
-    --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1/similarities/test_full3 \
+    --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/v1/similarities/test_full3 \
     --gcs_model2 gs://$GROUPING_TRAINER_BUCKET/runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3 \
     --threshold_model1 0.99 \
     --threshold_model2 0.90 \
@@ -17,9 +15,7 @@ python -m eval.compare \
 
 # Platform-specific thresholds (comma-separated platform=value, must include "default"):
 python -m eval.compare \
-    --name_model1 v1 \
-    --name_model2 large-no-prefix \
-    --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1/similarities/test_full3 \
+    --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/v1/similarities/test_full3 \
     --gcs_model2 gs://$GROUPING_TRAINER_BUCKET/runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3 \
     --threshold_model1 0.99 \
     --threshold_model2 default=0.92,cocoa=0.94,native=0.94,ruby=0.94 \
@@ -50,7 +46,7 @@ import polars as pl
 from tap import Tap, tapify
 
 from . import report
-from .data import _load_and_join, _sync_gcs
+from .data import _load_and_join, _name_from_gcs, _sync_gcs
 from .metrics import (
     compare_metrics_by_stacktrace_length,
     compare_models,
@@ -96,8 +92,6 @@ def _run_once(
     *,
     gcs_model1: str,
     gcs_model2: str,
-    name_model1: str,
-    name_model2: str,
     dim_model1: int,
     dim_model2: int,
     threshold_model1: str,
@@ -114,6 +108,13 @@ def _run_once(
     """Run a single comparison pass against the live filesystem. Returns the relative comparison_dir."""
     if upload_sheets:
         _authenticate_for_sheets_upload()
+
+    name_model1 = _name_from_gcs(gcs_model1)
+    name_model2 = _name_from_gcs(gcs_model2)
+    if name_model1 == name_model2:
+        # Same run compared at two dims: keep aliases (and their cos_sim_{name} columns) distinct.
+        name_model1 = f"{name_model1}-dim{dim_model1}"
+        name_model2 = f"{name_model2}-dim{dim_model2}"
 
     path1 = _sync_gcs(gcs_model1)
     path2 = _sync_gcs(gcs_model2)
@@ -277,8 +278,6 @@ def _run_once(
 def main(
     gcs_model1: str,
     gcs_model2: str,
-    name_model1: str,
-    name_model2: str,
     dim_model1: int = 768,
     dim_model2: int = 768,
     threshold_model1: str = "0.99",
@@ -301,18 +300,16 @@ def main(
     ----------
     gcs_model1
         GCS path to model 1's similarities directory,
-        e.g., gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1/similarities/test_full3
+        e.g., gs://$GROUPING_TRAINER_BUCKET/runs/v1/similarities/test_full3.
+        The model's short alias (used in output columns and file names) is parsed from the run name,
+        with any `YYYY-MM-DD-HH-MM-SS-` training-run timestamp prefix stripped.
     gcs_model2
         GCS path to model 2's similarities directory,
-        e.g., gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v2/similarities/test_full3
+        e.g., gs://$GROUPING_TRAINER_BUCKET/runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3.
     dim_model1
         Which cos_sim_{dim} column to use from model 1's CSV.
     dim_model2
         Which cos_sim_{dim} column to use from model 2's CSV.
-    name_model1
-        Short alias for model 1 used in output columns and file names.
-    name_model2
-        Short alias for model 2 used in output columns and file names.
     threshold_model1
         Cosine similarity threshold for model 1. Either a plain float (e.g. "0.99")
         or comma-separated platform=value pairs (e.g. "default=0.92,cocoa=0.80,node=0.90").
@@ -339,8 +336,6 @@ def main(
     common_kwargs = dict(
         gcs_model1=gcs_model1,
         gcs_model2=gcs_model2,
-        name_model1=name_model1,
-        name_model2=name_model2,
         dim_model1=dim_model1,
         dim_model2=dim_model2,
         threshold_model1=threshold_model1,

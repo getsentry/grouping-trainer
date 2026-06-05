@@ -16,7 +16,7 @@ testing.
 Usage:
 
 python eval/export_for_db.py \
-    --gcs_prod gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1/similarities/test_full3 \
+    --gcs_prod gs://$GROUPING_TRAINER_BUCKET/runs/v1/similarities/test_full3 \
     --gcs_finetuned gs://$GROUPING_TRAINER_BUCKET/runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3 \
     --dim_finetuned 64
 """
@@ -207,7 +207,7 @@ def main(
     ----------
     gcs_prod
         GCS dir of save_embeddings output for the prod (baseline) model,
-        e.g. gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1/similarities/test_full3
+        e.g. gs://$GROUPING_TRAINER_BUCKET/runs/v1/similarities/test_full3
     gcs_finetuned
         Same, for the finetuned model. Pairs must match gcs_prod row-for-row.
     db_column_prod

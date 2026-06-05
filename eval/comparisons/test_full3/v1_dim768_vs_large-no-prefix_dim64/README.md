@@ -4,9 +4,7 @@ Command to repro:
 
 ```bash
 python -m eval.compare \
-    --name_model1 v1 \
-    --name_model2 large-no-prefix \
-    --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1/similarities/test_full3 \
+    --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/v1/similarities/test_full3 \
     --gcs_model2 gs://$GROUPING_TRAINER_BUCKET/runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3 \
     --threshold_model1 0.99 \
     --threshold_model2 0.90 \

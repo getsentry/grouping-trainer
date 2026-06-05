@@ -4,10 +4,8 @@ Command to repro:
 
 ```bash
 python -m eval.compare \
-    --name_model1 php-treatment \
     --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/2026-06-04-21-08-30-php-treatment/similarities/test_full3 \
     --threshold_model1 0.90 \
-    --name_model2 php-control \
     --gcs_model2 gs://$GROUPING_TRAINER_BUCKET/runs/2026-06-04-21-12-48-php-control/similarities/test_full3 \
     --threshold_model2 0.90 \
     --overwrite

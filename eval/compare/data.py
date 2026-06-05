@@ -1,5 +1,6 @@
 """Loading and joining similarity CSVs from GCS, plus schema validation."""
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -10,6 +11,23 @@ import grouping_trainer as gt
 COLS_JOIN = ("query_stacktrace_string", "candidate_stacktrace_string")
 COLUMNS_EXPECTED = (*gt.data.COLUMNS_REQUIRED, "is_grouped")
 COLUMNS_ANONYMIZED_DENYLIST = ("path",)
+
+# Training runs are named "{YYYY-MM-DD-HH-MM-SS}-{shortname}"; the alias is the shortname.
+_RUN_TIMESTAMP_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-")
+
+
+def _name_from_gcs(gcs_dir: str) -> str:
+    """
+    Parse a model's short alias from its GCS similarities path.
+
+    The alias is the run name (the path segment before `similarities`) with any
+    `YYYY-MM-DD-HH-MM-SS-` training-run timestamp prefix stripped, e.g.
+    `gs://.../runs/2026-04-10-12-39-45-large-no-prefix/similarities/test_full3`
+    -> `large-no-prefix`, and `gs://.../runs/bm25/similarities/test_full3` -> `bm25`.
+    """
+    parts = gcs_dir.rstrip("/").split("/")
+    name_run = parts[parts.index("similarities") - 1]
+    return _RUN_TIMESTAMP_PREFIX.sub("", name_run)
 
 
 def _resolve_cos_sim(df: pl.DataFrame, dim: int) -> tuple[str, str]:
@@ -103,8 +121,7 @@ def _load_and_join(
 def _sync_gcs(gcs_dir: str) -> Path:
     """Sync a GCS similarities directory to a local cache and return the local similarities.csv path.
 
-    Maps e.g. ``gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1/similarities/test_full``
-    to ``eval/similarities/issue_grouping_v1/test_full/``.
+    Maps e.g. ``gs://$GROUPING_TRAINER_BUCKET/runs/v1/similarities/test_full`` to ``eval/similarities/v1/test_full/``.
     """
     gcs_dir = gcs_dir.rstrip("/")
     # Expected structure: gs://bucket/runs/{run_name}/similarities/{dataset}

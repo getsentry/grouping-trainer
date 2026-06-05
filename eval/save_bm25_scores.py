@@ -33,9 +33,7 @@ python eval/save_bm25_scores.py \
 BM25 scores are not in [0, 1], so the right threshold needs to be swept rather than copied from a cos_sim model:
 
 python -m eval.compare \
-    --name_model1 v1 \
-    --name_model2 bm25 \
-    --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1/similarities/test_full3 \
+    --gcs_model1 gs://$GROUPING_TRAINER_BUCKET/runs/v1/similarities/test_full3 \
     --gcs_model2 gs://$GROUPING_TRAINER_BUCKET/runs/bm25/similarities/test_full3 \
     --threshold_model1 0.99 \
     --threshold_model2 <swept-value> \

@@ -6,7 +6,7 @@ After running this script for some `run_gcs_dir`, you can use it as a gcs_model1
 For example to evaluate the baseline/prod model:
 
 python eval/save_embeddings.py \
-    --run_gcs_dir gs://$GROUPING_TRAINER_BUCKET/runs/issue_grouping_v1 \
+    --run_gcs_dir gs://$GROUPING_TRAINER_BUCKET/runs/v1 \
     --does_not_support_sdpa \
     --truncate_dims 64 128 256 512 768
 
