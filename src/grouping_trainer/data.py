@@ -124,7 +124,7 @@ def _concat_check_dedupe(
     n_rows_per_csv: int | None = None,
     platforms_holdout: tuple[str, ...] = (),
     holdout_mode: HoldoutMode = "drop_platforms",
-    holdout_seed: int = 0,
+    holdout_seed: int = 42,
 ):
     df = gt.utils.concat_vertical_unordered(
         (pl.read_csv(path, n_rows=n_rows_per_csv) for path in paths), how="vertical_relaxed"
@@ -158,7 +158,7 @@ def load_train_df(
     n_rows_per_csv: int | None = None,
     platforms_holdout: tuple[str, ...] = (),
     holdout_mode: HoldoutMode = "drop_platforms",
-    holdout_seed: int = 0,
+    holdout_seed: int = 42,
 ):
     """
     `n_rows_per_csv` is a laptop-sanity knob: caps `pl.read_csv` rows per file. Prefix sample (not uniform), so don't

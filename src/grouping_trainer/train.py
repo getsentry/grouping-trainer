@@ -155,7 +155,7 @@ def _load_train_df(
     source_to_sample_weight: dict[str, float] | None = None,
     platforms_holdout: tuple[str, ...] = (),
     holdout_mode: gt.data.HoldoutMode = "drop_platforms",
-    holdout_seed: int = 0,
+    holdout_seed: int = 42,
 ) -> tuple[pl.DataFrame, int]:
     holdout_kwargs = dict(platforms_holdout=platforms_holdout, holdout_mode=holdout_mode, holdout_seed=holdout_seed)
     if stress_test_min_pair_len is not None:  # used for OOM stress testing
@@ -185,7 +185,7 @@ def load_train_dataset(
     source_to_sample_weight: dict[str, float] | None = None,
     platforms_holdout: tuple[str, ...] = (),
     holdout_mode: gt.data.HoldoutMode = "drop_platforms",
-    holdout_seed: int = 0,
+    holdout_seed: int = 42,
 ) -> tuple[Dataset, float, int]:
     df, num_projects = _load_train_df(
         sample_size=sample_size,
@@ -209,7 +209,7 @@ def load_train_dataset_dict(
     min_dataset_size: int | None = None,
     platforms_holdout: tuple[str, ...] = (),
     holdout_mode: gt.data.HoldoutMode = "drop_platforms",
-    holdout_seed: int = 0,
+    holdout_seed: int = 42,
 ) -> tuple[DatasetDict, float, int]:
     df, num_projects = _load_train_df(
         sample_size=sample_size,
@@ -697,7 +697,7 @@ class TrainingConfig(BaseModel):
     # `holdout_seed` only matters for the control. Empty `platforms_holdout` is a no-op (normal training).
     platforms_holdout: tuple[str, ...] = ()
     holdout_mode: gt.data.HoldoutMode = "drop_platforms"
-    holdout_seed: int = 0
+    holdout_seed: int = 42
     source_to_sample_weight: dict[str, float] = {  # TODO: Literal. source values aren't documented anywhere yet.
         "synthetic-negative-semi-easy": 1.0,
         "unmatched": 1.0,
