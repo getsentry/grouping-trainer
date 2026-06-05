@@ -1,6 +1,7 @@
-# Decisions
+# Lab notebook
 
-> Why does loss.py use a pairwise loss from 2005?
+<details>
+<summary>Why does loss.py use a pairwise loss from 2005?</summary>
 
 TLDR: We invested in and trust the labels.
 
@@ -59,5 +60,33 @@ This re-computation is eliminated by pre-sorting each Sentry project by stacktra
 single project per GPU, and having `ModelForTraining.encode` gather deduplicated embeddings in the forwards pass and
 scatter them in the backwards pass. This dance cuts training time by ~2.8x.
 
-The 2005 `ContrastiveLoss` outperformed `SigmoidLoss`. I haven't studied this result much yet, e.g., confirming if this
-is caused by `ContrastiveLoss` being more forgiving by comparing it to a label-smoothed `SigmoidLoss`.
+The [2005 `ContrastiveLoss`](https://www.cs.utoronto.ca/~hinton/csc2535_06/readings/chopra-05.pdf) outperformed
+`SigmoidLoss`. I haven't studied this result much yet, e.g., confirming if this is caused by `ContrastiveLoss` being
+more forgiving by comparing it to a label-smoothed `SigmoidLoss`.
+
+</details>
+
+
+<details>
+<summary>Pretraining on LLM responses and labels didn't help</summary>
+
+[See the Wandb
+report](https://wandb.ai/sentry-seer/grouping-trainer/reports/Continued-pretraining-didn-t-help--VmlldzoxNzEyODgzMw?accessToken=if00o0ddeifr0z76kzxi4vehpjg0h0ccgyeh3szlxbdhswpy3zae4y6osvjje4da)
+
+</details>
+
+
+<details>
+<summary>Synthetic hard negatives and hard positives didn't help</summary>
+
+[See the Wandb report](https://wandb.ai/sentry-seer/grouping-trainer/reports/Synthetic-hard-negatives-positives-didn-t-help--VmlldzoxNzEyOTYxMg?accessToken=ydz4xgvku37irbnzc6307gnh334ccwtpww7e96blf3yw9abygg2l5tbkbmgr2uj9)
+
+</details>
+
+
+<details>
+<summary>Stacktrace similarity generalizes out-of-platform</summary>
+
+[See the Wandb report](https://api.wandb.ai/links/sentry-seer/0n81wtns)
+
+</details>
