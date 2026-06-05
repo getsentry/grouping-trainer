@@ -153,15 +153,19 @@ def _load_train_df(
     stress_test_min_pair_len: int | None = None,
     paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
+    platforms_holdout: tuple[str, ...] = (),
+    holdout_mode: gt.data.HoldoutMode = "drop_platforms",
+    holdout_seed: int = 0,
 ) -> tuple[pl.DataFrame, int]:
+    holdout_kwargs = dict(platforms_holdout=platforms_holdout, holdout_mode=holdout_mode, holdout_seed=holdout_seed)
     if stress_test_min_pair_len is not None:  # used for OOM stress testing
-        df = gt.data.load_train_df(paths=paths, sample_size=None)
+        df = gt.data.load_train_df(paths=paths, sample_size=None, **holdout_kwargs)
         df = df.filter(
             (pl.col("query_stacktrace_string").str.len_chars() + pl.col("candidate_stacktrace_string").str.len_chars())
             > stress_test_min_pair_len
         )
     else:
-        df = gt.data.load_train_df(paths=paths, sample_size=sample_size)
+        df = gt.data.load_train_df(paths=paths, sample_size=sample_size, **holdout_kwargs)
 
     if source_to_sample_weight:
         df = df.with_columns(
@@ -179,12 +183,18 @@ def load_train_dataset(
     stress_test_min_pair_len: int | None = None,
     paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
+    platforms_holdout: tuple[str, ...] = (),
+    holdout_mode: gt.data.HoldoutMode = "drop_platforms",
+    holdout_seed: int = 0,
 ) -> tuple[Dataset, float, int]:
     df, num_projects = _load_train_df(
         sample_size=sample_size,
         stress_test_min_pair_len=stress_test_min_pair_len,
         paths=paths,
         source_to_sample_weight=source_to_sample_weight,
+        platforms_holdout=platforms_holdout,
+        holdout_mode=holdout_mode,
+        holdout_seed=holdout_seed,
     )
     dataset_train = df_to_dataset(df, group_by_query_stacktrace_string=False)
     frac_positive = float((df["label"] == "GROUP").mean())  # type: ignore[arg-type]
@@ -197,12 +207,18 @@ def load_train_dataset_dict(
     paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
     source_to_sample_weight: dict[str, float] | None = None,
     min_dataset_size: int | None = None,
+    platforms_holdout: tuple[str, ...] = (),
+    holdout_mode: gt.data.HoldoutMode = "drop_platforms",
+    holdout_seed: int = 0,
 ) -> tuple[DatasetDict, float, int]:
     df, num_projects = _load_train_df(
         sample_size=sample_size,
         stress_test_min_pair_len=stress_test_min_pair_len,
         paths=paths,
         source_to_sample_weight=source_to_sample_weight,
+        platforms_holdout=platforms_holdout,
+        holdout_mode=holdout_mode,
+        holdout_seed=holdout_seed,
     )
     dataset_dict_train = create_project_dataset_dict(df, min_dataset_size=min_dataset_size)
     frac_positive = float((df["label"] == "GROUP").mean())  # type: ignore[arg-type]
@@ -675,6 +691,13 @@ class TrainingConfig(BaseModel):
 
     # Training data and loader args
     training_csvs: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS
+    # Out-of-platform generalization experiment. `platforms_holdout` names the platforms the experiment is built around
+    # (used by both arms). `holdout_mode="drop_platforms"` is the treatment (those platforms never seen in training);
+    # "drop_random_match" is the volume-matched control (same row count dropped at random, platforms still present).
+    # `holdout_seed` only matters for the control. Empty `platforms_holdout` is a no-op (normal training).
+    platforms_holdout: tuple[str, ...] = ()
+    holdout_mode: gt.data.HoldoutMode = "drop_platforms"
+    holdout_seed: int = 0
     source_to_sample_weight: dict[str, float] = {  # TODO: Literal. source values aren't documented anywhere yet.
         "synthetic-negative-semi-easy": 1.0,
         "unmatched": 1.0,
@@ -717,6 +740,9 @@ def make_trainer(
         sample_size=training_config.sample_size_train,
         paths=training_config.training_csvs,
         source_to_sample_weight=training_config.source_to_sample_weight or None,
+        platforms_holdout=training_config.platforms_holdout,
+        holdout_mode=training_config.holdout_mode,
+        holdout_seed=training_config.holdout_seed,
     )
     if training_config.group_by_query_stacktrace_string:
         train_dataset, frac_positive, num_projects = load_train_dataset_dict(

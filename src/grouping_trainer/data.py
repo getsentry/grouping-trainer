@@ -1,10 +1,16 @@
+import logging
 import os
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 import polars as pl
 
 import grouping_trainer as gt
+
+logger = logging.getLogger(__name__)
+
+HoldoutMode = Literal["drop_platforms", "drop_random_match"]
 
 COLUMNS_REQUIRED = (
     "query_seer_event_sent",
@@ -71,10 +77,54 @@ def ensure_local(paths: tuple[str, ...]) -> None:
         subprocess.run(["gcloud", "storage", "cp", f"gs://{bucket}/{path}", path], check=True)
 
 
+def _apply_platform_holdout(
+    df: pl.DataFrame,
+    platforms_holdout: tuple[str, ...],
+    holdout_mode: HoldoutMode,
+    holdout_seed: int,
+) -> pl.DataFrame:
+    """
+    Drop rows for an out-of-platform generalization experiment, volume-matched across arms.
+
+    With `holdout_mode="drop_platforms"` (treatment) every row whose `platform` is in `platforms_holdout` is removed.
+    With `holdout_mode="drop_random_match"` (control) the same *number* of rows is dropped uniformly at random, so the
+    held-out platforms stay in-distribution but the training volume matches the treatment arm exactly. Both arms end at
+    `df.height - n_holdout` rows. A no-op when `platforms_holdout` is empty.
+    """
+    if not platforms_holdout:
+        return df
+
+    platforms_present = set(df["platform"].unique().to_list())
+    platforms_missing = sorted(set(platforms_holdout) - platforms_present)
+    assert not platforms_missing, (
+        f"platforms_holdout not found in data: {platforms_missing}. Present platforms: {sorted(platforms_present)}"
+    )
+
+    is_holdout = pl.col("platform").is_in(platforms_holdout)
+    n_holdout = df.select(is_holdout.sum()).item()
+    if holdout_mode == "drop_platforms":
+        df_holdout = df.filter(~is_holdout)
+    elif holdout_mode == "drop_random_match":
+        df_holdout = df.sample(n=df.height - n_holdout, seed=holdout_seed)
+    else:
+        raise ValueError(f"Unknown holdout_mode: {holdout_mode!r}")
+
+    counts_held = df.filter(is_holdout)["platform"].value_counts(sort=True)
+    counts_by_platform = dict(zip(counts_held["platform"], counts_held["count"], strict=True))
+    logger.info(
+        f"Platform holdout ({holdout_mode}, seed={holdout_seed}): {df.height:,} -> {df_holdout.height:,} pairs "
+        f"(dropped {n_holdout:,} matching {list(platforms_holdout)}; counts {counts_by_platform})"
+    )
+    return df_holdout
+
+
 def _concat_check_dedupe(
     paths: tuple[str, ...],
     sample_size: int | None = None,
     n_rows_per_csv: int | None = None,
+    platforms_holdout: tuple[str, ...] = (),
+    holdout_mode: HoldoutMode = "drop_platforms",
+    holdout_seed: int = 0,
 ):
     df = gt.utils.concat_vertical_unordered(
         (pl.read_csv(path, n_rows=n_rows_per_csv) for path in paths), how="vertical_relaxed"
@@ -90,6 +140,9 @@ def _concat_check_dedupe(
         .item()
     ), "Some stacktraces are empty"
     df = gt.utils.deduplicate_pairs(df)
+    # Apply the holdout on the full deduped set so the dropped count is measured against the real training corpus,
+    # before the CPU-sanity `sample_size` downsample.
+    df = _apply_platform_holdout(df, platforms_holdout, holdout_mode, holdout_seed)
     if sample_size is not None:
         df = df.sample(n=sample_size, seed=42)
     return df
@@ -103,11 +156,24 @@ def load_train_df(
     paths: tuple[str, ...] = DEFAULT_TRAIN_PATHS,
     sample_size: int | None = None,
     n_rows_per_csv: int | None = None,
+    platforms_holdout: tuple[str, ...] = (),
+    holdout_mode: HoldoutMode = "drop_platforms",
+    holdout_seed: int = 0,
 ):
     """
     `n_rows_per_csv` is a laptop-sanity knob: caps `pl.read_csv` rows per file. Prefix sample (not uniform), so don't
     use it for anything where distribution matters.
+
+    `platforms_holdout` / `holdout_mode` / `holdout_seed` drive the out-of-platform generalization experiment. See
+    `_apply_platform_holdout`. These only apply to training data.
     """
-    df = _concat_check_dedupe(paths, sample_size=sample_size, n_rows_per_csv=n_rows_per_csv)
+    df = _concat_check_dedupe(
+        paths,
+        sample_size=sample_size,
+        n_rows_per_csv=n_rows_per_csv,
+        platforms_holdout=platforms_holdout,
+        holdout_mode=holdout_mode,
+        holdout_seed=holdout_seed,
+    )
     assert df.filter(pl.col("confidence_score").is_null())["source"].str.starts_with("synthetic-").all()
     return df
