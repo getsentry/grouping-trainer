@@ -138,7 +138,9 @@ def run(
             learning_rate=learning_rate,
             loss_type="contrastive",
             contrastive_margin=0.5,
-            training_csvs=gt.data.DEFAULT_TRAIN_PATHS,
+            training_csvs=gt.data.DEFAULT_TRAIN_PATHS_NO_SYNTHETIC,
+            platforms_holdout=("go",),
+            holdout_mode="drop_random_match",  # control
         )
 
     gt.data.ensure_local(training_config.training_csvs)
