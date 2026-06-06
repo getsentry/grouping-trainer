@@ -1,5 +1,8 @@
 # Eval scripts
 
+
+## Test set
+
 Typical steps:
 
 1. If a training run did well enough on validation to warrant an evaluation on the test set, run
@@ -12,8 +15,6 @@ Typical steps:
        --truncate_dims 64 128 256 512 768 \
        --use_compiled  # should work but you can run w/o it first to make sure
    ```
-
-   Consider tuning the token buckets for a compiled model using [`../benchmark`](../benchmark/).
 
 2. Run `eval.compare` to compare the model to another model on the test set.
 
@@ -51,5 +52,5 @@ Typical steps:
 
 ## Production
 
-To sample matches from production, automatically label them using Claude, and produce a report, use
-https://github.com/getsentry/data-analysis/tree/main/grouping/data#label-matches-from-prod.
+To sample matches from production, automatically label them using Claude, and produce a report on
+precision/overgrouping, use https://github.com/getsentry/data-analysis/tree/main/grouping/data#label-matches-from-prod.

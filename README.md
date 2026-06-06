@@ -48,13 +48,13 @@ Sanity check that plumbing works locally:
 python train.py --tiny_run
 ```
 
-To run real experiments, check out to a new branch `experiment/...`, make changes, push to remote, and run:
+To run real experiments, check out a branch `experiment/...`, make changes, push to remote, and run:
 
 ```bash
 python train.py --gpu h100-4 --run_shortname my-run --multi_flex_start
 ```
 
-This command async-launches a DDP training run on 4 H100s which will run the commit at your local HEAD.
+This command async-launches a DDP training run on 4 H100s which will run the commit at your local `HEAD`.
 
 
 ### Debug
@@ -81,10 +81,10 @@ bin/gtlist
 And SSH in:
 
 ```bash
-bin/gtssh your-instance your-instance-zone
+bin/gtssh instance-name instance-zone
 ```
 
-And `sudo -i` to switch to root, which ran the startup script.
+Run `sudo -i` to switch to `root`, which ran the startup script.
 
 </details>
 
@@ -108,7 +108,7 @@ startup-logs
 # sudo journalctl -u google-startup-scripts.service --no-pager
 ```
 
-From local (use when you can't SSH in, e.g., the boot itself failed):
+From local (use when you can't SSH in b/c, e.g., the boot itself failed):
 
 ```bash
 gcloud compute instances get-serial-port-output your-instance --zone=your-instance-zone | tail -100
