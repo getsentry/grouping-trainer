@@ -48,20 +48,13 @@ Sanity check that plumbing works locally:
 python train.py --tiny_run
 ```
 
-Launch a full, remote training run by checking out to a new branch, pushing it to remote, and running:
-
-```bash
-python train.py --gpu h100 --run_shortname my-run --multi_flex_start
-```
-
-For DDP:
+To run real experiments, check out to a new branch `experiment/...`, make changes, push to remote, and run:
 
 ```bash
 python train.py --gpu h100-4 --run_shortname my-run --multi_flex_start
 ```
 
-Adding `--multi_flex_start` [flex-starts](https://docs.cloud.google.com/compute/docs/instances/about-flex-start-vms)
-instances across many zones. The first to boot w/in 2 hours survives. The rest self-delete.
+This command async-launches a DDP training run on 4 H100s which will run the commit at your local HEAD.
 
 
 ### Debug
