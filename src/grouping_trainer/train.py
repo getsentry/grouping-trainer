@@ -2,20 +2,17 @@ import gc
 import logging
 import math
 import os
-import random
 import subprocess
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Self, TypedDict, cast
+from typing import Any, Literal, Self, cast
 
 import numpy as np
-import polars as pl
 import torch
 from accelerate import DistributedType
-from datasets import Dataset, DatasetDict
 from pydantic import BaseModel, ConfigDict
 from safetensors.torch import load_model as safetensors_load_model
 from sentence_transformers import SentenceTransformerTrainingArguments
@@ -24,7 +21,6 @@ from sentence_transformers.models import Pooling
 from sentence_transformers.trainer import SentenceTransformerTrainer
 from sentence_transformers.training_args import BatchSamplers, MultiDatasetBatchSamplers
 from torch.utils.data import BatchSampler, RandomSampler, SequentialSampler, default_collate
-from tqdm.auto import tqdm
 from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 from transformers.utils.import_utils import (
@@ -37,197 +33,9 @@ import grouping_trainer as gt
 logger = logging.getLogger(__name__)
 
 
-class Record(TypedDict):
-    query_stacktrace_string: str
-    candidate_stacktrace_string: str
-    label: int
-    sample_weight: float
-
-
-class Batch(TypedDict):
-    query_stacktrace_string: list[str]
-    candidate_stacktrace_string: list[str]
-    label: torch.Tensor
-    sample_weight: torch.Tensor
-
-
-def make_dummy_batch() -> Batch:
-    return Batch(
-        query_stacktrace_string=["dummy"],
-        candidate_stacktrace_string=["dummy"],
-        label=torch.tensor([0], dtype=torch.float32),
-        sample_weight=torch.tensor([1.0], dtype=torch.float32),
-    )
-
-
-def _record_from_dict(record_dict: dict[str, Any]) -> Record:
-    label = record_dict["label"]
-    if label == "GROUP":
-        label_int = 1
-    elif label == "SEPARATE":
-        label_int = 0
-    else:
-        raise ValueError(f"Unknown label: {label!r} (expected 'GROUP' or 'SEPARATE')")
-    return Record(
-        query_stacktrace_string=record_dict["query_stacktrace_string"],
-        candidate_stacktrace_string=record_dict["candidate_stacktrace_string"],
-        label=label_int,
-        sample_weight=float(record_dict.get("sample_weight", 1.0)),
-        # NOTE: cast to float b/c polars could read the data as a string if there were nulls in the CSV
-    )
-
-
-def df_to_dataset(
-    df: pl.DataFrame,
-    group_by_query_stacktrace_string: bool = True,
-    shuffle_groups: bool = True,
-    seed: int | None = None,
-) -> Dataset:
-    """
-    Convert a DataFrame to a `Dataset`, grouping records by `query_stacktrace_string`.
-
-    Records with the same `query_stacktrace_string` are kept together for cache hits in the forward pass. By default,
-    the order of groups is randomized to avoid alphabetical ordering bias during training.
-    """
-    if not group_by_query_stacktrace_string:
-        return Dataset.from_list(
-            [_record_from_dict(record_dict) for record_dict in df.rows(named=True)]  # type: ignore[bad-argument-type]
-        )
-
-    query_group_dfs = [
-        # Sort within each query group by candidate length so adjacent rows have similar token counts. When the loaded
-        # batch is later split into sub-batches by token budget, this minimizes padding waste.
-        group_df.sort(pl.col("candidate_stacktrace_string").str.len_chars())
-        for _, group_df in df.group_by("query_stacktrace_string")
-    ]
-    # Sort deterministically first b/c polars group_by returns groups in arbitrary order, and DDP requires all processes
-    # to have the same dataset ordering.
-    query_group_dfs.sort(key=lambda query_group_df: query_group_df["query_stacktrace_string"][0])
-    if shuffle_groups:
-        rng = random.Random(seed if seed is not None else 42)
-        rng.shuffle(query_group_dfs)
-
-    return Dataset.from_list(
-        [  # type: ignore[bad-argument-type]
-            _record_from_dict(record_dict)
-            for query_group_df in query_group_dfs
-            for record_dict in query_group_df.rows(named=True)
-        ]
-    )
-
-
-def create_project_dataset_dict(
-    df: pl.DataFrame,
-    min_dataset_size: int | None = None,
-) -> DatasetDict:
-    """
-    Create a `DatasetDict` with one dataset per project. Projects below `min_dataset_size` are packed into a single
-    dataset to avoid tiny batches. `min_dataset_size` can simply be set to the global/effective training batch size.
-    """
-    project_id_to_dataset: dict[str, Dataset] = {}
-    small_project_dfs: list[pl.DataFrame] = []
-
-    for (project_id,), df_project in tqdm(
-        df.group_by("project_id"),
-        total=len(df["project_id"].unique()),
-        desc="Creating project datasets",
-    ):
-        project_id = str(project_id)
-        # DatasetDict implements __getitem__ by accepting a mix of int and str. int is for array-like indexing so
-        # that it can be used by torch dataloading, while the string is for whatever we want.
-
-        if (min_dataset_size is not None) and (df_project.height < min_dataset_size):
-            small_project_dfs.append(df_project)
-        else:
-            project_id_to_dataset[project_id] = df_to_dataset(df_project)
-
-    if small_project_dfs:
-        df_packed = pl.concat(small_project_dfs)
-        project_id_to_dataset["__packed__"] = df_to_dataset(df_packed)
-
-    return DatasetDict(project_id_to_dataset)  # type: ignore[no-matching-overload]
-
-
-def _load_train_df(
-    sample_size: int | None = None,
-    stress_test_min_pair_len: int | None = None,
-    paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
-    source_to_sample_weight: dict[str, float] | None = None,
-    platforms_holdout: tuple[str, ...] = (),
-    holdout_mode: gt.data.HoldoutMode = "drop_platforms",
-    holdout_seed: int = 42,
-) -> tuple[pl.DataFrame, int]:
-    holdout_kwargs = dict(platforms_holdout=platforms_holdout, holdout_mode=holdout_mode, holdout_seed=holdout_seed)
-    if stress_test_min_pair_len is not None:  # used for OOM stress testing
-        df = gt.data.load_train_df(paths=paths, sample_size=None, **holdout_kwargs)
-        df = df.filter(
-            (pl.col("query_stacktrace_string").str.len_chars() + pl.col("candidate_stacktrace_string").str.len_chars())
-            > stress_test_min_pair_len
-        )
-    else:
-        df = gt.data.load_train_df(paths=paths, sample_size=sample_size, **holdout_kwargs)
-
-    if source_to_sample_weight:
-        df = df.with_columns(
-            pl.col("source").replace_strict(source_to_sample_weight, default=1.0).alias("sample_weight")
-        )
-    else:
-        df = df.with_columns(pl.lit(1.0).alias("sample_weight"))
-
-    num_projects = len(df["project_id"].unique())
-    return df, num_projects
-
-
-def load_train_dataset(
-    sample_size: int | None = None,
-    stress_test_min_pair_len: int | None = None,
-    paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
-    source_to_sample_weight: dict[str, float] | None = None,
-    platforms_holdout: tuple[str, ...] = (),
-    holdout_mode: gt.data.HoldoutMode = "drop_platforms",
-    holdout_seed: int = 42,
-) -> tuple[Dataset, float, int]:
-    df, num_projects = _load_train_df(
-        sample_size=sample_size,
-        stress_test_min_pair_len=stress_test_min_pair_len,
-        paths=paths,
-        source_to_sample_weight=source_to_sample_weight,
-        platforms_holdout=platforms_holdout,
-        holdout_mode=holdout_mode,
-        holdout_seed=holdout_seed,
-    )
-    dataset_train = df_to_dataset(df, group_by_query_stacktrace_string=False)
-    frac_positive = float((df["label"] == "GROUP").mean())  # type: ignore[arg-type]
-    return dataset_train, frac_positive, num_projects
-
-
-def load_train_dataset_dict(
-    sample_size: int | None = None,
-    stress_test_min_pair_len: int | None = None,
-    paths: tuple[str, ...] = gt.data.DEFAULT_TRAIN_PATHS,
-    source_to_sample_weight: dict[str, float] | None = None,
-    min_dataset_size: int | None = None,
-    platforms_holdout: tuple[str, ...] = (),
-    holdout_mode: gt.data.HoldoutMode = "drop_platforms",
-    holdout_seed: int = 42,
-) -> tuple[DatasetDict, float, int]:
-    df, num_projects = _load_train_df(
-        sample_size=sample_size,
-        stress_test_min_pair_len=stress_test_min_pair_len,
-        paths=paths,
-        source_to_sample_weight=source_to_sample_weight,
-        platforms_holdout=platforms_holdout,
-        holdout_mode=holdout_mode,
-        holdout_seed=holdout_seed,
-    )
-    dataset_dict_train = create_project_dataset_dict(df, min_dataset_size=min_dataset_size)
-    frac_positive = float((df["label"] == "GROUP").mean())  # type: ignore[arg-type]
-    return dataset_dict_train, frac_positive, num_projects
-
-
 @dataclass
 class DefaultDataCollator(SentenceTransformerDataCollator):
-    def __call__(self, records: list[Record]) -> Batch:  # type: ignore[override]
+    def __call__(self, records: list[gt.data.Record]) -> gt.data.Batch:  # type: ignore[override]
         batch: dict[str, Any] = default_collate(records)
         # MPS doesn't support float64, so convert to float32
         for key, value in batch.items():
@@ -237,11 +45,11 @@ class DefaultDataCollator(SentenceTransformerDataCollator):
 
 
 def batch_pairs_by_token_budget(
-    batch: Batch,
+    batch: gt.data.Batch,
     *,
     token_budget: int,
     count_tokens: Callable[[str], int] = lambda text: max(1, len(text) // 4),
-) -> Iterator[Batch]:
+) -> Iterator[gt.data.Batch]:
     """
     Split a collated `Batch` into smaller `Batch`es whose (estimated) token usage stays under `token_budget`.
 
@@ -257,8 +65,8 @@ def batch_pairs_by_token_budget(
     if token_budget <= 0:
         raise ValueError("token_budget must be positive")
 
-    def _slice_batch(lo: int, hi: int | None) -> Batch:
-        sliced: Batch = {key: batch[key][lo:hi] for key in batch.keys()}  # type: ignore[assignment,literal-required]
+    def _slice_batch(lo: int, hi: int | None) -> gt.data.Batch:
+        sliced: gt.data.Batch = {key: batch[key][lo:hi] for key in batch.keys()}  # type: ignore[assignment,literal-required]
         return sliced
 
     start = 0
@@ -296,7 +104,7 @@ class ModelForTraining(torch.nn.Module):
         # very variable sequence lengths. Don't globally batch by sequence length b/c that seems statistically bad.
         self.loss = loss
 
-    def encode(self, inputs: Batch) -> gt.loss.Features:
+    def encode(self, inputs: gt.data.Batch) -> gt.loss.Features:
         """
         Deduplicates inputs before calling the model.
         Recall that our dataloader loads stacktraces from the same project together, sorted by query string.
@@ -327,7 +135,7 @@ class ModelForTraining(torch.nn.Module):
 
     def forward(
         self,
-        inputs: Batch,
+        inputs: gt.data.Batch,
         labels: torch.Tensor,
         *,
         sample_weight: torch.Tensor | None = None,
@@ -408,7 +216,7 @@ class Trainer(SentenceTransformerTrainer):
     def compute_loss(  # type: ignore[override]
         self,
         model: ModelForTraining,
-        inputs: Batch,
+        inputs: gt.data.Batch,
         return_outputs: bool = False,
         num_items_in_batch: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, dict[str, Any]]:
@@ -444,7 +252,7 @@ class Trainer(SentenceTransformerTrainer):
     def _backward_on_sub_batch(
         self,
         model: ModelForTraining,
-        sub_batch: Batch,
+        sub_batch: gt.data.Batch,
         global_total_pairs: int,
         world_size: int,
         *,
@@ -456,7 +264,7 @@ class Trainer(SentenceTransformerTrainer):
         if num_pairs_sub_batch == 0:
             raise ValueError("Sub-batch has no pairs / label is empty")
 
-        sub_inputs = cast(Batch, self._prepare_inputs(sub_batch))  # type: ignore[arg-type]
+        sub_inputs = cast(gt.data.Batch, self._prepare_inputs(sub_batch))  # type: ignore[arg-type]
 
         sync_ctx = self.accelerator.no_sync(model) if no_sync else nullcontext()
         with sync_ctx:
@@ -501,7 +309,7 @@ class Trainer(SentenceTransformerTrainer):
     def training_step(  # type: ignore[override]
         self,
         model: ModelForTraining,
-        inputs: Batch,
+        inputs: gt.data.Batch,
         num_items_in_batch: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
@@ -539,7 +347,7 @@ class Trainer(SentenceTransformerTrainer):
             world_size = 1
 
         losses: list[torch.Tensor] = []
-        dummy_batch = make_dummy_batch()  # unit-tested to work w/ ModelForTraining.forward()
+        dummy_batch = gt.data.make_dummy_batch()  # unit-tested to work w/ ModelForTraining.forward()
 
         # Each GPU can have a different number of sub-batches. Need all to call backward() the same number of times w/
         # the same no_sync pattern so that all GPUs always agree on the communication op. Otherwise, e.g., GPU 1 w/ too
@@ -745,7 +553,7 @@ def make_trainer(
         holdout_seed=training_config.holdout_seed,
     )
     if training_config.group_by_query_stacktrace_string:
-        train_dataset, frac_positive, num_projects = load_train_dataset_dict(
+        train_dataset, frac_positive, num_projects = gt.data.load_train_dataset_dict(
             **load_kwargs, min_dataset_size=per_device_train_batch_size
         )
         if "__packed__" in train_dataset:
@@ -755,7 +563,7 @@ def make_trainer(
             )
         num_rows = sum(train_dataset.num_rows.values())
     else:
-        train_dataset, frac_positive, num_projects = load_train_dataset(**load_kwargs)
+        train_dataset, frac_positive, num_projects = gt.data.load_train_dataset(**load_kwargs)
         num_rows = train_dataset.num_rows
 
     logger.info(f"Training dataset: {num_projects:,} projects, {num_rows:,} pairs")

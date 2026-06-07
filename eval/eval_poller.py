@@ -81,7 +81,7 @@ def make_evaluator(
     truncate_dims: tuple[int, ...],
     use_simple_precisions: bool = False,
 ) -> gt.evaluator.MinPrecisionEvaluator:
-    dataset_val = gt.train.df_to_dataset(
+    dataset_val = gt.data.df_to_dataset(
         gt.data.load_val_df(paths=("final_csvs/val.csv",), sample_size=sample_val),
     )
     return gt.evaluator.MinPrecisionEvaluator(

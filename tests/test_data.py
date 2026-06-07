@@ -83,3 +83,215 @@ def test_missing_platform_raises():
     df = _make_df_platforms(COUNTS_BY_PLATFORM)
     with pytest.raises(AssertionError, match="not found in data"):
         gt.data._apply_platform_holdout(df, platforms_holdout=("js",), holdout_mode="drop_platforms", holdout_seed=0)
+
+
+# _record_from_dict
+
+
+@pytest.mark.parametrize("label_str, expected_int", [("GROUP", 1), ("SEPARATE", 0)])
+def test_record_from_dict_converts_known_labels(label_str: str, expected_int: int) -> None:
+    record = gt.data._record_from_dict(
+        {
+            "query_stacktrace_string": "q",
+            "candidate_stacktrace_string": "c",
+            "label": label_str,
+        }
+    )
+    assert record["label"] == expected_int
+
+
+def test_record_from_dict_rejects_unknown_label() -> None:
+    """A typo or unexpected label must surface, not silently become SEPARATE."""
+    with pytest.raises(ValueError, match="Unknown label"):
+        gt.data._record_from_dict(
+            {
+                "query_stacktrace_string": "q",
+                "candidate_stacktrace_string": "c",
+                "label": "GROUP ",  # trailing space — the kind of typo we want to catch
+            }
+        )
+
+
+def test_record_from_dict_defaults_when_optional_keys_missing() -> None:
+    record = gt.data._record_from_dict(
+        {"query_stacktrace_string": "q", "candidate_stacktrace_string": "c", "label": "GROUP"}
+    )
+    assert record["sample_weight"] == 1.0
+
+
+def test_record_from_dict_coerces_string_sample_weight() -> None:
+    record = gt.data._record_from_dict(
+        {
+            "query_stacktrace_string": "q",
+            "candidate_stacktrace_string": "c",
+            "label": "GROUP",
+            "sample_weight": "2.5",
+        }
+    )
+    assert record["sample_weight"] == 2.5
+    assert isinstance(record["sample_weight"], float)
+
+
+# df_to_dataset
+
+
+def _query_runs(queries: list[str]) -> list[str]:
+    """Compress consecutive duplicates: ['a','a','b','a'] -> ['a','b','a']."""
+    runs: list[str] = []
+    for q in queries:
+        if not runs or runs[-1] != q:
+            runs.append(q)
+    return runs
+
+
+def test_df_to_dataset_no_grouping_preserves_row_order() -> None:
+    df = pl.DataFrame(
+        {
+            "query_stacktrace_string": ["q3", "q1", "q2"],
+            "candidate_stacktrace_string": ["c3", "c1", "c2"],
+            "label": ["GROUP", "SEPARATE", "GROUP"],
+        }
+    )
+    dataset = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=False)
+    assert dataset["query_stacktrace_string"] == ["q3", "q1", "q2"]
+    assert dataset["candidate_stacktrace_string"] == ["c3", "c1", "c2"]
+    assert dataset["label"] == [1, 0, 1]
+
+
+def test_df_to_dataset_grouping_keeps_same_query_contiguous() -> None:
+    """Cache-hit invariant: ModelForTraining.encode dedupes within a batch, so same-query rows must be adjacent."""
+    df = pl.DataFrame(
+        {
+            "query_stacktrace_string": ["qA", "qB", "qC", "qA", "qB", "qC"],  # interleaved
+            "candidate_stacktrace_string": ["c1", "c2", "c3", "c4", "c5", "c6"],
+            "label": ["GROUP"] * 6,
+        }
+    )
+    dataset = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=False)
+    runs = _query_runs(dataset["query_stacktrace_string"])
+    assert len(runs) == len(set(runs)), f"each query should appear in one contiguous run; got: {runs}"
+
+
+def test_df_to_dataset_sorts_candidates_by_length_within_query_group() -> None:
+    df = pl.DataFrame(
+        {
+            "query_stacktrace_string": ["q", "q", "q"],
+            "candidate_stacktrace_string": ["xxxxxxx", "x", "xxx"],  # lengths 7, 1, 3
+            "label": ["GROUP"] * 3,
+        }
+    )
+    dataset = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=False)
+    assert dataset["candidate_stacktrace_string"] == ["x", "xxx", "xxxxxxx"]
+
+
+def test_df_to_dataset_no_shuffle_groups_in_alphabetical_order() -> None:
+    """DDP determinism without shuffle: polars group_by is non-deterministic, so we sort groups by query string."""
+    df = pl.DataFrame(
+        {
+            "query_stacktrace_string": ["qC", "qA", "qB"],
+            "candidate_stacktrace_string": ["c1", "c2", "c3"],
+            "label": ["GROUP"] * 3,
+        }
+    )
+    dataset = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=False)
+    assert dataset["query_stacktrace_string"] == ["qA", "qB", "qC"]
+
+
+def test_df_to_dataset_shuffle_with_seed_is_deterministic_across_calls() -> None:
+    """DDP cross-process determinism: same seed must produce same group order on every call."""
+    df = pl.DataFrame(
+        {
+            "query_stacktrace_string": [f"q{i:02d}" for i in range(10)],
+            "candidate_stacktrace_string": [f"c{i}" for i in range(10)],
+            "label": ["GROUP"] * 10,
+        }
+    )
+    dataset_a = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=True, seed=7)
+    dataset_b = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=True, seed=7)
+    assert dataset_a["query_stacktrace_string"] == dataset_b["query_stacktrace_string"]
+
+
+def test_df_to_dataset_default_seed_is_deterministic() -> None:
+    """seed=None falls back to the hard-coded seed=42 (per source), so two calls still match."""
+    df = pl.DataFrame(
+        {
+            "query_stacktrace_string": [f"q{i:02d}" for i in range(10)],
+            "candidate_stacktrace_string": [f"c{i}" for i in range(10)],
+            "label": ["GROUP"] * 10,
+        }
+    )
+    dataset_a = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=True, seed=None)
+    dataset_b = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=True, seed=None)
+    assert dataset_a["query_stacktrace_string"] == dataset_b["query_stacktrace_string"]
+
+
+def test_df_to_dataset_different_seeds_produce_different_orders() -> None:
+    df = pl.DataFrame(
+        {
+            "query_stacktrace_string": [f"q{i:02d}" for i in range(10)],  # 10! permutations
+            "candidate_stacktrace_string": [f"c{i}" for i in range(10)],
+            "label": ["GROUP"] * 10,
+        }
+    )
+    dataset_a = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=True, seed=1)
+    dataset_b = gt.data.df_to_dataset(df, group_by_query_stacktrace_string=True, shuffle_groups=True, seed=2)
+    assert dataset_a["query_stacktrace_string"] != dataset_b["query_stacktrace_string"]
+
+
+# create_project_dataset_dict
+
+
+def _project_df(project_id_to_size: dict[int, int]) -> pl.DataFrame:
+    rows = []
+    for project_id, size in project_id_to_size.items():
+        for i in range(size):
+            rows.append(
+                {
+                    "query_stacktrace_string": f"q_p{project_id}_{i}",
+                    "candidate_stacktrace_string": f"c_p{project_id}_{i}",
+                    "label": "GROUP",
+                    "project_id": project_id,
+                }
+            )
+    return pl.DataFrame(rows)
+
+
+def test_create_project_dataset_dict_no_min_size_keeps_all_projects_separate() -> None:
+    df = _project_df({1: 2, 2: 1})
+    dataset_dict = gt.data.create_project_dataset_dict(df, min_dataset_size=None)
+    assert "__packed__" not in dataset_dict
+    assert set(dataset_dict.keys()) == {"1", "2"}
+    assert dataset_dict["1"].num_rows == 2
+    assert dataset_dict["2"].num_rows == 1
+
+
+def test_create_project_dataset_dict_small_projects_get_packed() -> None:
+    df = _project_df({1: 10, 2: 2, 3: 3})  # only project 1 meets min_dataset_size=5
+    dataset_dict = gt.data.create_project_dataset_dict(df, min_dataset_size=5)
+    assert set(dataset_dict.keys()) == {"1", "__packed__"}
+    assert dataset_dict["1"].num_rows == 10
+    assert dataset_dict["__packed__"].num_rows == 5  # 2 + 3
+
+
+def test_create_project_dataset_dict_all_small_only_packed_key() -> None:
+    df = _project_df({1: 1, 2: 1, 3: 1})
+    dataset_dict = gt.data.create_project_dataset_dict(df, min_dataset_size=5)
+    assert set(dataset_dict.keys()) == {"__packed__"}
+    assert dataset_dict["__packed__"].num_rows == 3
+
+
+def test_create_project_dataset_dict_all_large_no_packed_key() -> None:
+    df = _project_df({1: 3, 2: 3})
+    dataset_dict = gt.data.create_project_dataset_dict(df, min_dataset_size=2)
+    assert "__packed__" not in dataset_dict
+    assert set(dataset_dict.keys()) == {"1", "2"}
+
+
+def test_create_project_dataset_dict_keys_are_strings() -> None:
+    """DatasetDict's __getitem__ accepts both int (positional) and str (named) keys; we use strings."""
+    df = _project_df({42: 1, 99: 1})
+    dataset_dict = gt.data.create_project_dataset_dict(df, min_dataset_size=None)
+    for key in dataset_dict.keys():
+        assert isinstance(key, str)
+    assert "42" in dataset_dict
+    assert "99" in dataset_dict
