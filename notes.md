@@ -32,7 +32,7 @@ labeled as similar. MNRL is especially sensitive to the false negative rate. Thi
 training for the globally sparse similarity structures encountered in RAG, but bad when you're training for fine-grained
 stacktrace similarity w/in a Sentry project. GISTEmbed aims to address this kind of issue, but there aren't good guide
 models for this niche task. `gemini-embedding-2`, e.g.,
-[flops](https://github.com/getsentry/grouping-trainer/tree/main/eval/comparisons/test_full3/gemini-cluster_dim3072_vs_large-no-prefix_dim64).
+[flops](https://github.com/getsentry/grouping-trainer/tree/main/eval/comparisons/test_full3/gemini-embedding-2_dim3072_vs_large-no-prefix_dim64).
 
 You could instead have the batch sampler pair up stacktraces from different Sentry projects to avoid false negatives.
 These examples are too easy; different Sentry projects have different code -> very different stacktrace frames. At
