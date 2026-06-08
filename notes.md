@@ -1,3 +1,5 @@
+# Notes
+
 <details>
 <summary>Why does loss.py use a pairwise loss from 2005?</summary>
 
