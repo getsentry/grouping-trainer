@@ -54,7 +54,8 @@ To run real experiments, check out a branch `experiment/...`, make changes, push
 python train.py --gpu h100-4 --run_shortname my-run --multi_flex_start
 ```
 
-This command async-launches a DDP training run on 4 H100s which will run the commit at your local `HEAD`.
+This command async-launches a DDP training run on 4 H100s which will run the commit at your local `HEAD`. The run will
+start w/in 2 hours.
 
 
 ### Debug
