@@ -3,10 +3,11 @@ Launch GCE instances. The instance's startup script does bin/_startup.sh to set 
 whatever `python` command was locally run.
 
 Training jobs don't need to start immediately, so by default they're launched async via flex-start w/ a max wait time of
-2 hours (anything higher 400'd for me). Flex-starting also saves ~50% $$. To get around stockouts, this module
-implements a lightweight cross-region fallback b/c GCE doesn't have one. Specifically, an instance is flex-started in
-every zone, and they race to write a lock in GCS identifying this launch. The first to write it wins. The rest
-self-delete. Jobs in this repo have no networking or region dependence—they communicate via GCS.
+2 hours (anything higher 400'd for me). Flex-starting also saves ~50% $. To get around stockouts, this module implements
+a lightweight cross-region fallback b/c GCE doesn't have one. Specifically, an instance is flex-started in every zone,
+and they race to write a lock in GCS identifying this launch. The first to write it wins. The rest self-delete. Jobs in
+this repo have no networking or region dependence—they communicate via GCS. So far I've had all 20 or so training runs
+successfully flex-start w/in 15m since using this method. Never was able to spin up a h200-8 though.
 
 Eval jobs which use cheap L4 GPUs are launched by sync-looping through zones ourselves b/c eval ideally starts in time,
 e.g., training shouldn't start w/o an eval poller. L4s are cheap-enough that the flex-start discount isn't worth the
@@ -577,7 +578,10 @@ def _gce_multi_flex_start(
             continue
 
         if _is_phantom_already_exists(result.stderr):
-            logger.warning(f"409: already-exists on {zone}. Continuing with remaining zones")
+            logger.warning(
+                f"409: already-exists on {zone}. This error typically implies that a previous VM from a diff zone in "
+                "the loop is getting staged. Continuing with remaining zones anyway, they'll prolly 409 too."
+            )
             continue
 
         if n_submitted > 0:
