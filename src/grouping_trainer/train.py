@@ -349,10 +349,11 @@ class Trainer(SentenceTransformerTrainer):
 
         # Each GPU can have a different number of sub-batches. Need all to call backward() the same number of times w/
         # the same no_sync pattern so that all GPUs always agree on the communication op. Otherwise, e.g., GPU 1 w/ too
-        # few subbatches will want to AllReduce while GPU 2 wants to broadcast buffers (or something) -> deadlock.
-        # To fix, pad GPU 1's training step to the max sub-batch count with dummy backward passes.
-        # An alternate approach is to manually call all-reduce after the last sub-batch, but that removes overlap b/t
-        # all-reduce and backward and hardcodes this method to DDP.
+        # few subbatches will want to AllReduce while GPU 2 wants to broadcast buffers (or something) -> deadlock. To
+        # fix, pad GPU 1's training step to the max sub-batch count with dummy backward passes. An alternate approach is
+        # to manually call all-reduce after the last sub-batch, but that removes overlap b/t all-reduce and backward and
+        # hardcodes this method to DDP. torch.Join only activates when a dataloader is exhausted, so that doesn't fit
+        # either.
         for sub_batch_idx in range(max_sub_batches):
             if self.accelerator.sync_gradients:
                 # accelerate syncs on the final batch in the grad acc loop. Override to not sync until the last
