@@ -26,6 +26,10 @@ import grouping_trainer as gt
 
 logger = logging.getLogger(__name__)
 
+# Cross-model (non-stacktrace) compiled-vs-base speedup benchmark. It's model-agnostic, so it lives upstream in the
+# sentence-transformers examples rather than here.
+MULTI_MODEL_BENCHMARK_URL = "https://github.com/kddubey/sentence-transformers/tree/kddubey/examples/compilation/examples/sentence_transformer/applications/compilation"
+
 
 def _bucketize(df: pl.DataFrame, edges: tuple[int, ...]) -> pl.DataFrame:
     """Add a `bucket` column whose categories are <=e0, e0+1..e1, ..., >e_last."""
@@ -98,6 +102,9 @@ def _write_report(
 
     lines = [
         "# benchmark_compiled report",
+        "",
+        "This benchmarks the compiled vs. base model on stacktrace data. For the model-agnostic, cross-model "
+        f"speedup benchmark, see [the sentence-transformers compilation example]({MULTI_MODEL_BENCHMARK_URL}).",
         "",
         "## Run",
         "",

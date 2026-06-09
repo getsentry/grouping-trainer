@@ -1,5 +1,7 @@
 # benchmark_compiled report
 
+This benchmarks the compiled vs. base model on stacktrace data. For the model-agnostic, cross-model speedup benchmark, see [the sentence-transformers compilation example](https://github.com/kddubey/sentence-transformers/tree/kddubey/examples/compilation/examples/sentence_transformer/applications/compilation).
+
 ## Run
 
 ```
