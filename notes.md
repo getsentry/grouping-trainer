@@ -68,7 +68,7 @@ more forgiving by comparing it to a label-smoothed `SigmoidLoss`.
 
 
 <details>
-<summary>Pretraining on LLM responses and labels didn't help</summary>
+<summary>Continued pretraining didn't help</summary>
 
 [See the Wandb
 report](https://wandb.ai/sentry-seer/grouping-trainer/reports/Continued-pretraining-didn-t-help--VmlldzoxNzEyODgzMw?accessToken=if00o0ddeifr0z76kzxi4vehpjg0h0ccgyeh3szlxbdhswpy3zae4y6osvjje4da)
@@ -77,7 +77,7 @@ report](https://wandb.ai/sentry-seer/grouping-trainer/reports/Continued-pretrain
 
 
 <details>
-<summary>Synthetic hard negatives and hard positives didn't help</summary>
+<summary>Synthetic hard negatives + positives didn't help</summary>
 
 [See the Wandb report](https://wandb.ai/sentry-seer/grouping-trainer/reports/Synthetic-hard-negatives-positives-didn-t-help--VmlldzoxNzEyOTYxMg?accessToken=ydz4xgvku37irbnzc6307gnh334ccwtpww7e96blf3yw9abygg2l5tbkbmgr2uj9)
 
