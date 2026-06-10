@@ -954,14 +954,14 @@ sheets = [
 [package.metadata]
 requires-dist = [
     { name = "accelerate", specifier = "==1.12.0" },
-    { name = "bm25s", marker = "extra == 'eval-bm25'", specifier = "==0.2.13" },
+    { name = "bm25s", marker = "extra == 'eval-bm25'", specifier = ">=0.2.13" },
     { name = "datasets", specifier = "==4.4.1" },
     { name = "google-auth", marker = "extra == 'sheets'", specifier = ">=2.0.0" },
     { name = "google-auth-stubs", marker = "extra == 'dev'", specifier = ">=0.3.0" },
-    { name = "google-genai", marker = "extra == 'eval-gemini'", specifier = "==2.0.1" },
+    { name = "google-genai", marker = "extra == 'eval-gemini'", specifier = ">=2.0.1" },
     { name = "gspread", marker = "extra == 'sheets'", specifier = ">=6.0.0" },
     { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.0.0" },
-    { name = "more-itertools", marker = "extra == 'eval-gemini'", specifier = "==11.0.2" },
+    { name = "more-itertools", marker = "extra == 'eval-gemini'", specifier = ">=11.0.2" },
     { name = "optimum", specifier = "==1.27.0" },
     { name = "polars", specifier = "==1.32.0" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7.0" },
