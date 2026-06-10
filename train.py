@@ -17,8 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 base_model_to_per_device_token_budget_scale = {
-    # Not including the v1 jinaai/jina-embeddings-v2-base-code model b/c it doesn't support SDPA.
-    # Pls don't use models that don't support flash attention.
+    # jinaai/jina-embeddings-v2-base-code seemed to not support SDPA
     "lightonai/modernbert-embed-large": 4,
     "Alibaba-NLP/gte-modernbert-base": 6,
     "Qwen/Qwen3-Embedding-0.6B": 3,
