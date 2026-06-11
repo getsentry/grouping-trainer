@@ -968,7 +968,7 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.11.9" },
     { name = "pyrefly", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.4.2" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.14.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.12" },
     { name = "seaborn", marker = "extra == 'dev'", specifier = ">=0.13.2" },
     { name = "sentence-transformers", specifier = "==5.1.0" },
     { name = "torch", specifier = "==2.7.1" },

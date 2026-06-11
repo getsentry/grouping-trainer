@@ -39,7 +39,7 @@ dev = [
     "pre-commit>=3.7.0",
     "pyrefly>=1.0.0",
     "pytest>=8.4.2",
-    "ruff>=0.14.0",
+    "ruff==0.15.12",
     "seaborn>=0.13.2",
     "types-seaborn>=0.13.2.20260509",
     "types-tqdm>=4.67.3.20260508",
@@ -73,6 +73,11 @@ extend-include = ["*.ipynb"]
 
 [tool.ruff.lint]
 select = ["I", "F", "E", "B", "UP"]
+
+[tool.ruff.lint.isort]
+# W&B writes a gitignored `wandb/` run-log dir in the repo root, which makes isort's first-party auto-detection
+# misclassify `import wandb`. Pin it so editor and CI agree regardless of that dir.
+known-third-party = ["wandb"]
 
 [tool.pyrefly]
 project-includes = ["src", "tests", "benchmark", "eval", "bin", "train.py"]

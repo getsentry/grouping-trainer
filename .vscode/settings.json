@@ -5,6 +5,9 @@
     "autoDocstring.docstringFormat": "numpy",
     "autoDocstring.startOnNewLine": true,
     "editor.defaultFormatter": "charliermarsh.ruff",
+    // Use the project's pinned ruff (.venv) instead of the version bundled in the extension, so editor format-on-save
+    // matches `uv run ruff format`. Without this the extension drifts on auto-update.
+    "ruff.importStrategy": "fromEnvironment",
     "editor.formatOnSave": true,
     "[markdown]": {
         "editor.formatOnSave": false
