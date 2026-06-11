@@ -8,6 +8,7 @@ from typing import Literal, NoReturn, cast, overload
 import numpy as np
 import polars as pl
 import torch
+import transformers
 from polars._typing import ConcatMethod
 from sentence_transformers import SentenceTransformer as SentenceTransformerOriginal
 from transformers import PreTrainedTokenizerBase
@@ -194,9 +195,13 @@ def encoder_from_base(base_model: str, use_text_prefix: bool = False) -> Sentenc
         # Custom bidirlm arch: needs trust_remote_code, and its modeling code doesn't register _supports_sdpa, so we
         # don't pass attn_implementation="sdpa" (it would be rejected). It internally uses an SDPA fallback when
         # flash-attention isn't installed. https://huggingface.co/BidirLM/BidirLM-1B-Embedding
+        #
+        # The main branch targets transformers >= 5.0. Model card says to set the version otherwise.
+        revision = "transformers-v4" if int(transformers.__version__.split(".")[0]) < 5 else None
         return SentenceTransformer(
             base_model,
             trust_remote_code=True,
+            revision=revision,
             model_kwargs={"dtype": torch.bfloat16},
         )
 
