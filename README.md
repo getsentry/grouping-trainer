@@ -115,8 +115,8 @@ From local (use when you can't SSH in b/c, e.g., the boot itself failed):
 gcloud compute instances get-serial-port-output your-instance --zone=your-instance-zone | tail -100
 ```
 
-Or if the run hit an error (it's automatically terminated), check the `run.log` file in the run's GCS directory under
-`metadata/`.
+Or if the run hit an error (the instance will be automatically terminated), check the `run.log` file in the run's GCS
+directory under `metadata/`.
 
 </details>
 

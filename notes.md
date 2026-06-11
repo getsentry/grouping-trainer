@@ -89,7 +89,8 @@ for zone in zones:
 ```
 
 It gets you the discount, but it's only ever queuing up one zone at a time. The period the zone is available and the
-period there's a job queued to it need to overlap to secure an instance.
+period there's a job queued to it need to overlap to secure an instance. IME looping is rarely reliable enough to secure
+an instance w/in a short timeframe.
 
 I figured it'd be easy to implement a fan-out-and-race strategy in
 [launch.py](https://github.com/getsentry/grouping-trainer/blob/main/src/grouping_trainer/launch.py). I'm fine paying for
