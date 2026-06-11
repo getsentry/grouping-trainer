@@ -24,7 +24,7 @@ base_model_to_per_device_token_budget_scale = {
     "Qwen/Qwen3-Embedding-0.6B": 3.0,
     "jinaai/jina-embeddings-v5-text-nano-text-matching": 4.0,
     "microsoft/harrier-oss-v1-0.6b": 3.0,
-    "BidirLM/BidirLM-1B-Embedding": 0.75,  # NOTE: doesn't support gradient_checkpointing
+    "BidirLM/BidirLM-1B-Embedding": 0.7,  # NOTE: doesn't support gradient_checkpointing
 }
 
 
@@ -143,8 +143,8 @@ def run(
             warmup_ratio=0.25,
             learning_rate=learning_rate,
             loss_type="contrastive",
-            contrastive_margin=0.5,
-            training_csvs=gt.data.DEFAULT_TRAIN_PATHS,
+            contrastive_margin=0.6,
+            training_csvs=gt.data.DEFAULT_TRAIN_PATHS_NO_SYNTHETIC,
         )
 
     gt.data.ensure_local(training_config.training_csvs)
