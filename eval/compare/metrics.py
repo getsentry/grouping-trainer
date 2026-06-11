@@ -1,4 +1,17 @@
-"""Metric computation, threshold sweeps, and the head-to-head `compare_models` orchestrator."""
+"""
+Metric computation, threshold sweeps, and the head-to-head `compare_models` orchestrator.
+
+There are no CIs / p-values / whatnots here. Pairs w/in a project are not statistically dependent. (This fact kind of
+empirically reveals itself during training as well: the grouped scan order has higher grad var than the random scan
+order.) A pair like this: (stacktrace1, stacktrace2) is not independent of the rest of the dataset that may look like
+this: {(stacktrace1, stacktrace3), (stacktrace2, stacktrace3)}. There are ways to model this dependence / these
+clusters, or just compute standard errors after averaging across projects. But (1) I intentionally sampled >100k pairs
+across a couple hundred projects and all platforms and (2) I'm not that interested in the output of statistical tests
+here; I'm not interested in marginal improvements to the degree that a p-value would be useful. A model needs to be
+clearly better across reported metrics to warrant a migration in prod. When models are performing similarly, I like to
+look at the dumbbell_by_project plot and then check out the spreadsheets to see what qualitatively might've changed at
+the project tails.
+"""
 
 import json
 from dataclasses import dataclass
