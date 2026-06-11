@@ -190,6 +190,16 @@ def encoder_from_base(base_model: str, use_text_prefix: bool = False) -> Sentenc
             config_kwargs={"_attn_implementation": "sdpa"},
         )
 
+    if base_model == "BidirLM/BidirLM-1B-Embedding":
+        # Custom bidirlm arch: needs trust_remote_code, and its modeling code doesn't register _supports_sdpa, so we
+        # don't pass attn_implementation="sdpa" (it would be rejected). It internally uses an SDPA fallback when
+        # flash-attention isn't installed. https://huggingface.co/BidirLM/BidirLM-1B-Embedding
+        return SentenceTransformer(
+            base_model,
+            trust_remote_code=True,
+            model_kwargs={"dtype": torch.bfloat16},
+        )
+
     model_kwargs = None
     if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
         model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")

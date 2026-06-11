@@ -23,6 +23,7 @@ base_model_to_per_device_token_budget_scale = {
     "Qwen/Qwen3-Embedding-0.6B": 3,
     "jinaai/jina-embeddings-v5-text-nano-text-matching": 4,
     "microsoft/harrier-oss-v1-0.6b": 3,
+    "BidirLM/BidirLM-1B-Embedding": 2,
 }
 
 
@@ -50,7 +51,7 @@ def run(
         HuggingFace model ID or local path for the base encoder, or a `gs://...` path to a custom model directory in our
         bucket, e.g., the checkpoint to a model pretrained using pretrain.py. Others we've tried:
         Alibaba-NLP/gte-modernbert-base, Qwen/Qwen3-Embedding-0.6B, jinaai/jina-embeddings-v5-text-nano-text-matching,
-        microsoft/harrier-oss-v1-0.6b
+        microsoft/harrier-oss-v1-0.6b, BidirLM/BidirLM-1B-Embedding
     run_shortname
         Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp. Not required when
         `--resume_from` is given (derived from the resumed run's name).
