@@ -549,6 +549,7 @@ def _gce_multi_flex_start(
     Fan out async `FLEX_START` submits across the first `num_zones` of `config.zones`, all sharing the same `launch-id`
     metadata. First VM to boot claims a GCS atomic-create lock (see `bin/_startup.sh`). Losers self-delete.
     """
+    prune_decided_pending_instances()
     launch_id = uuid.uuid4().hex[:12]
     zones = config.zones[:num_zones]
     logger.info(f"Multi-flex-start launch-id={launch_id} is fanning out to {len(zones)} zones: {zones}")
@@ -639,6 +640,48 @@ def _delete_gce_instance_if_exists(instance_name: str) -> None:
             ["gcloud", "compute", "instances", "delete", instance_name, f"--zone={zone}", "--quiet"],
             check=False,
         )
+
+
+def prune_decided_pending_instances(*, dry_run: bool = False) -> None:
+    """
+    Delete PENDING multi-flex-start instances whose same-named sibling is already RUNNING.
+    """
+    list_args = [
+        "gcloud",
+        "compute",
+        "instances",
+        "list",
+        "--filter=name~gt-",
+        "--format=csv[no-heading](name,zone,status)",
+    ]
+    result = subprocess.run(list_args, check=True, capture_output=True, text=True)
+
+    names_running: set[str] = set()
+    zones_pending_by_name: dict[str, list[str]] = {}
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        name, zone, status = line.split(",")
+        if status == "RUNNING":
+            names_running.add(name)
+        elif status == "PENDING":
+            zones_pending_by_name.setdefault(name, []).append(zone)
+
+    names_to_prune = names_running & zones_pending_by_name.keys()
+    if not names_to_prune:
+        logger.info("No decided PENDING instances to prune.")
+        return
+
+    for name in names_to_prune:
+        for zone in zones_pending_by_name[name]:
+            if dry_run:
+                logger.info(f"[dry-run] Would prune PENDING {name} in {zone} (sibling already RUNNING)")
+                continue
+            logger.info(f"Pruning PENDING {name} in {zone} (sibling already RUNNING)")
+            subprocess.run(
+                ["gcloud", "compute", "instances", "delete", name, f"--zone={zone}", "--quiet", "--async"],
+                check=False,
+            )
 
 
 def gce_vm(
