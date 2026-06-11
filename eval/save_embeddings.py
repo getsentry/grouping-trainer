@@ -16,6 +16,13 @@ python eval/save_embeddings.py \
     --run_gcs_dir gs://$GROUPING_TRAINER_BUCKET/runs/2026-04-10-12-39-45-large-no-prefix \
     --truncate_dims 64 128 256 512 768 \
     --use_compiled
+
+To evaluate a model that takes a text prefix, e.g. microsoft/harrier-oss-v1-0.6b:
+
+python eval/save_embeddings.py \
+    --run_gcs_dir gs://$GROUPING_TRAINER_BUCKET/runs/2026-06-10-12-39-45-harrier \
+    --text_prefix "Instruct: Retrieve semantically similar text"$'\n'"Query: " \
+    --truncate_dims 64 128 256 512 768
 """
 
 import json

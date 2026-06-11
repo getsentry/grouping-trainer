@@ -195,9 +195,13 @@ def encoder_from_base(base_model: str, use_text_prefix: bool = False) -> Sentenc
         model_kwargs = dict(dtype=torch.bfloat16, attn_implementation="sdpa")
 
     text_prefix = ""
-    if base_model == "lightonai/modernbert-embed-large" and use_text_prefix:
-        # https://huggingface.co/lightonai/modernbert-embed-large#usage
-        text_prefix = "clustering: "
+    if use_text_prefix:
+        if base_model == "lightonai/modernbert-embed-large":
+            # https://huggingface.co/lightonai/modernbert-embed-large#usage
+            text_prefix = "clustering: "
+        elif base_model == "microsoft/harrier-oss-v1-0.6b":
+            # https://huggingface.co/microsoft/harrier-oss-v1-0.6b
+            text_prefix = "Instruct: Retrieve semantically similar text\nQuery: "
 
     return SentenceTransformer(
         base_model,
