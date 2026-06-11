@@ -1,5 +1,8 @@
 # Notes
 
+
+## Choices
+
 <details>
 <summary>Why does loss.py use a pairwise loss from 2005?</summary>
 
@@ -66,6 +69,38 @@ more forgiving by comparing it to a label-smoothed `SigmoidLoss`.
 
 </details>
 
+<details>
+<summary>Why doesn't launch.py use SkyPilot?</summary>
+
+I want:
+- the flex-start discount
+- training jobs running w/in at most a few hours so I can see if I messed something up in the code or hyperparameters,
+  and then kill and fix it accordingly.
+
+SkyPilot's flex-start/DWS mode appears to do this:
+
+```python
+for zone in zones:
+    flex_start(zone)
+    did_start_in_time = wait_for_start(zone, wait_time="15m")
+    if did_start_in_time:
+        return
+    kill_start_attempt(zone)
+```
+
+It gets you the discount, but it's only ever queuing up one zone at a time. The period the zone is available and the
+period there's a job queued to it need to overlap to secure an instance.
+
+I figured it'd be easy to implement a fan-out-and-race strategy in
+[launch.py](https://github.com/getsentry/grouping-trainer/blob/main/src/grouping_trainer/launch.py). I'm fine paying for
+the potential minute (or seconds?) during which multiple instances are running until they hit the lock and self-delete.
+This seems to be working well. I typically need to wait for 10m - 1h to secure an instance w/ 4 H100s anywhere in the
+world.
+
+</details>
+
+
+## The more interesting experiments
 
 <details>
 <summary>Continued pretraining didn't help</summary>
