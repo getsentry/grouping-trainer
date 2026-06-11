@@ -672,16 +672,20 @@ def prune_decided_pending_instances(*, dry_run: bool = False) -> None:
         logger.info("No decided PENDING instances to prune.")
         return
 
+    # `gcloud compute instances delete` has no --async and blocks until the op finishes, so fire the deletes
+    # concurrently (one per zone) and join at the end rather than waiting on each in turn.
+    deletes_running: list[subprocess.Popen] = []
     for name in names_to_prune:
         for zone in zones_pending_by_name[name]:
             if dry_run:
                 logger.info(f"[dry-run] Would prune PENDING {name} in {zone} (sibling already RUNNING)")
                 continue
             logger.info(f"Pruning PENDING {name} in {zone} (sibling already RUNNING)")
-            subprocess.run(
-                ["gcloud", "compute", "instances", "delete", name, f"--zone={zone}", "--quiet", "--async"],
-                check=False,
+            deletes_running.append(
+                subprocess.Popen(["gcloud", "compute", "instances", "delete", name, f"--zone={zone}", "--quiet"])
             )
+    for delete_running in deletes_running:
+        delete_running.wait()
 
 
 def gce_vm(
