@@ -24,7 +24,7 @@ base_model_to_per_device_token_budget_scale = {
     "Qwen/Qwen3-Embedding-0.6B": 3.0,
     "jinaai/jina-embeddings-v5-text-nano-text-matching": 4.0,
     "microsoft/harrier-oss-v1-0.6b": 3.0,
-    "BidirLM/BidirLM-1B-Embedding": 0.5,  # NOTE: doesn't support gradient_checkpointing
+    "BidirLM/BidirLM-1B-Embedding": 0.75,  # NOTE: doesn't support gradient_checkpointing
 }
 
 
