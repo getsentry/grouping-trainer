@@ -23,7 +23,7 @@ base_model_to_per_device_token_budget_scale = {
     "Qwen/Qwen3-Embedding-0.6B": 3,
     "jinaai/jina-embeddings-v5-text-nano-text-matching": 4,
     "microsoft/harrier-oss-v1-0.6b": 3,
-    "BidirLM/BidirLM-1B-Embedding": 2,
+    "BidirLM/BidirLM-1B-Embedding": 1,
 }
 
 
@@ -36,6 +36,7 @@ def run(
     learning_rate: float = 1e-4,
     tiny_run: bool = False,
     use_text_prefix: bool = False,
+    dont_spin_up_eval_poller: bool = False,
     *,
     gpu: gt.launch.TrainingGpuType | None = None,  # type: ignore[valid-type]
     zone: str | None = None,
@@ -70,6 +71,8 @@ def run(
         Run a tiny training run to sanity check plumbing.
     use_text_prefix
         If True, add the model's designated prefix to the input text. Didn't help lightonai/modernbert-embed-large
+    dont_spin_up_eval_poller
+        Set this flag while debugging to skip spinning up the eval poller.
     gpu
         The type of GPU to flex-start and run on.
     zone
@@ -136,11 +139,12 @@ def run(
             base_model=base_model,
             global_train_batch_size=global_train_batch_size,
             per_device_token_budget=8192 * per_device_token_budget_scale,
+            gradient_checkpointing=True,
             warmup_ratio=0.25,
             learning_rate=learning_rate,
             loss_type="contrastive",
             contrastive_margin=0.5,
-            training_csvs=gt.data.DEFAULT_TRAIN_PATHS,
+            training_csvs=gt.data.DEFAULT_TRAIN_PATHS_NO_SYNTHETIC,
         )
 
     gt.data.ensure_local(training_config.training_csvs)
@@ -172,7 +176,7 @@ def run(
         if tiny_run:
             eval_command += " --sample_val 200 --use_simple_precisions"
         logger.info(f"This command will be run to evaluate the model:\n\n{eval_command}\n")
-        if not tiny_run:
+        if not (tiny_run or dont_spin_up_eval_poller):
             gt.launch.gce_vm(
                 gpu="l4",
                 job_type=gt.launch.JobType.EVAL,
