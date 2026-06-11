@@ -489,6 +489,7 @@ def _gce_create_cmd(
     path_to_metadata_script: dict[str, str],
     launch_id: str | None = None,
     git_ref: str | None = None,
+    run_gcs_dir: str | None = None,
 ) -> list[str]:
     metadata = {
         "gcs-bucket": os.environ["GROUPING_TRAINER_BUCKET"],
@@ -499,6 +500,10 @@ def _gce_create_cmd(
         metadata["launch-id"] = launch_id
     if git_ref is not None:
         metadata["git-ref"] = git_ref
+    if run_gcs_dir is not None:
+        # _startup.sh uploads the run log here before shutdown, next to the config/git_commit
+        # that upload_run_metadata writes, so a crash is debuggable without restarting the VM.
+        metadata["run-gcs-dir"] = run_gcs_dir
     if config.install_nvidia_driver:
         metadata["enable-osconfig"] = "TRUE"
         metadata["install-nvidia-driver"] = "True"
@@ -544,6 +549,7 @@ def _gce_multi_flex_start(
     num_zones: int,
     path_to_metadata_script: dict[str, str],
     git_ref: str | None = None,
+    run_gcs_dir: str | None = None,
 ) -> None:
     """
     Fan out async `FLEX_START` submits across the first `num_zones` of `config.zones`, all sharing the same `launch-id`
@@ -566,6 +572,7 @@ def _gce_multi_flex_start(
             path_to_metadata_script=path_to_metadata_script,
             launch_id=launch_id,
             git_ref=git_ref,
+            run_gcs_dir=run_gcs_dir,
         )
         result = subprocess.run(gce_create_args, capture_output=True, text=True)
         if result.returncode == 0:
@@ -703,6 +710,7 @@ def gce_vm(
     seconds_between_gce_create_attempts: int = 1,
     delete_if_exists: bool = False,
     git_ref: str | None = None,
+    run_gcs_dir: str | None = None,
 ) -> None:
     """
     Launch a GCE instance for the given GPU type. If `command` is given, it's passed via instance metadata and
@@ -745,6 +753,9 @@ def gce_vm(
         Git ref (SHA or branch name) the remote should check out after cloning. When None (default), resolves to the
         local HEAD SHA, and requires that SHA to have been pushed to a remote branch. Pass `--git_ref main` (or any
         explicit ref) to skip the auto-resolve when you don't care which SHA the VM starts from, e.g. for a debug VM.
+    run_gcs_dir
+        The run's GCS directory (`gs://$BUCKET/runs/<run_name>`). When set, `_startup.sh` uploads the run log to
+        `<run_gcs_dir>/metadata/run.log` before shutdown. None for SSH-in VMs that have no run.
     """
     config = gpu_type_to_config[gpu]
     if multi_flex_start and sync_start:
@@ -798,6 +809,7 @@ def gce_vm(
                 num_zones=multi_flex_start_num_zones,
                 path_to_metadata_script=path_to_metadata_script,
                 git_ref=git_ref,
+                run_gcs_dir=run_gcs_dir,
             )
             return
 
@@ -811,6 +823,7 @@ def gce_vm(
                 wait_for_instance_creation=wait_for_instance_creation,
                 path_to_metadata_script=path_to_metadata_script,
                 git_ref=git_ref,
+                run_gcs_dir=run_gcs_dir,
             )
             logger.info(f"Attempting to create {instance_name} in zone {zone}")
             gce_create_cmd_result = subprocess.run(gce_create_args, capture_output=True, text=True)
@@ -924,6 +937,7 @@ def run_argv_remotely(
         multi_flex_start=multi_flex_start,
         command=command,
         zone=zone,
+        run_gcs_dir=f"gs://{os.environ['GROUPING_TRAINER_BUCKET']}/runs/{run_name}",
     )
 
 

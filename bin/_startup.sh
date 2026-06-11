@@ -129,6 +129,23 @@ COMMAND=$(curl -fsS -H "Metadata-Flavor: Google" \
 if [ -n "$COMMAND" ]; then
     LOG_FILE="/var/log/grouping_trainer_run.log"
     echo "Running command, output -> $LOG_FILE"
-    eval "$COMMAND" >>"$LOG_FILE" 2>&1 || true
+    eval "$COMMAND" >>"$LOG_FILE" 2>&1 && COMMAND_RC=0 || COMMAND_RC=$?
+    echo "Command exited with status $COMMAND_RC" | tee -a "$LOG_FILE"
+
+    # Ship the log to GCS before the unconditional shutdown below, so a crash is debuggable without restarting this
+    # (expensive) VM. Goes next to the config/git_commit that upload_run_metadata writes, keyed by run name; falls back
+    # to a per-instance path when run-gcs-dir isn't set (set by gt.launch only for runs, not SSH-in VMs).
+    # || true: a failed upload must never block the teardown.
+    RUN_GCS_DIR=$(curl -fsS -H 'Metadata-Flavor: Google' \
+        http://metadata.google.internal/computeMetadata/v1/instance/attributes/run-gcs-dir 2>/dev/null || true)
+    if [ -n "$RUN_GCS_DIR" ]; then
+        LOG_GCS_PATH="${RUN_GCS_DIR%/}/metadata/run.log"
+    else
+        INSTANCE_NAME=$(curl -fsS -H 'Metadata-Flavor: Google' \
+            http://metadata.google.internal/computeMetadata/v1/instance/name 2>/dev/null || hostname)
+        LOG_GCS_PATH="gs://${GROUPING_TRAINER_BUCKET}/logs/${INSTANCE_NAME}.log"
+    fi
+    gcloud storage cp "$LOG_FILE" "$LOG_GCS_PATH" || true
+
     shutdown -h now
 fi
