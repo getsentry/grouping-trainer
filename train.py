@@ -163,7 +163,7 @@ def run(
 
     if trainer.accelerator.is_main_process:
         gt.launch.upload_run_metadata(run.gcs_dir, training_config, config_filename="training_config.json")
-        gt.launch.init_wandb(run_name=run.name, x_label="train", resume_from=resume_from)
+        gt.launch.init_wandb(run_name=run.name, display_name=run.shortname, x_label="train", resume_from=resume_from)
 
         # Start eval poller on a separate machine
         eval_command = (

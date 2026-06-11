@@ -146,7 +146,7 @@ def run(
 
     if pretrainer.accelerator.is_main_process:
         gt.launch.upload_run_metadata(run.gcs_dir, pretraining_config, config_filename="pretraining_config.json")
-        gt.launch.init_wandb(run_name=run.name, x_label="pretrain", resume_from=resume_from)
+        gt.launch.init_wandb(run_name=run.name, display_name=run.shortname, x_label="pretrain", resume_from=resume_from)
         pretrainer.add_callback(gt.train.GCSCheckpointUploadCallback(run_gcs_dir=run.gcs_dir))
 
     warnings.filterwarnings(

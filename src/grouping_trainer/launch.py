@@ -184,11 +184,11 @@ def bootstrap_run(
     )
 
 
-def init_wandb(*, run_name: str, x_label: str, resume_from: str | None = None) -> None:
+def init_wandb(*, run_name: str, display_name: str, x_label: str, resume_from: str | None = None) -> None:
     wandb.login()
     wandb.init(
         id=run_name,
-        name=run_name,
+        name=display_name,
         group=run_name,
         settings=wandb.Settings(mode="shared", x_primary=True, x_label=x_label),
         resume="must" if resume_from is not None else None,
