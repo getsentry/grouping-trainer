@@ -47,4 +47,4 @@ jobs:
         with:
           path: ~/.cache/huggingface
           key: hf-${{ runner.os }}-gte-modernbert-base
-      - run: uv run pytest -vv
+      - run: uv run pytest -v

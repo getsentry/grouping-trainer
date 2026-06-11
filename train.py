@@ -4,6 +4,7 @@ Evaluation runs async on a separate machine. See eval/eval_poller.py
 """
 
 import logging
+import math
 import os
 import subprocess
 import warnings
@@ -18,11 +19,12 @@ logger = logging.getLogger(__name__)
 
 base_model_to_per_device_token_budget_scale = {
     # jinaai/jina-embeddings-v2-base-code seemed to not support SDPA
-    "lightonai/modernbert-embed-large": 4,
-    "Alibaba-NLP/gte-modernbert-base": 6,
-    "Qwen/Qwen3-Embedding-0.6B": 3,
-    "jinaai/jina-embeddings-v5-text-nano-text-matching": 4,
-    "microsoft/harrier-oss-v1-0.6b": 3,
+    "lightonai/modernbert-embed-large": 4.0,
+    "Alibaba-NLP/gte-modernbert-base": 6.0,
+    "Qwen/Qwen3-Embedding-0.6B": 3.0,
+    "jinaai/jina-embeddings-v5-text-nano-text-matching": 4.0,
+    "microsoft/harrier-oss-v1-0.6b": 3.0,
+    "BidirLM/BidirLM-1B-Embedding": 0.75,  # NOTE: doesn't support gradient_checkpointing
 }
 
 
@@ -30,11 +32,12 @@ def run(
     base_model: str = "lightonai/modernbert-embed-large",
     run_shortname: str | None = None,
     resume_from: str | None = None,
-    per_device_token_budget_scale: int | None = None,
+    per_device_token_budget_scale: float | None = None,
     global_train_batch_size: int = 256,
     learning_rate: float = 1e-4,
     tiny_run: bool = False,
     use_text_prefix: bool = False,
+    dont_spin_up_eval_poller: bool = False,
     *,
     gpu: gt.launch.TrainingGpuType | None = None,  # type: ignore[valid-type]
     zone: str | None = None,
@@ -50,7 +53,7 @@ def run(
         HuggingFace model ID or local path for the base encoder, or a `gs://...` path to a custom model directory in our
         bucket, e.g., the checkpoint to a model pretrained using pretrain.py. Others we've tried:
         Alibaba-NLP/gte-modernbert-base, Qwen/Qwen3-Embedding-0.6B, jinaai/jina-embeddings-v5-text-nano-text-matching,
-        microsoft/harrier-oss-v1-0.6b
+        microsoft/harrier-oss-v1-0.6b, BidirLM/BidirLM-1B-Embedding
     run_shortname
         Short name for the run. Doesn't need to be unique b/c it's appended to the timestamp. Not required when
         `--resume_from` is given (derived from the resumed run's name).
@@ -69,6 +72,8 @@ def run(
         Run a tiny training run to sanity check plumbing.
     use_text_prefix
         If True, add the model's designated prefix to the input text. Didn't help lightonai/modernbert-embed-large
+    dont_spin_up_eval_poller
+        Set this flag while debugging to skip spinning up the eval poller.
     gpu
         The type of GPU to flex-start and run on.
     zone
@@ -134,12 +139,12 @@ def run(
             run_shortname=run.shortname,
             base_model=base_model,
             global_train_batch_size=global_train_batch_size,
-            per_device_token_budget=8192 * per_device_token_budget_scale,
+            per_device_token_budget=math.floor(8192 * per_device_token_budget_scale),
             warmup_ratio=0.25,
             learning_rate=learning_rate,
             loss_type="contrastive",
             contrastive_margin=0.5,
-            training_csvs=gt.data.DEFAULT_TRAIN_PATHS,
+            training_csvs=gt.data.DEFAULT_TRAIN_PATHS_NO_SYNTHETIC,
         )
 
     gt.data.ensure_local(training_config.training_csvs)
@@ -171,7 +176,7 @@ def run(
         if tiny_run:
             eval_command += " --sample_val 200 --use_simple_precisions"
         logger.info(f"This command will be run to evaluate the model:\n\n{eval_command}\n")
-        if not tiny_run:
+        if not (tiny_run or dont_spin_up_eval_poller):
             gt.launch.gce_vm(
                 gpu="l4",
                 job_type=gt.launch.JobType.EVAL,
