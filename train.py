@@ -23,7 +23,7 @@ base_model_to_per_device_token_budget_scale = {
     "Qwen/Qwen3-Embedding-0.6B": 3,
     "jinaai/jina-embeddings-v5-text-nano-text-matching": 4,
     "microsoft/harrier-oss-v1-0.6b": 3,
-    "BidirLM/BidirLM-1B-Embedding": 1,
+    "BidirLM/BidirLM-1B-Embedding": 1,  # NOTE: doesn't support gradient_checkpointing
 }
 
 
@@ -139,7 +139,6 @@ def run(
             base_model=base_model,
             global_train_batch_size=global_train_batch_size,
             per_device_token_budget=8192 * per_device_token_budget_scale,
-            gradient_checkpointing=True,
             warmup_ratio=0.25,
             learning_rate=learning_rate,
             loss_type="contrastive",
